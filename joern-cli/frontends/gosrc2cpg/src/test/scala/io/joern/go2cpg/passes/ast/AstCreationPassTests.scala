@@ -10,7 +10,7 @@ class AstCreationPassTests extends GoCodeToCpgSuite {
 
   "Method Ast layout" should {
 
-    "be correct for decl assignment" ignore {
+    "be correct for decl assignment" in {
       val cpg = code("""
           |package main
           |func main() {
