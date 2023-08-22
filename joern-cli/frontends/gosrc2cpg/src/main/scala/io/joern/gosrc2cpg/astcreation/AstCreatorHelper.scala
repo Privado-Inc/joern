@@ -4,7 +4,6 @@ import io.joern.gosrc2cpg.datastructures.GoGlobal
 import io.joern.gosrc2cpg.parser.ParserAst.*
 import io.joern.gosrc2cpg.parser.{ParserAst, ParserKeys, ParserNodeInfo}
 import io.joern.x2cpg.Defines as XDefines
-import io.shiftleft.codepropertygraph.generated.EvaluationStrategies
 import org.apache.commons.lang.StringUtils
 import ujson.Value
 
@@ -117,10 +116,6 @@ trait AstCreatorHelper { this: AstCreator =>
           aliasName = Some(nodeInfo.json(ParserKeys.X)(ParserKeys.Name).str)
         )
         (fullName, typeNameForcode)
-      case InterfaceType =>
-        val typeNameForcode = "interface{}"
-        val fullName        = generateTypeFullName(typeNameForcode)
-        (fullName, typeNameForcode)
       case _ =>
         val fullName = generateTypeFullName()
         (fullName, fullName)
@@ -143,39 +138,35 @@ trait AstCreatorHelper { this: AstCreator =>
     }
   }
 
-  private def internalStarExpHandler(nodeInfo: ParserNodeInfo): (String, String, String) = {
+  private def internalStarExpHandler(nodeInfo: ParserNodeInfo): (String, String) = {
     nodeInfo.node match {
       case StarExpr =>
         // TODO: Need to handle pointer to pointer use case.
         val (fullName, typeNameForcode) = internalArrayTypeHandler(createParserNodeInfo(nodeInfo.json(ParserKeys.X)))
-        (s"*${fullName}", s"*${typeNameForcode}", EvaluationStrategies.BY_SHARING)
+        (s"*${fullName}", s"*${typeNameForcode}")
       case _ =>
         val (fullName, typeNameForcode) = internalArrayTypeHandler(nodeInfo)
-        (fullName, typeNameForcode, EvaluationStrategies.BY_VALUE)
+        (fullName, typeNameForcode)
     }
   }
 
-  protected def processTypeInfo(jsonNode: Value): (String, String, Boolean, String) = {
+  protected def getTypeFullName(jsonNode: Value): (String, String, Boolean) = {
     val nodeInfo = createParserNodeInfo(jsonNode)
     nodeInfo.node match {
       case ArrayType =>
-        val (fullName, typeNameForcode, evaluationStrategy) = internalStarExpHandler(
-          createParserNodeInfo(jsonNode.obj(ParserKeys.Elt))
-        )
-        (s"[]${fullName}", s"[]${typeNameForcode}", false, evaluationStrategy)
+        val (fullName, typeNameForcode) = internalStarExpHandler(createParserNodeInfo(jsonNode.obj(ParserKeys.Elt)))
+        (s"[]${fullName}", s"[]${typeNameForcode}", false)
       case CompositeLit =>
-        val (fullName, typeNameForcode, evaluationStrategy) = internalStarExpHandler(
+        val (fullName, typeNameForcode) = internalStarExpHandler(
           createParserNodeInfo(jsonNode.obj(ParserKeys.Type)(ParserKeys.Elt))
         )
-        (s"[]${fullName}", s"[]${typeNameForcode}", false, evaluationStrategy)
+        (s"[]${fullName}", s"[]${typeNameForcode}", false)
       case Ellipsis =>
-        val (fullName, typeNameForcode, evaluationStrategy) = internalStarExpHandler(
-          createParserNodeInfo(jsonNode.obj(ParserKeys.Elt))
-        )
-        (s"[]${fullName}", s"...${typeNameForcode}", true, evaluationStrategy)
+        val (fullName, typeNameForcode) = internalStarExpHandler(createParserNodeInfo(jsonNode.obj(ParserKeys.Elt)))
+        (s"[]${fullName}", s"...${typeNameForcode}", true)
       case _ =>
-        val (fullName, typeNameForcode, evaluationStrategy) = internalStarExpHandler(nodeInfo)
-        (fullName, typeNameForcode, false, evaluationStrategy)
+        val (fullName, typeNameForcode) = internalStarExpHandler(nodeInfo)
+        (fullName, typeNameForcode, false)
     }
   }
 
