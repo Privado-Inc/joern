@@ -76,7 +76,7 @@ object CSharpProgramSummary {
           Environment.operatingSystem match {
             case Environment.OperatingSystemType.Windows => {
               println("On Windows")
-              file.pathAsString.stripPrefix("/").replace("/", "\\")
+              file.pathAsString.stripPrefix("/")
             }
             case _ => file.pathAsString
           }
