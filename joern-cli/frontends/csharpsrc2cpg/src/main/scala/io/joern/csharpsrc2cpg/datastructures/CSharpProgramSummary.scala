@@ -64,16 +64,23 @@ object CSharpProgramSummary {
 
     val url  = classLoader.getResource(builtinDirectory)
     val path = url.getPath
+    println("---------------")
+    println(Environment.operatingSystem)
     val resourcePaths =
       File(path).listRecursively
         .filter(_.name.endsWith("builtin_types.json"))
         .map(file =>
           Environment.operatingSystem match {
-            case Environment.OperatingSystemType.Windows => file.pathAsString.stripPrefix("/")
-            case _                                       => file.pathAsString
+            case Environment.OperatingSystemType.Windows => {
+              println("On windows")
+              file.pathAsString.stripPrefix("/")
+            }
+            case _ => file.pathAsString
           }
         )
         .toList
+
+    println(resourcePaths)
 
     if (resourcePaths.isEmpty) {
       logger.warn("No builtin_types.json found.")
