@@ -62,8 +62,12 @@ object CSharpProgramSummary {
     val classLoader      = getClass.getClassLoader
     val builtinDirectory = "builtin_types"
 
-    val url  = classLoader.getResource(builtinDirectory)
-    val path = url.getPath
+    val url = classLoader.getResource(builtinDirectory)
+    val path = Environment.operatingSystem match
+      case Environment.OperatingSystemType.Windows => url.getPath.stripPrefix("/")
+      case _                                       => url.getPath
+
+    println(path)
     println("---------------")
     println(Environment.operatingSystem)
     val resourcePaths =
