@@ -50,7 +50,10 @@ object CSharpProgramSummary {
           println(exception)
           logger.warn("Unable to parse JSON type entry from builtin types", exception)
         }; Map.empty
-      case Success(mapping) => mapping
+      case Success(mapping) => {
+        println(mapping)
+        mapping
+      }
   }
 
   /** Converts a JSON type mapping to a NamespaceToTypeMap entry.
@@ -99,6 +102,7 @@ object CSharpProgramSummary {
         val inputStream = File(resourcePath).newInputStream
         val jsonString  = Source.fromInputStream(inputStream).mkString
         val jsonObject  = ujson.read(jsonString).obj
+        println(jsonObject)
         mergedJsonObjects.addOne(jsonObject)
       }
 
