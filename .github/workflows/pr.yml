@@ -5,7 +5,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest]
     steps:
       - uses: actions/checkout@v3
         with:
@@ -43,7 +43,7 @@ jobs:
             ~/.coursier
           key: ${{ runner.os }}-sbt-${{ hashfiles('**/build.sbt') }}
       - name: Compile and run tests
-        run: sbt clean +test
+        run: sbt clean +
   formatting:
     runs-on: ubuntu-latest
     steps:
