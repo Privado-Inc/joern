@@ -68,16 +68,16 @@ object CSharpProgramSummary {
     println(Environment.operatingSystem)
     val resourcePaths =
       File(path).listRecursively
-        .filter(_.name.endsWith("builtin_types.json"))
         .map(file =>
           Environment.operatingSystem match {
             case Environment.OperatingSystemType.Windows => {
-              println("On windows")
-              file.pathAsString.stripPrefix("/")
+              println("On Windows")
+              file.pathAsString.stripPrefix("/").replace("/", "\\")
             }
             case _ => file.pathAsString
           }
         )
+        .filter(_.endsWith("builtin_types.json"))
         .toList
 
     println(resourcePaths)
