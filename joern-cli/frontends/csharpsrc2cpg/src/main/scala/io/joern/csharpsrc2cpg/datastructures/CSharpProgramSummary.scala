@@ -45,8 +45,12 @@ object CSharpProgramSummary {
     */
   def BuiltinTypes: NamespaceToTypeMap = {
     jsonToInitialMapping(mergeBuiltInTypesJson) match
-      case Failure(exception) => logger.warn("Unable to parse JSON type entry from builtin types", exception); Map.empty
-      case Success(mapping)   => mapping
+      case Failure(exception) =>
+        {
+          println(exception)
+          logger.warn("Unable to parse JSON type entry from builtin types", exception)
+        }; Map.empty
+      case Success(mapping) => mapping
   }
 
   /** Converts a JSON type mapping to a NamespaceToTypeMap entry.
@@ -64,7 +68,7 @@ object CSharpProgramSummary {
 
     val url = classLoader.getResource(builtinDirectory)
     val path = Environment.operatingSystem match
-      case Environment.OperatingSystemType.Windows => url.getPath.stripPrefix("/").replace("/", "\\")
+      case Environment.OperatingSystemType.Windows => url.getPath.stripPrefix("/")
       case _                                       => url.getPath
 
     println(path)
@@ -76,7 +80,7 @@ object CSharpProgramSummary {
           Environment.operatingSystem match {
             case Environment.OperatingSystemType.Windows => {
               println("On Windows")
-              file.pathAsString.stripPrefix("/")
+              file.pathAsString.stripPrefix("/").replace("/", "\\")
             }
             case _ => file.pathAsString
           }
