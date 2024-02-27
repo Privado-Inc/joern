@@ -44,6 +44,7 @@ object CSharpProgramSummary {
     *   a mapping of the `System` package types.
     */
   def BuiltinTypes: NamespaceToTypeMap = {
+    println(jsonToInitialMapping(mergeBuiltInTypesJson))
     jsonToInitialMapping(mergeBuiltInTypesJson) match
       case Failure(exception) =>
         {
