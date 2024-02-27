@@ -64,7 +64,7 @@ object CSharpProgramSummary {
 
     val url = classLoader.getResource(builtinDirectory)
     val path = Environment.operatingSystem match
-      case Environment.OperatingSystemType.Windows => url.getPath.stripPrefix("/")
+      case Environment.OperatingSystemType.Windows => url.getPath.stripPrefix("/").replace("/", "\\")
       case _                                       => url.getPath
 
     println(path)
