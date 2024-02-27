@@ -43,7 +43,7 @@ jobs:
             ~/.coursier
           key: ${{ runner.os }}-sbt-${{ hashfiles('**/build.sbt') }}
       - name: Compile and run tests
-        run: sbt clean +
+        run: sbt clean csharpsrc2cpg/test
   formatting:
     runs-on: ubuntu-latest
     steps:
