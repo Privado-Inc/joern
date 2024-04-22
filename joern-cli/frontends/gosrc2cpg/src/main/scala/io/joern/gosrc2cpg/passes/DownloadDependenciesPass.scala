@@ -49,6 +49,7 @@ class DownloadDependenciesPass(parentGoMod: GoModHelper, goGlobal: GoGlobal, con
               })
             val allResults: Future[List[Unit]] = Future.sequence(futures)
             Await.result(allResults, Duration.Inf)
+            println()
           case Failure(f) =>
             logger.error("\t- command 'go mod init joern.io/temp' failed", f)
         }
