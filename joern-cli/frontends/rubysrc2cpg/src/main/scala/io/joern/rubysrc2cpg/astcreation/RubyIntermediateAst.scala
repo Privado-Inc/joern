@@ -3,6 +3,8 @@ package io.joern.rubysrc2cpg.astcreation
 import io.joern.rubysrc2cpg.passes.Defines
 import io.shiftleft.codepropertygraph.generated.nodes.NewNode
 
+import scala.annotation.tailrec
+
 object RubyIntermediateAst {
 
   case class TextSpan(
@@ -166,6 +168,10 @@ object RubyIntermediateAst {
   final case class EnsureClause(thenClause: RubyNode)(span: TextSpan) extends RubyNode(span) with ControlFlowClause
 
   final case class WhileExpression(condition: RubyNode, body: RubyNode)(span: TextSpan)
+      extends RubyNode(span)
+      with ControlFlowExpression
+
+  final case class DoWhileExpression(condition: RubyNode, body: RubyNode)(span: TextSpan)
       extends RubyNode(span)
       with ControlFlowExpression
 
