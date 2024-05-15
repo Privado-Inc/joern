@@ -1,7 +1,7 @@
 package io.joern.csharpsrc2cpg.datastructures
 
 import io.joern.csharpsrc2cpg.Constants
-import io.joern.x2cpg.datastructures.{FieldLike, MethodLike, ProgramSummary, TypeLike}
+import io.joern.x2cpg.datastructures.{FieldLike, MethodLike, OverloadableMethod, ProgramSummary, TypeLike}
 import org.slf4j.LoggerFactory
 import upickle.core.LinkedHashMap
 import upickle.default.*
@@ -10,33 +10,43 @@ import java.io.{ByteArrayInputStream, InputStream}
 import scala.annotation.targetName
 import scala.collection.mutable.ListBuffer
 import scala.io.Source
-import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Success, Try}
 import java.net.JarURLConnection
 import scala.util.Using
+import scala.jdk.CollectionConverters.*
 
 type NamespaceToTypeMap = Map[String, Set[CSharpType]]
 
 /** A mapping of type stubs of known types within the scope of the analysis.
   *
-  * @param initialMappings
+  * @param namespaceToType
   *   mappings to create the scope from
   * @see
   *   [[CSharpProgramSummary.jsonToInitialMapping]] for generating initial mappings.
   */
-class CSharpProgramSummary(initialMappings: List[NamespaceToTypeMap] = List.empty) extends ProgramSummary[CSharpType] {
+case class CSharpProgramSummary(val namespaceToType: NamespaceToTypeMap, val imports: Set[String])
+    extends ProgramSummary[CSharpType] {
 
-  override val namespaceToType: NamespaceToTypeMap = initialMappings.reduceOption(_ ++ _).getOrElse(Map.empty)
-  def findGlobalTypes: Set[CSharpType]             = namespaceToType.getOrElse(Constants.Global, Set.empty)
+  def findGlobalTypes: Set[CSharpType] = namespaceToType.getOrElse(Constants.Global, Set.empty)
 
   @targetName("add")
   def ++(other: CSharpProgramSummary): CSharpProgramSummary = {
-    CSharpProgramSummary(ProgramSummary.combine(this.namespaceToType, other.namespaceToType) :: Nil)
+    new CSharpProgramSummary(ProgramSummary.combine(namespaceToType, other.namespaceToType), imports ++ other.imports)
   }
 
 }
 
 object CSharpProgramSummary {
+
+  // Although System is not included by default
+  // the types and their methods are exposed through autoboxing of primitives
+  def initialImports: Set[String] = Set("", "System")
+
+  def apply(namespaceToType: NamespaceToTypeMap = Map.empty, imports: Set[String] = Set.empty): CSharpProgramSummary =
+    new CSharpProgramSummary(namespaceToType, imports)
+
+  def apply(summaries: Iterable[CSharpProgramSummary]): CSharpProgramSummary =
+    summaries.foldLeft(CSharpProgramSummary())(_ ++ _)
 
   private val logger = LoggerFactory.getLogger(getClass)
 
@@ -65,6 +75,8 @@ object CSharpProgramSummary {
     /*
       Doing this because java actually cannot read directories from the classPath.
       We're assuming there's no further nesting in the builtin_types directory structure.
+      TODO: Once MessagePack types and compression is implemented for CSharp, the `resourcePaths` building can
+       be moved into `ProgramSummary` since all subclasses of it will need to do this to find builtin types
      */
     val resourcePaths: List[String] = Option(getClass.getClassLoader.getResource(builtinDirectory)) match {
       case Some(url) if url.getProtocol == "jar" =>
@@ -131,7 +143,8 @@ object CSharpProgramSummary {
 case class CSharpField(name: String, typeName: String) extends FieldLike derives ReadWriter
 
 case class CSharpMethod(name: String, returnType: String, parameterTypes: List[(String, String)], isStatic: Boolean)
-    extends MethodLike derives ReadWriter
+    extends MethodLike
+    with OverloadableMethod derives ReadWriter
 
 case class CSharpType(name: String, methods: List[CSharpMethod], fields: List[CSharpField])
     extends TypeLike[CSharpMethod, CSharpField] derives ReadWriter {
