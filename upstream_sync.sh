@@ -26,7 +26,7 @@ fi
 
 git fetch upstream
 
-git checkout "$BRANCH"
+git checkout -b "$BRANCH"
 git merge upstream/master
 git push origin "$BRANCH"
 
