@@ -1,8 +1,8 @@
 package io.joern.rubysrc2cpg.parser
 
 import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.*
-import io.joern.rubysrc2cpg.deprecated.passes.RubyImportResolverPass
 import io.joern.rubysrc2cpg.parser.AntlrContextHelpers.*
+import io.joern.rubysrc2cpg.parser.RubyParser.{CommandWithDoBlockContext, ConstantVariableReferenceContext}
 import io.joern.rubysrc2cpg.passes.Defines
 import io.joern.rubysrc2cpg.passes.Defines.getBuiltInType
 import io.joern.rubysrc2cpg.utils.FreshNameGenerator
@@ -128,8 +128,16 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
         val condition = visit(ctx.expressionOrCommand())
         val body      = visit(ctx.statement())
         DoWhileExpression(condition, body)(ctx.toTextSpan)
+      case "rescue" =>
+        val body       = visit(ctx.statement())
+        val thenClause = visit(ctx.expressionOrCommand())
+        val rescueClause =
+          RescueClause(Option.empty, Option.empty, thenClause)(ctx.toTextSpan)
+        val rescExp =
+          RescueExpression(body, List(rescueClause), Option.empty, Option.empty)(ctx.toTextSpan)
+        rescExp
       case _ =>
-        logger.warn(s"Unhandled modifier statement ${ctx.getClass}")
+        logger.warn(s"Unhandled modifier statement ${ctx.getClass} ${ctx.toTextSpan} ")
         Unknown()(ctx.toTextSpan)
   }
 
@@ -179,6 +187,13 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     } else {
       methodInvocation
     }
+  }
+
+  override def visitCommandWithDoBlock(ctx: CommandWithDoBlockContext): RubyNode = {
+    val name = Option(ctx.methodIdentifier()).orElse(Option(ctx.methodName())).map(visit).getOrElse(defaultResult())
+    val arguments = ctx.arguments.map(visit)
+    val block     = visit(ctx.doBlock()).asInstanceOf[Block]
+    SimpleCallWithBlock(name, arguments, block)(ctx.toTextSpan)
   }
 
   override def visitHereDocs(ctx: RubyParser.HereDocsContext): RubyNode = {
@@ -354,8 +369,17 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     if (ctx.isStatic) {
       StaticLiteral(getBuiltInType(Defines.Regexp))(ctx.toTextSpan)
     } else {
-      logger.warn(s"Unhandled regular expression literal '${ctx.toTextSpan}'")
-      Unknown()(ctx.toTextSpan)
+      DynamicLiteral(getBuiltInType(Defines.Regexp), ctx.interpolations.map(visit))(ctx.toTextSpan)
+    }
+  }
+
+  override def visitQuotedExpandedRegularExpressionLiteral(
+    ctx: RubyParser.QuotedExpandedRegularExpressionLiteralContext
+  ): RubyNode = {
+    if (ctx.isStatic) {
+      StaticLiteral(getBuiltInType(Defines.Regexp))(ctx.toTextSpan)
+    } else {
+      DynamicLiteral(getBuiltInType(Defines.Regexp), ctx.interpolations.map(visit))(ctx.toTextSpan)
     }
   }
 
@@ -719,6 +743,12 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
 
     logger.warn(s"MemberAccessExpression not handled: '${ctx.toTextSpan}'")
     Unknown()(ctx.toTextSpan)
+  }
+
+  override def visitConstantVariableReference(ctx: ConstantVariableReferenceContext): RubyNode = {
+    MemberAccess(SelfIdentifier()(ctx.toTextSpan.spanStart(Defines.Self)), "::", ctx.CONSTANT_IDENTIFIER().getText)(
+      ctx.toTextSpan
+    )
   }
 
   override def visitIndexingAccessExpression(ctx: RubyParser.IndexingAccessExpressionContext): RubyNode = {
@@ -1138,8 +1168,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     if (Option(ctx.operatorExpression()).isDefined) {
       visit(ctx.operatorExpression())
     } else {
-      logger.warn(s"Association keys without operator expressions are not handled '${ctx.toTextSpan}''")
-      Unknown()(ctx.toTextSpan)
+      SimpleIdentifier()(ctx.toTextSpan)
     }
   }
 

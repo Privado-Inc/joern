@@ -23,6 +23,7 @@ object Defines {
   val Proc: String       = "proc"
   val This: String       = "this"
   val Loop: String       = "loop"
+  val Self: String       = "self"
 
   val Program: String = ":program"
 
@@ -37,5 +38,6 @@ object Defines {
     val association     = "<operator>.association"
     val splat           = "<operator>.splat"
     val regexpMatch     = "=~"
+    val regexpNotMatch  = "!~"
   }
 }

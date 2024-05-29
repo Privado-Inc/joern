@@ -32,7 +32,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
             case xs => fail(s"Expected a two method nodes, instead got [${xs.code.mkString(", ")}]")
           }
 
-          inside(program.block.astChildren.collectAll[TypeDecl].l) {
+          inside(program.block.astChildren.collectAll[TypeDecl].isLambda.l) {
             case closureType :: Nil =>
               closureType.name shouldBe "<lambda>0"
               closureType.fullName shouldBe "Test0.rb:<global>::program:<lambda>0"
@@ -283,6 +283,25 @@ class DoBlockTests extends RubyCode2CpgFixture {
         case _ => fail("Expected parameter `**args` to exist")
       }
     }
+  }
+
+  "A command with do block and argument" should {
+
+    val cpg = code("""
+        |test_name 'Foo' do
+        | puts "a"
+        |end
+        |""".stripMargin)
+
+    "create a call `test_name` with a test name and lambda argument" in {
+      inside(cpg.call.nameExact("test_name").argument.l) {
+        case (_: Identifier) :: (testName: Literal) :: (testMethod: MethodRef) :: Nil =>
+          testName.code shouldBe "'Foo'"
+          testMethod.referencedMethod.call.nameExact("puts").nonEmpty shouldBe true
+        case xs => fail(s"Expected a literal and method ref argument, instead got $xs")
+      }
+    }
+
   }
 
 }
