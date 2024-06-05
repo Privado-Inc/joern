@@ -5,6 +5,7 @@ on:
   workflow_dispatch:    # allow to manually trigger this workflow
 jobs:
   sync_upstream:
+    permissions: write-all
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,4 +31,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create a PR from ${{ env.LATEST_TAG }} to sync
-        run: gh pr create -B sync -H ${{ env.LATEST_TAG }} --title 'Test PR' --body 'Created by Github action'
+        run: gh pr create --repo Privado-Inc/joern -B sync -H ${{ env.LATEST_TAG }} --title 'Test PR' --body 'Created by Github action'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
