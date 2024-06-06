@@ -12,10 +12,10 @@ import io.joern.x2cpg.{Ast, AstCreatorBase, ValidationMode, AstNodeBuilder as X2
 import io.shiftleft.codepropertygraph.generated.nodes.NewNode
 import io.shiftleft.codepropertygraph.generated.{ModifierTypes, NodeTypes}
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.BatchedUpdate.DiffGraphBuilder
 import ujson.Value
 
 import scala.collection.mutable
+import scala.collection.mutable.ArrayBuffer
 
 class AstCreator(
   val relPathFileName: String,
@@ -72,7 +72,7 @@ class AstCreator(
     val methodReturn = methodReturnNode(rootNode, Defines.anyTypeName)
     val declsAsts = rootNode
       .json(ParserKeys.Decls)
-      .arr
+      .arrOpt.getOrElse(ArrayBuffer.empty)
       .flatMap { item =>
         val node = createParserNodeInfo(item)
         astForNode(node, true)
