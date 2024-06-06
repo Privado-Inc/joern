@@ -72,7 +72,8 @@ class AstCreator(
     val methodReturn = methodReturnNode(rootNode, Defines.anyTypeName)
     val declsAsts = rootNode
       .json(ParserKeys.Decls)
-      .arrOpt.getOrElse(ArrayBuffer.empty)
+      .arrOpt
+      .getOrElse(ArrayBuffer.empty)
       .flatMap { item =>
         val node = createParserNodeInfo(item)
         astForNode(node, true)
