@@ -6,7 +6,7 @@ import io.joern.gosrc2cpg.astcreation.AstCreator
 import io.joern.gosrc2cpg.datastructures.GoGlobal
 import io.joern.gosrc2cpg.model.GoModHelper
 import io.joern.x2cpg.SourceFiles
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 import org.slf4j.LoggerFactory
 

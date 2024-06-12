@@ -204,8 +204,13 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
     val callNode = newOperatorCallNode(Operators.fieldAccess, expr.toString, someTypeFullName, line(expr), column(expr))
 
     val identifierType = typeInfoCalc.fullName(expr.getType)
-    val identifier = identifierNode(expr, expr.getTypeAsString, expr.getTypeAsString, identifierType.getOrElse("ANY"))
-    val idAst      = Ast(identifier)
+    val identifier = identifierNode(
+      expr,
+      Util.stripGenericTypes(expr.getTypeAsString),
+      expr.getTypeAsString,
+      identifierType.getOrElse("ANY")
+    )
+    val idAst = Ast(identifier)
 
     val fieldIdentifier = NewFieldIdentifier()
       .canonicalName("class")
@@ -319,7 +324,7 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
     val typeFullName = expressionReturnTypeFullName(expr).map(typeInfoCalc.registerType).getOrElse(TypeConstants.Any)
     val literalNode =
       NewLiteral()
-        .code(expr.toString)
+        .code(code(expr))
         .lineNumber(line(expr))
         .columnNumber(column(expr))
         .typeFullName(typeFullName)
@@ -388,8 +393,9 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
   private[expressions] def astForMethodReferenceExpr(expr: MethodReferenceExpr, expectedType: ExpectedType): Ast = {
     val typeFullName = expr.getScope match {
       case typeExpr: TypeExpr =>
+        val rawType = Util.stripGenericTypes(typeExpr.getTypeAsString)
         // JavaParser wraps the "type" scope of a MethodReferenceExpr in a TypeExpr, but this also catches variable names.
-        scope.lookupVariableOrType(typeExpr.getTypeAsString).orElse(expressionReturnTypeFullName(typeExpr))
+        scope.lookupVariableOrType(rawType).orElse(expressionReturnTypeFullName(typeExpr))
       case scopeExpr => expressionReturnTypeFullName(scopeExpr)
     }
 

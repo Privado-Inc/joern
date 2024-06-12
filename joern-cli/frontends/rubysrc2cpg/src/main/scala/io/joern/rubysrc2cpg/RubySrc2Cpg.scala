@@ -22,7 +22,7 @@ import io.joern.x2cpg.passes.callgraph.NaiveCallLinker
 import io.joern.x2cpg.passes.frontend.{MetaDataPass, TypeNodePass, XTypeRecoveryConfig}
 import io.joern.x2cpg.utils.{ConcurrentTaskUtil, ExternalCommand}
 import io.joern.x2cpg.{SourceFiles, X2CpgFrontend}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.Languages
 import io.shiftleft.passes.CpgPassBase
 import io.shiftleft.semanticcpg.language.*
@@ -64,7 +64,7 @@ class RubySrc2Cpg extends X2CpgFrontend[Config] {
           case Failure(exception) => logger.warn(s"Unable to pre-parse Ruby file, skipping - ", exception); None
           case Success(summary)   => Option(summary)
         }
-        .foldLeft(RubyProgramSummary(RubyProgramSummary.BuiltinTypes(config.typeStubMetaData)))(_ ++ _)
+        .foldLeft(RubyProgramSummary(RubyProgramSummary.BuiltinTypes(config.typeStubMetaData)))(_ ++= _)
 
       val programSummary = if (config.downloadDependencies) {
         DependencyDownloader(cpg, internalProgramSummary).download()

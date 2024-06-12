@@ -3,20 +3,28 @@ package io.joern.rubysrc2cpg.astcreation
 import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.*
 import io.joern.rubysrc2cpg.datastructures.{BlockScope, MethodScope, ModuleScope, TypeScope}
 import io.joern.rubysrc2cpg.passes.Defines
+import io.joern.x2cpg.utils.NodeBuilders.newModifierNode
 import io.joern.x2cpg.{Ast, ValidationMode, Defines as XDefines}
-import io.shiftleft.codepropertygraph.generated.nodes.{NewLocal, NewMethodParameterIn}
-import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EvaluationStrategies, Operators}
+import io.shiftleft.codepropertygraph.generated.nodes.{
+  NewCall,
+  NewFieldIdentifier,
+  NewIdentifier,
+  NewMethod,
+  NewTypeDecl,
+  NewTypeRef
+}
+import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EvaluationStrategies, ModifierTypes, Operators}
 
 import scala.collection.immutable.List
 
 trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
-  protected def astForClassDeclaration(node: RubyNode & TypeDeclaration): Ast = {
+  protected def astForClassDeclaration(node: RubyNode & TypeDeclaration): Seq[Ast] = {
     node.name match
       case name: SimpleIdentifier => astForSimpleNamedClassDeclaration(node, name)
       case name =>
         logger.warn(s"Qualified class names are not supported yet: ${name.text} ($relativeFileName), skipping")
-        astForUnknown(node)
+        astForUnknown(node) :: Nil
   }
 
   private def getBaseClassName(node: RubyNode): Option[String] = {
@@ -44,7 +52,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
   private def astForSimpleNamedClassDeclaration(
     node: RubyNode & TypeDeclaration,
     nameIdentifier: SimpleIdentifier
-  ): Ast = {
+  ): Seq[Ast] = {
     val className     = nameIdentifier.text
     val inheritsFrom  = node.baseClass.flatMap(getBaseClassName).toList
     val classFullName = computeClassFullName(className)
@@ -59,38 +67,108 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
       inherits = inheritsFrom,
       alias = None
     )
+    /*
+      In Ruby, there are semantic differences between the ordinary class and singleton class (think "meta" class in
+      Python). Similar to how Java allows both static and dynamic methods/fields/etc. within the same type declaration,
+      Ruby allows `self` methods and @@ fields to be defined alongside ordinary methods and @ fields. However, both
+      classes are more dynamic and have separate behaviours in Ruby and we model it as such.
 
-    node match {
-      case _: ModuleDeclaration => scope.pushNewScope(ModuleScope(classFullName))
-      case _: TypeDeclaration   => scope.pushNewScope(TypeScope(classFullName, List.empty))
+      To signify the singleton type, we add the <class> tag.
+     */
+    val singletonTypeDecl = typeDecl.copy
+      .name(s"$className<class>")
+      .fullName(s"$classFullName<class>")
+      .inheritsFromTypeFullName(inheritsFrom.map(x => s"$x<class>"))
+
+    val (typeDeclModifiers, singletonModifiers) = node match {
+      case _: ModuleDeclaration =>
+        scope.pushNewScope(ModuleScope(classFullName))
+        (
+          ModifierTypes.VIRTUAL :: Nil map newModifierNode map Ast.apply,
+          ModifierTypes.VIRTUAL :: ModifierTypes.FINAL :: Nil map newModifierNode map Ast.apply
+        )
+      case _: TypeDeclaration =>
+        scope.pushNewScope(TypeScope(classFullName, List.empty))
+        (
+          ModifierTypes.VIRTUAL :: Nil map newModifierNode map Ast.apply,
+          ModifierTypes.VIRTUAL :: Nil map newModifierNode map Ast.apply
+        )
     }
 
     val classBody =
       node.body.asInstanceOf[StatementList] // for now (bodyStatement is a superset of stmtList)
 
-    val classBodyAsts = classBody.statements.flatMap(astsForStatement) match {
+    val classBodyAsts = classBody.statements.flatMap {
+      case n: SingletonMethodDeclaration =>
+        val singletonMethodAst = astsForStatement(n)
+        // Create binding from singleton methods to singleton type decls
+        singletonMethodAst.flatMap(_.root).collectFirst { case n: NewMethod =>
+          createMethodTypeBindings(n, Ast(singletonTypeDecl) :: Nil)
+        }
+        // Method declaration remains in the normal type decl body
+        singletonMethodAst
+      case n => astsForStatement(n)
+    } match {
       case bodyAsts if scope.shouldGenerateDefaultConstructor && this.parseLevel == AstParseLevel.FULL_AST =>
-        val bodyStart = classBody.span.spanStart()
-        val initBody  = StatementList(List())(bodyStart)
-        val methodDecl = astForMethodDeclaration(
-          MethodDeclaration(XDefines.ConstructorMethodName, List(), initBody)(bodyStart)
-        )
+        val bodyStart  = classBody.span.spanStart()
+        val initBody   = StatementList(List())(bodyStart)
+        val methodDecl = astForMethodDeclaration(MethodDeclaration(Defines.Initialize, List(), initBody)(bodyStart))
         methodDecl ++ bodyAsts
       case bodyAsts => bodyAsts
     }
 
-    val fieldMemberNodes = node match {
+    val (fieldTypeMemberNodes, fieldSingletonMemberNodes) = node match {
       case classDecl: ClassDeclaration =>
-        classDecl.fields.map { x =>
-          val name = code(x)
-          Ast(memberNode(x, name, name, Defines.Any))
-        }
-      case _ => Seq.empty
+        classDecl.fields
+          .map { x =>
+            val name = code(x)
+            x.isInstanceOf[InstanceFieldIdentifier] -> Ast(memberNode(x, name, name, Defines.Any))
+          }
+          .partition(_._1)
+      case _ => Seq.empty -> Seq.empty
     }
 
     scope.popScope()
+    val prefixAst = createTypeRefPointer(typeDecl)
+    val typeDeclAst = Ast(typeDecl)
+      .withChildren(typeDeclModifiers)
+      .withChildren(fieldTypeMemberNodes.map(_._2))
+      .withChildren(classBodyAsts)
+    val singletonTypeDeclAst =
+      Ast(singletonTypeDecl).withChildren(singletonModifiers).withChildren(fieldSingletonMemberNodes.map(_._2))
 
-    Ast(typeDecl).withChildren(fieldMemberNodes).withChildren(classBodyAsts)
+    prefixAst :: typeDeclAst :: singletonTypeDeclAst :: Nil filterNot (_.root.isEmpty)
+  }
+
+  private def createTypeRefPointer(typeDecl: NewTypeDecl): Ast = {
+    if (scope.isSurroundedByProgramScope) {
+      val typeRefNode = Ast(
+        NewTypeRef()
+          .code(s"class ${typeDecl.name} (...)")
+          .typeFullName(typeDecl.fullName)
+          .lineNumber(typeDecl.lineNumber)
+          .columnNumber(typeDecl.columnNumber)
+      )
+
+      val typeRefIdent = {
+        val self = NewIdentifier().name(Defines.Self).code(Defines.Self).typeFullName(Defines.Any)
+        val fi = NewFieldIdentifier()
+          .code(typeDecl.name)
+          .canonicalName(typeDecl.name)
+          .lineNumber(typeDecl.lineNumber)
+          .columnNumber(typeDecl.columnNumber)
+        val fieldAccess = NewCall()
+          .name(Operators.fieldAccess)
+          .code(s"${Defines.Self}.${typeDecl.name}")
+          .methodFullName(Operators.fieldAccess)
+          .dispatchType(DispatchTypes.STATIC_DISPATCH)
+          .typeFullName(Defines.Any)
+        callAst(fieldAccess, Seq(Ast(self), Ast(fi)))
+      }
+      astForAssignment(typeRefIdent, typeRefNode, typeDecl.lineNumber, typeDecl.columnNumber)
+    } else {
+      Ast()
+    }
   }
 
   protected def astsForFieldDeclarations(node: FieldsDeclaration): Seq[Ast] = {
