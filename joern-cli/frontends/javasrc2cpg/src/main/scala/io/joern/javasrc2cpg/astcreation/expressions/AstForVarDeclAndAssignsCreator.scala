@@ -2,14 +2,14 @@ package io.joern.javasrc2cpg.astcreation.expressions
 
 import com.github.javaparser.ast.Node
 import com.github.javaparser.ast.`type`.ClassOrInterfaceType
-import com.github.javaparser.ast.body.VariableDeclarator
+import com.github.javaparser.ast.body.{FieldDeclaration, VariableDeclarator}
 import com.github.javaparser.ast.expr.AssignExpr.Operator
 import com.github.javaparser.ast.expr.{AssignExpr, Expression, ObjectCreationExpr, VariableDeclarationExpr}
 import com.github.javaparser.resolution.types.ResolvedType
 import io.joern.javasrc2cpg.astcreation.{AstCreator, ExpectedType}
 import io.joern.javasrc2cpg.scope.Scope.{NewVariableNode, typeFullName}
 import io.joern.javasrc2cpg.typesolvers.TypeInfoCalculator.TypeConstants
-import io.joern.javasrc2cpg.util.NameConstants
+import io.joern.javasrc2cpg.util.{NameConstants, Util}
 import io.joern.x2cpg.utils.AstPropertiesUtil.*
 import io.joern.x2cpg.Ast
 import io.shiftleft.codepropertygraph.generated.nodes.{
@@ -17,6 +17,7 @@ import io.shiftleft.codepropertygraph.generated.nodes.{
   NewCall,
   NewFieldIdentifier,
   NewIdentifier,
+  NewLocal,
   NewMember,
   NewUnknown
 }
@@ -112,7 +113,7 @@ trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
       case typ: ClassOrInterfaceType =>
         val typeParams = typ.getTypeArguments.toScala.map(_.asScala.flatMap(typeInfoCalc.fullName))
         (typ.getName.asString(), typeParams)
-      case _ => (variableDeclarator.getTypeAsString, None)
+      case _ => (Util.stripGenericTypes(variableDeclarator.getTypeAsString), None)
     }
 
     val typeFullName = tryWithSafeStackOverflow(
@@ -126,61 +127,70 @@ trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
       }
     }
 
-    val (correspondingNode, localAst): (NewVariableNode, Option[Ast]) =
-      scope.lookupVariable(variableDeclarator.getNameAsString).variableNode.map((_, None)).getOrElse {
-        val localCode = s"${variableDeclarator.getTypeAsString} ${variableDeclarator.getNameAsString}"
-        val local =
-          localNode(
-            originNode,
-            variableDeclarator.getNameAsString,
-            localCode,
-            typeFullName.getOrElse(TypeConstants.Any)
+    val variableName = variableDeclarator.getNameAsString
+    val declarationNode: Option[NewVariableNode] = if (originNode.isInstanceOf[FieldDeclaration]) {
+      scope.lookupVariable(variableName).variableNode
+    } else {
+      // Use type name with generics for code
+      val localCode = s"${variableDeclarator.getTypeAsString} ${variableDeclarator.getNameAsString}"
+
+      val local =
+        localNode(originNode, variableDeclarator.getNameAsString, localCode, typeFullName.getOrElse(TypeConstants.Any))
+
+      scope.enclosingBlock.foreach(_.addLocal(local))
+
+      Some(local)
+    }
+
+    declarationNode match {
+      case None =>
+        logger.warn(s"No declaration node found for declarator ${variableName}")
+        Nil
+
+      case Some(declarationNode) =>
+        val assignmentTarget = declarationNode match {
+          case member: NewMember =>
+            val name =
+              if (scope.isEnclosingScopeStatic)
+                scope.enclosingTypeDecl.map(_.typeDecl.name).getOrElse(NameConstants.Unknown)
+              else NameConstants.This
+            fieldAccessAst(
+              name,
+              scope.enclosingTypeDecl.fullName,
+              declarationNode.name,
+              Option(declarationNode.typeFullName),
+              line(originNode),
+              column(originNode)
+            )
+
+          case variable =>
+            val node = identifierNode(variableDeclarator, variable.name, variable.name, variable.typeFullName)
+            Ast(node).withRefEdge(node, declarationNode)
+        }
+
+        val assignmentAsts = variableDeclarator.getInitializer.toScala.toList.flatMap { initializer =>
+
+          val expectedType =
+            tryWithSafeStackOverflow(
+              symbolSolver.toResolvedType(variableDeclarator.getType, classOf[ResolvedType])
+            ).toOption
+
+          astsForAssignment(
+            variableDeclarator,
+            assignmentTarget,
+            initializer,
+            Operators.assignment,
+            "=",
+            ExpectedType(typeFullName, expectedType),
+            Some(Util.stripGenericTypes(variableDeclarator.getTypeAsString))
           )
+        }
 
-        scope.enclosingBlock.foreach(_.addLocal(local))
+        val localAst = Option.when(declarationNode.isInstanceOf[NewLocal])(Ast(declarationNode))
 
-        (local, Some(Ast(local)))
-      }
+        localAst.toList ++ assignmentAsts
 
-    val assignmentTarget = correspondingNode match {
-      case member: NewMember =>
-        val name =
-          if (scope.isEnclosingScopeStatic)
-            scope.enclosingTypeDecl.map(_.typeDecl.name).getOrElse(NameConstants.Unknown)
-          else NameConstants.This
-        fieldAccessAst(
-          name,
-          scope.enclosingTypeDecl.fullName,
-          correspondingNode.name,
-          Option(correspondingNode.typeFullName),
-          line(originNode),
-          column(originNode)
-        )
-
-      case variable =>
-        val node = identifierNode(variableDeclarator, variable.name, variable.name, variable.typeFullName)
-        Ast(node).withRefEdge(node, correspondingNode)
     }
-
-    val assignmentAsts = variableDeclarator.getInitializer.toScala.toList.flatMap { initializer =>
-
-      val expectedType =
-        tryWithSafeStackOverflow(
-          symbolSolver.toResolvedType(variableDeclarator.getType, classOf[ResolvedType])
-        ).toOption
-
-      astsForAssignment(
-        variableDeclarator,
-        assignmentTarget,
-        initializer,
-        Operators.assignment,
-        "=",
-        ExpectedType(typeFullName, expectedType),
-        Some(variableDeclarator.getTypeAsString)
-      )
-    }
-
-    localAst.toList ++ assignmentAsts
   }
 
   def astsForAssignment(

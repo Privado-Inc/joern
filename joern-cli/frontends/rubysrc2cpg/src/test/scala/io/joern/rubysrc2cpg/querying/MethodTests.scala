@@ -1,30 +1,53 @@
 package io.joern.rubysrc2cpg.querying
 
-import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
-import io.joern.x2cpg.Defines
 import io.joern.rubysrc2cpg.passes.Defines as RDefines
-import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, Operators}
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Identifier, Literal, MethodRef, Return, TypeRef}
+import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
+import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
+import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, NodeTypes, Operators}
 import io.shiftleft.semanticcpg.language.*
 
 class MethodTests extends RubyCode2CpgFixture {
 
-  "`def f(x) = 1` is represented by a METHOD node" in {
+  "`def f(x) = 1`" should {
     val cpg = code("""
-                     |def f(x) = 1
-                     |""".stripMargin)
+        |def f(x) = 1
+        |""".stripMargin)
 
-    val List(f) = cpg.method.name("f").l
+    "be represented by a METHOD node" in {
+      val List(f) = cpg.method.name("f").l
 
-    f.fullName shouldBe "Test0.rb:<global>::program:f"
-    f.isExternal shouldBe false
-    f.lineNumber shouldBe Some(2)
-    f.numberOfLines shouldBe 1
+      f.fullName shouldBe "Test0.rb:<global>::program:f"
+      f.isExternal shouldBe false
+      f.lineNumber shouldBe Some(2)
+      f.numberOfLines shouldBe 1
 
-    val List(x) = f.parameter.name("x").l
-    x.index shouldBe 1
-    x.isVariadic shouldBe false
-    x.lineNumber shouldBe Some(2)
+      val List(x) = f.parameter.name("x").l
+      x.index shouldBe 1
+      x.isVariadic shouldBe false
+      x.lineNumber shouldBe Some(2)
+    }
+
+    "have a corresponding bound type" in {
+      val List(fType) = cpg.typeDecl("f").l
+      fType.fullName shouldBe "Test0.rb:<global>::program:f"
+      fType.code shouldBe "def f(x) = 1"
+      fType.astParentFullName shouldBe "Test0.rb:<global>::program:f"
+      fType.astParentType shouldBe NodeTypes.METHOD
+      val List(fMethod) = fType.iterator.boundMethod.l
+      fType.fullName shouldBe "Test0.rb:<global>::program:f"
+    }
+
+    "create a 'fake' method for the file" in {
+      val List(m) = cpg.method.nameExact(RDefines.Program).l
+      m.fullName shouldBe "Test0.rb:<global>::program"
+      m.isModule.nonEmpty shouldBe true
+
+      val List(t) = cpg.typeDecl.nameExact(RDefines.Program).l
+      m.fullName shouldBe "Test0.rb:<global>::program"
+      m.isModule.nonEmpty shouldBe true
+      t.methodBinding.methodFullName.toSet should contain(m.fullName)
+    }
   }
 
   "`def f ... return 1 ... end` is represented by a METHOD node" in {
@@ -174,7 +197,7 @@ class MethodTests extends RubyCode2CpgFixture {
           case funcF :: Nil =>
             inside(funcF.parameter.l) {
               case thisParam :: xParam :: Nil =>
-                thisParam.code shouldBe "this"
+                thisParam.code shouldBe RDefines.Self
                 thisParam.typeFullName shouldBe "Test0.rb:<global>::program.C"
                 thisParam.index shouldBe 0
                 thisParam.isVariadic shouldBe false
@@ -208,7 +231,7 @@ class MethodTests extends RubyCode2CpgFixture {
           case funcF :: Nil =>
             inside(funcF.parameter.l) {
               case thisParam :: xParam :: Nil =>
-                thisParam.code shouldBe "this"
+                thisParam.code shouldBe RDefines.Self
                 thisParam.typeFullName shouldBe "Test0.rb:<global>::program.C"
                 thisParam.index shouldBe 0
                 thisParam.isVariadic shouldBe false
@@ -240,7 +263,7 @@ class MethodTests extends RubyCode2CpgFixture {
           xs.name shouldBe "xs"
           xs.code shouldBe "*xs"
           xs.isVariadic shouldBe true
-          xs.typeFullName shouldBe "__builtin.Array"
+          xs.typeFullName shouldBe s"$kernelPrefix.Array"
         case xs => fail(s"Expected `foo` to have one parameter, got [${xs.code.mkString(", ")}]")
       }
     }
@@ -251,7 +274,7 @@ class MethodTests extends RubyCode2CpgFixture {
           ys.name shouldBe "ys"
           ys.code shouldBe "**ys"
           ys.isVariadic shouldBe true
-          ys.typeFullName shouldBe "__builtin.Hash"
+          ys.typeFullName shouldBe s"$kernelPrefix.Hash"
         case xs => fail(s"Expected `foo` to have one parameter, got [${xs.code.mkString(", ")}]")
       }
     }
@@ -284,7 +307,7 @@ class MethodTests extends RubyCode2CpgFixture {
     "create a method under `Foo` for both `x=`, `x`, and `bar=`, where `bar=` forwards parameters to a call to `x=`" in {
       inside(cpg.typeDecl("Foo").l) {
         case foo :: Nil =>
-          inside(foo.method.nameNot(Defines.ConstructorMethodName, Defines.StaticInitMethodName).l) {
+          inside(foo.method.nameNot(RDefines.Initialize).l) {
             case xeq :: x :: bar :: Nil =>
               xeq.name shouldBe "x="
               x.name shouldBe "x"
@@ -351,6 +374,11 @@ class MethodTests extends RubyCode2CpgFixture {
           }
         case xs => fail(s"Expected bar and baz to exist under F, instead got ${xs.code.mkString(", ")}")
       }
+    }
+
+    "have bindings to the singleton module TYPE_DECL" in {
+      // Note: we cannot bind baz as this is a dynamic assignment to `F` which is trickier to determine
+      cpg.typeDecl.name("F<class>").methodBinding.methodFullName.l shouldBe List("Test0.rb:<global>::program.F:bar")
     }
 
     "baz should not exist in the :program block" in {
@@ -571,29 +599,32 @@ class MethodTests extends RubyCode2CpgFixture {
     "be directly under :program" in {
       inside(cpg.method.name(RDefines.Program).filename("t1.rb").assignment.l) {
         case moduleAssignment :: classAssignment :: methodAssignment :: Nil =>
-          moduleAssignment.code shouldBe "A = class t1.rb:<global>::program.A (...)"
-          classAssignment.code shouldBe "B = class t1.rb:<global>::program.B (...)"
-          methodAssignment.code shouldBe "c = def c (...)"
+          moduleAssignment.code shouldBe "self.A = class A (...)"
+          classAssignment.code shouldBe "self.B = class B (...)"
+          methodAssignment.code shouldBe "self.c = def c (...)"
 
           inside(moduleAssignment.argument.l) {
-            case (lhs: Identifier) :: (rhs: TypeRef) :: Nil =>
-              lhs.name shouldBe "A"
+            case (lhs: Call) :: (rhs: TypeRef) :: Nil =>
+              lhs.code shouldBe "self.A"
+              lhs.name shouldBe Operators.fieldAccess
               rhs.typeFullName shouldBe "t1.rb:<global>::program.A"
             case xs => fail(s"Expected lhs and rhs, instead got ${xs.code.mkString(",")}")
           }
 
           inside(classAssignment.argument.l) {
-            case (lhs: Identifier) :: (rhs: TypeRef) :: Nil =>
-              lhs.name shouldBe "B"
+            case (lhs: Call) :: (rhs: TypeRef) :: Nil =>
+              lhs.code shouldBe "self.B"
+              lhs.name shouldBe Operators.fieldAccess
               rhs.typeFullName shouldBe "t1.rb:<global>::program.B"
             case xs => fail(s"Expected lhs and rhs, instead got ${xs.code.mkString(",")}")
           }
 
           inside(methodAssignment.argument.l) {
-            case (lhs: Identifier) :: (rhs: MethodRef) :: Nil =>
-              lhs.name shouldBe "c"
+            case (lhs: Call) :: (rhs: MethodRef) :: Nil =>
+              lhs.code shouldBe "self.c"
+              lhs.name shouldBe Operators.fieldAccess
               rhs.methodFullName shouldBe "t1.rb:<global>::program:c"
-              rhs.typeFullName shouldBe RDefines.Any
+              rhs.typeFullName shouldBe "t1.rb:<global>::program:c"
             case xs => fail(s"Expected lhs and rhs, instead got ${xs.code.mkString(",")}")
           }
 
@@ -604,25 +635,37 @@ class MethodTests extends RubyCode2CpgFixture {
     "not be present in other files" in {
       inside(cpg.method.name(RDefines.Program).filename("t2.rb").assignment.l) {
         case classAssignment :: methodAssignment :: Nil =>
-          classAssignment.code shouldBe "D = class t2.rb:<global>::program.D (...)"
-          methodAssignment.code shouldBe "e = def e (...)"
+          classAssignment.code shouldBe "self.D = class D (...)"
+          methodAssignment.code shouldBe "self.e = def e (...)"
 
           inside(classAssignment.argument.l) {
-            case (lhs: Identifier) :: (rhs: TypeRef) :: Nil =>
-              lhs.name shouldBe "D"
+            case (lhs: Call) :: (rhs: TypeRef) :: Nil =>
+              lhs.code shouldBe "self.D"
+              lhs.name shouldBe Operators.fieldAccess
               rhs.typeFullName shouldBe "t2.rb:<global>::program.D"
             case xs => fail(s"Expected lhs and rhs, instead got ${xs.code.mkString(",")}")
           }
 
           inside(methodAssignment.argument.l) {
-            case (lhs: Identifier) :: (rhs: MethodRef) :: Nil =>
-              lhs.name shouldBe "e"
+            case (lhs: Call) :: (rhs: MethodRef) :: Nil =>
+              lhs.code shouldBe "self.e"
+              lhs.name shouldBe Operators.fieldAccess
               rhs.methodFullName shouldBe "t2.rb:<global>::program:e"
-              rhs.typeFullName shouldBe RDefines.Any
+              rhs.typeFullName shouldBe "t2.rb:<global>::program:e"
             case xs => fail(s"Expected lhs and rhs, instead got ${xs.code.mkString(",")}")
           }
 
         case xs => fail(s"Expected two assignments, got [${xs.code.mkString(",")}]")
+      }
+    }
+
+    "be placed directly before each entity's definition" in {
+      inside(cpg.method.name(RDefines.Program).filename("t1.rb").block.astChildren.l) {
+        case (a1: Call) :: (_: TypeDecl) :: (_: TypeDecl) :: (a2: Call) :: (_: TypeDecl) :: (_: TypeDecl) :: (a3: Call) :: (_: Method) :: (_: TypeDecl) :: Nil =>
+          a1.code shouldBe "self.A = class A (...)"
+          a2.code shouldBe "self.B = class B (...)"
+          a3.code shouldBe "self.c = def c (...)"
+        case xs => fail(s"Expected assignments to appear before definitions, instead got [$xs]")
       }
     }
   }

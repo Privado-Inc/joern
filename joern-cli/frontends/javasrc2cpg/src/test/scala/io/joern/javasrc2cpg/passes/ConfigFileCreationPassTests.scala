@@ -3,7 +3,7 @@ package io.joern.javasrc2cpg.passes
 import better.files.File
 import io.joern.javasrc2cpg.testfixtures.JavaSrcCode2CpgFixture
 import io.joern.x2cpg.passes.frontend.JavaConfigFileCreationPass
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.NewMetaData
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.utils.ProjectRoot
@@ -41,7 +41,8 @@ class ConfigFileCreationPassTests extends JavaSrcCode2CpgFixture {
       Paths.get(absoluteConfigDir, "basic.yaml").toString,
       Paths.get(absoluteConfigDir, "basic.yml").toString,
       Paths.get(absoluteConfigDir, "hibernate.cfg.xml").toString,
-      Paths.get(absoluteConfigDir, "persistence.xml").toString
+      Paths.get(absoluteConfigDir, "persistence.xml").toString,
+      Paths.get(absoluteConfigDir, "pom.xml").toString
     )
   }
 

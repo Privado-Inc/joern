@@ -2,6 +2,7 @@ package io.joern.rubysrc2cpg.querying
 
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.joern.x2cpg.Defines
+import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 
@@ -32,7 +33,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
             case xs => fail(s"Expected a two method nodes, instead got [${xs.code.mkString(", ")}]")
           }
 
-          inside(program.block.astChildren.collectAll[TypeDecl].l) {
+          inside(program.block.astChildren.collectAll[TypeDecl].isLambda.l) {
             case closureType :: Nil =>
               closureType.name shouldBe "<lambda>0"
               closureType.fullName shouldBe "Test0.rb:<global>::program:<lambda>0"
@@ -109,7 +110,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
     }
 
     "have the call under the closure" in {
-      inside(cpg.method("<lambda>0").call.l) {
+      inside(cpg.method("<lambda>0").call.nameExact("puts").l) {
         case puts :: Nil =>
           puts.name shouldBe "puts"
           puts.code shouldBe "puts item"
@@ -173,7 +174,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
     }
 
     "have the calls under the closure" in {
-      inside(cpg.method("<lambda>0").call.l) {
+      inside(cpg.method("<lambda>0").call.nameExact("puts").l) {
         case puts1 :: puts2 :: Nil =>
           puts1.name shouldBe "puts"
           puts1.code shouldBe "puts key"
@@ -249,8 +250,8 @@ class DoBlockTests extends RubyCode2CpgFixture {
               tmpLocal.name shouldBe "<tmp-0>"
               tmpAssign.code shouldBe "<tmp-0> = Array.new(x) { |i| i += 1 }"
 
-              newCall.name shouldBe Defines.ConstructorMethodName
-              newCall.methodFullName shouldBe "__builtin.Array:<init>"
+              newCall.name shouldBe "new"
+              newCall.methodFullName shouldBe s"$kernelPrefix.Array:initialize"
 
               inside(newCall.argument.l) {
                 case (_: Identifier) :: (x: Identifier) :: (closure: MethodRef) :: Nil =>
@@ -283,6 +284,25 @@ class DoBlockTests extends RubyCode2CpgFixture {
         case _ => fail("Expected parameter `**args` to exist")
       }
     }
+  }
+
+  "A command with do block and argument" should {
+
+    val cpg = code("""
+        |test_name 'Foo' do
+        | puts "a"
+        |end
+        |""".stripMargin)
+
+    "create a call `test_name` with a test name and lambda argument" in {
+      inside(cpg.call.nameExact("test_name").argument.l) {
+        case (_: Identifier) :: (testName: Literal) :: (testMethod: MethodRef) :: Nil =>
+          testName.code shouldBe "'Foo'"
+          testMethod.referencedMethod.call.nameExact("puts").nonEmpty shouldBe true
+        case xs => fail(s"Expected a literal and method ref argument, instead got $xs")
+      }
+    }
+
   }
 
 }

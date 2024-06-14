@@ -11,16 +11,18 @@ import io.joern.rubysrc2cpg.passes.{
   ConfigFileCreationPass,
   DependencyPass,
   ImplicitRequirePass,
-  ImportsPass
+  ImportsPass,
+  RubyImportResolverPass,
+  RubyTypeHintCallLinker
 }
 import io.joern.rubysrc2cpg.utils.DependencyDownloader
 import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
 import io.joern.x2cpg.passes.base.AstLinkerPass
 import io.joern.x2cpg.passes.callgraph.NaiveCallLinker
-import io.joern.x2cpg.passes.frontend.{MetaDataPass, TypeNodePass}
+import io.joern.x2cpg.passes.frontend.{MetaDataPass, TypeNodePass, XTypeRecoveryConfig}
 import io.joern.x2cpg.utils.{ConcurrentTaskUtil, ExternalCommand}
 import io.joern.x2cpg.{SourceFiles, X2CpgFrontend}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.Languages
 import io.shiftleft.passes.CpgPassBase
 import io.shiftleft.semanticcpg.language.*
@@ -62,7 +64,7 @@ class RubySrc2Cpg extends X2CpgFrontend[Config] {
           case Failure(exception) => logger.warn(s"Unable to pre-parse Ruby file, skipping - ", exception); None
           case Success(summary)   => Option(summary)
         }
-        .foldLeft(RubyProgramSummary(RubyProgramSummary.BuiltinTypes(config.typeStubMetaData)))(_ ++ _)
+        .foldLeft(RubyProgramSummary(RubyProgramSummary.BuiltinTypes(config.typeStubMetaData)))(_ ++= _)
 
       val programSummary = if (config.downloadDependencies) {
         DependencyDownloader(cpg, internalProgramSummary).download()
@@ -160,7 +162,9 @@ object RubySrc2Cpg {
           new AstLinkerPass(cpg)
         )
     } else {
-      List()
+      List(new RubyImportResolverPass(cpg)) ++
+        new passes.RubyTypeRecoveryPassGenerator(cpg, config = XTypeRecoveryConfig(iterations = 4))
+          .generate() ++ List(new RubyTypeHintCallLinker(cpg), new NaiveCallLinker(cpg), new AstLinkerPass(cpg))
     }
   }
 
@@ -178,7 +182,7 @@ object RubySrc2Cpg {
         ignoredFilesPath = Option(config.ignoredFiles)
       )
       .map { fileName => () =>
-        resourceManagedParser.parse(fileName) match {
+        resourceManagedParser.parse(File(config.inputPath), fileName) match {
           case Failure(exception) => throw exception
           case Success(ctx)       => new AstCreator(fileName, ctx, projectRoot)(config.schemaValidation)
         }

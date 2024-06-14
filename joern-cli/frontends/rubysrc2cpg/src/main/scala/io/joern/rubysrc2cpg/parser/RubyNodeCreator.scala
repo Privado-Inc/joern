@@ -1,8 +1,8 @@
 package io.joern.rubysrc2cpg.parser
 
 import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.*
-import io.joern.rubysrc2cpg.deprecated.passes.RubyImportResolverPass
 import io.joern.rubysrc2cpg.parser.AntlrContextHelpers.*
+import io.joern.rubysrc2cpg.parser.RubyParser.{CommandWithDoBlockContext, ConstantVariableReferenceContext}
 import io.joern.rubysrc2cpg.passes.Defines
 import io.joern.rubysrc2cpg.passes.Defines.getBuiltInType
 import io.joern.rubysrc2cpg.utils.FreshNameGenerator
@@ -57,13 +57,13 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   }
 
   override def visitWhileExpression(ctx: RubyParser.WhileExpressionContext): RubyNode = {
-    val condition = visit(ctx.commandOrPrimaryValue())
+    val condition = visit(ctx.expressionOrCommand())
     val body      = visit(ctx.doClause())
     WhileExpression(condition, body)(ctx.toTextSpan)
   }
 
   override def visitUntilExpression(ctx: RubyParser.UntilExpressionContext): RubyNode = {
-    val condition = visit(ctx.commandOrPrimaryValue())
+    val condition = visit(ctx.expressionOrCommand())
     val body      = visit(ctx.doClause())
     UntilExpression(condition, body)(ctx.toTextSpan)
   }
@@ -73,7 +73,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   }
 
   override def visitIfExpression(ctx: RubyParser.IfExpressionContext): RubyNode = {
-    val condition = visit(ctx.commandOrPrimaryValue())
+    val condition = visit(ctx.expressionOrCommand())
     val thenBody  = visit(ctx.thenClause())
     val elsifs    = ctx.elsifClause().asScala.map(visit).toList
     val elseBody  = Option(ctx.elseClause()).map(visit)
@@ -89,7 +89,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   }
 
   override def visitUnlessExpression(ctx: RubyParser.UnlessExpressionContext): RubyNode = {
-    val condition = visit(ctx.commandOrPrimaryValue())
+    val condition = visit(ctx.expressionOrCommand())
     val thenBody  = visit(ctx.thenClause())
     val elseBody  = Option(ctx.elseClause()).map(visit)
     UnlessExpression(condition, thenBody, elseBody)(ctx.toTextSpan)
@@ -128,8 +128,16 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
         val condition = visit(ctx.expressionOrCommand())
         val body      = visit(ctx.statement())
         DoWhileExpression(condition, body)(ctx.toTextSpan)
+      case "rescue" =>
+        val body       = visit(ctx.statement())
+        val thenClause = visit(ctx.expressionOrCommand())
+        val rescueClause =
+          RescueClause(Option.empty, Option.empty, thenClause)(ctx.toTextSpan)
+        val rescExp =
+          RescueExpression(body, List(rescueClause), Option.empty, Option.empty)(ctx.toTextSpan)
+        rescExp
       case _ =>
-        logger.warn(s"Unhandled modifier statement ${ctx.getClass}")
+        logger.warn(s"Unhandled modifier statement ${ctx.getClass} ${ctx.toTextSpan} ")
         Unknown()(ctx.toTextSpan)
   }
 
@@ -179,6 +187,13 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     } else {
       methodInvocation
     }
+  }
+
+  override def visitCommandWithDoBlock(ctx: CommandWithDoBlockContext): RubyNode = {
+    val name = Option(ctx.methodIdentifier()).orElse(Option(ctx.methodName())).map(visit).getOrElse(defaultResult())
+    val arguments = ctx.arguments.map(visit)
+    val block     = visit(ctx.doBlock()).asInstanceOf[Block]
+    SimpleCallWithBlock(name, arguments, block)(ctx.toTextSpan)
   }
 
   override def visitHereDocs(ctx: RubyParser.HereDocsContext): RubyNode = {
@@ -354,8 +369,17 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     if (ctx.isStatic) {
       StaticLiteral(getBuiltInType(Defines.Regexp))(ctx.toTextSpan)
     } else {
-      logger.warn(s"Unhandled regular expression literal '${ctx.toTextSpan}'")
-      Unknown()(ctx.toTextSpan)
+      DynamicLiteral(getBuiltInType(Defines.Regexp), ctx.interpolations.map(visit))(ctx.toTextSpan)
+    }
+  }
+
+  override def visitQuotedExpandedRegularExpressionLiteral(
+    ctx: RubyParser.QuotedExpandedRegularExpressionLiteralContext
+  ): RubyNode = {
+    if (ctx.isStatic) {
+      StaticLiteral(getBuiltInType(Defines.Regexp))(ctx.toTextSpan)
+    } else {
+      DynamicLiteral(getBuiltInType(Defines.Regexp), ctx.interpolations.map(visit))(ctx.toTextSpan)
     }
   }
 
@@ -522,9 +546,11 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
       val arguments     = ctx.commandArgument().arguments.map(visit)
       (identifierCtx.getText, arguments) match {
         case ("require", List(argument)) =>
-          RequireCall(visit(identifierCtx), argument, false)(ctx.toTextSpan)
+          RequireCall(visit(identifierCtx), argument)(ctx.toTextSpan)
         case ("require_relative", List(argument)) =>
           RequireCall(visit(identifierCtx), argument, true)(ctx.toTextSpan)
+        case ("require_all", List(argument)) =>
+          RequireCall(visit(identifierCtx), argument, true, true)(ctx.toTextSpan)
         case ("include", List(argument)) =>
           IncludeCall(visit(identifierCtx), argument)(ctx.toTextSpan)
         case (idAssign, arguments) if idAssign.endsWith("=") =>
@@ -609,6 +635,13 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   ): RubyNode = {
     val arguments = ctx.primaryValueList().primaryValue().asScala.map(visit).toList
     YieldExpr(arguments)(ctx.toTextSpan)
+  }
+
+  override def visitMemberAccessCommand(ctx: RubyParser.MemberAccessCommandContext): RubyNode = {
+    val arg        = visit(ctx.commandArgument())
+    val methodName = visit(ctx.methodName())
+    val base       = visit(ctx.primary())
+    MemberCall(base, ".", methodName.text, List(arg))(ctx.toTextSpan)
   }
 
   override def visitConstantIdentifierVariable(ctx: RubyParser.ConstantIdentifierVariableContext): RubyNode = {
@@ -717,6 +750,12 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
 
     logger.warn(s"MemberAccessExpression not handled: '${ctx.toTextSpan}'")
     Unknown()(ctx.toTextSpan)
+  }
+
+  override def visitConstantVariableReference(ctx: ConstantVariableReferenceContext): RubyNode = {
+    MemberAccess(SelfIdentifier()(ctx.toTextSpan.spanStart(Defines.Self)), "::", ctx.CONSTANT_IDENTIFIER().getText)(
+      ctx.toTextSpan
+    )
   }
 
   override def visitIndexingAccessExpression(ctx: RubyParser.IndexingAccessExpressionContext): RubyNode = {
@@ -848,16 +887,13 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
 
         val (instanceFieldsInMethodDecls, classFieldsInMethodDecls) = partitionRubyFields(fieldsInMethodDecls)
 
-        val initializeMethod = methodDecls.collectFirst { x =>
-          x.methodName match
-            case "initialize" => x
-        }
+        val initializeMethod = methodDecls.collectFirst { case x if x.methodName == Defines.Initialize => x }
 
         val initStmtListStatements = genSingleAssignmentStmtList(instanceFields, instanceFieldsInMethodDecls)
         val clinitStmtList         = genSingleAssignmentStmtList(classFields, classFieldsInMethodDecls)
 
         val clinitMethod =
-          MethodDeclaration(XDefines.StaticInitMethodName, List.empty, StatementList(clinitStmtList)(stmtList.span))(
+          MethodDeclaration(Defines.InitializeClass, List.empty, StatementList(clinitStmtList)(stmtList.span))(
             stmtList.span
           )
 
@@ -875,7 +911,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
             }
           case None =>
             val newInitMethod =
-              MethodDeclaration("initialize", List.empty, StatementList(initStmtListStatements)(stmtList.span))(
+              MethodDeclaration(Defines.Initialize, List.empty, StatementList(initStmtListStatements)(stmtList.span))(
                 stmtList.span
               )
             val initializers = newInitMethod :: clinitMethod :: Nil
@@ -1081,10 +1117,11 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   }
 
   override def visitBodyStatement(ctx: RubyParser.BodyStatementContext): RubyNode = {
-    val body          = visit(ctx.compoundStatement())
-    val rescueClauses = Option(ctx.rescueClause.asScala).fold(List())(_.map(visit).toList)
-    val elseClause    = Option(ctx.elseClause).map(visit)
-    val ensureClause  = Option(ctx.ensureClause).map(visit)
+    val body = visit(ctx.compoundStatement())
+    val rescueClauses =
+      Option(ctx.rescueClause.asScala).fold(List())(_.map(visit).toList).collect { case x: RescueClause => x }
+    val elseClause   = Option(ctx.elseClause).map(visit).collect { case x: ElseClause => x }
+    val ensureClause = Option(ctx.ensureClause).map(visit).collect { case x: EnsureClause => x }
 
     if (rescueClauses.isEmpty && elseClause.isEmpty && ensureClause.isEmpty) {
       visit(ctx.compoundStatement())
@@ -1094,16 +1131,14 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   }
 
   override def visitExceptionClassList(ctx: RubyParser.ExceptionClassListContext): RubyNode = {
-    // Requires implementing multiple rhs with splatting
-    logger.warn(s"Exception class lists are not handled: '${ctx.toTextSpan}'")
-    Unknown()(ctx.toTextSpan)
+    Option(ctx.multipleRightHandSide()).map(visitMultipleRightHandSide).getOrElse(visit(ctx.operatorExpression()))
   }
 
   override def visitRescueClause(ctx: RubyParser.RescueClauseContext): RubyNode = {
     val exceptionClassList = Option(ctx.exceptionClassList).map(visit)
-    val elseClause         = Option(ctx.exceptionVariableAssignment).map(visit)
+    val variables          = Option(ctx.exceptionVariableAssignment).map(visit)
     val thenClause         = visit(ctx.thenClause)
-    RescueClause(exceptionClassList, elseClause, thenClause)(ctx.toTextSpan)
+    RescueClause(exceptionClassList, variables, thenClause)(ctx.toTextSpan)
   }
 
   override def visitEnsureClause(ctx: RubyParser.EnsureClauseContext): RubyNode = {
@@ -1111,7 +1146,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   }
 
   override def visitCaseWithExpression(ctx: RubyParser.CaseWithExpressionContext): RubyNode = {
-    val expression  = Option(ctx.commandOrPrimaryValue()).map(visit)
+    val expression  = Option(ctx.expressionOrCommand()).map(visit)
     val whenClauses = Option(ctx.whenClause().asScala).fold(List())(_.map(visit).toList)
     val elseClause  = Option(ctx.elseClause()).map(visit)
     CaseExpression(expression, whenClauses, elseClause)(ctx.toTextSpan)
@@ -1137,8 +1172,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     if (Option(ctx.operatorExpression()).isDefined) {
       visit(ctx.operatorExpression())
     } else {
-      logger.warn(s"Association keys without operator expressions are not handled '${ctx.toTextSpan}''")
-      Unknown()(ctx.toTextSpan)
+      SimpleIdentifier()(ctx.toTextSpan)
     }
   }
 

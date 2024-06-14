@@ -1,9 +1,8 @@
 package io.joern.x2cpg.passes.frontend
 
 import io.joern.x2cpg.{Defines, X2CpgConfig}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.{Cpg, DispatchTypes, EdgeTypes, NodeTypes, Operators, PropertyNames}
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes, Operators, PropertyNames}
 import io.shiftleft.passes.{CpgPass, CpgPassBase, ForkJoinParallelCpgPass}
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.importresolver.*
@@ -965,7 +964,8 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
       .foreach {
         case x: Local if symbolTable.contains(x) => storeNodeTypeInfo(x, symbolTable.get(x).toSeq)
         case x: MethodParameterIn                => setTypeFromTypeHints(x)
-        case x: MethodReturn                     => setTypeFromTypeHints(x)
+        case x: MethodReturn =>
+          setTypeFromTypeHints(x)
         case x: Identifier if symbolTable.contains(x) =>
           setTypeInformationForRecCall(x, x.inCall.headOption, x.inCall.argument.l)
         case x: Call if symbolTable.contains(x) =>
@@ -998,7 +998,11 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
         setTypeForIdentifierAssignedToDefault(call, i)
       // Case 2: 'i' is the receiver of 'call'
       case (Some(call: Call), ::(i: Identifier, _)) if call.name != Operators.fieldAccess =>
-        setTypeForDynamicDispatchCall(call, i)
+        (i.argumentIndex, call.dispatchType) match {
+          case (0, DispatchTypes.DYNAMIC_DISPATCH) => setTypeForDynamicDispatchCall(call, i)
+          case (1, DispatchTypes.STATIC_DISPATCH)  => setTypeForStaticDispatchCall(call, i)
+          case _                                   =>
+        }
       // Case 3: 'i' is the receiver for a field access on member 'f'
       case (Some(fieldAccess: Call), ::(i: Identifier, ::(f: FieldIdentifier, _)))
           if fieldAccess.name == Operators.fieldAccess =>
@@ -1038,6 +1042,11 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
     }
   }
 
+  protected def setTypeForStaticDispatchCall(call: Call, i: Identifier): Unit = {
+    // TODO: Should it have special handling?
+    setTypeForDynamicDispatchCall(call, i)
+  }
+
   protected def setTypeForIdentifierAssignedToDefault(call: Call, i: Identifier): Unit = {
     val idHints = symbolTable.get(i)
     persistType(i, idHints)
@@ -1060,7 +1069,8 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
 
   protected def setTypeFromTypeHints(n: StoredNode): Unit = {
     val types = n.getKnownTypes.filterNot(XTypeRecovery.isDummyType)
-    if (types.nonEmpty) setTypes(n, types.toSeq)
+    if (types.nonEmpty)
+      setTypes(n, types.toSeq)
   }
 
   /** In the case this field access is a function pointer, we would want to make sure this has a method ref.
@@ -1185,7 +1195,11 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
   private def storeNodeTypeInfo(storedNode: StoredNode, types: Seq[String]): Unit = {
     lazy val existingTypes = storedNode.getKnownTypes
 
-    if (types.nonEmpty && types.toSet != existingTypes) {
+    val hasUnknownTypeFullName = storedNode
+      .property(PropertyNames.TYPE_FULL_NAME, Defines.Any)
+      .matches(XTypeRecovery.unknownTypePattern.pattern.pattern())
+
+    if (types.nonEmpty && (hasUnknownTypeFullName || types.toSet != existingTypes)) {
       storedNode match {
         case m: Member =>
           // To avoid overwriting member updates, we store them elsewhere until the end
@@ -1220,7 +1234,10 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
   /** Allows one to modify the types assigned to nodes otherwise.
     */
   protected def storeDefaultTypeInfo(n: StoredNode, types: Seq[String]): Unit =
-    if (types.toSet != n.getKnownTypes) {
+    val hasUnknownType =
+      n.property(PropertyNames.TYPE_FULL_NAME, Defines.Any).matches(XTypeRecovery.unknownTypePattern.pattern.pattern())
+
+    if (types.toSet != n.getKnownTypes || (hasUnknownType && types.nonEmpty)) {
       setTypes(n, (n.property(PropertyNames.DYNAMIC_TYPE_HINT_FULL_NAME, Seq.empty) ++ types).distinct)
     }
 

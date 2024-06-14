@@ -2,7 +2,7 @@ package io.joern.gosrc2cpg.passes
 
 import io.joern.gosrc2cpg.astcreation.AstCreator
 import io.joern.x2cpg.utils.{Report, TimeUtils}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.passes.ConcurrentWriterCpgPass
 import io.shiftleft.utils.IOUtils
 import org.slf4j.{Logger, LoggerFactory}

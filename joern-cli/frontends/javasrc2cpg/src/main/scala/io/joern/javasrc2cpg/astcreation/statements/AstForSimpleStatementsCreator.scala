@@ -56,7 +56,7 @@ trait AstForSimpleStatementsCreator { this: AstCreator =>
 
     val typeFullName = maybeResolved.toOption
       .map(_.declaringType())
-      .flatMap(typ => scope.lookupType(typ.getName()).orElse(typeInfoCalc.fullName(typ)))
+      .flatMap(typ => scope.lookupType(typ.getName).orElse(typeInfoCalc.fullName(typ)))
 
     val callRoot = initNode(
       typeFullName.orElse(Some(TypeConstants.Any)),
@@ -89,7 +89,7 @@ trait AstForSimpleStatementsCreator { this: AstCreator =>
       .name("assert")
       .methodFullName("assert")
       .dispatchType(DispatchTypes.STATIC_DISPATCH)
-      .code(stmt.toString)
+      .code(code(stmt))
       .lineNumber(line(stmt))
       .columnNumber(column(stmt))
 
@@ -102,7 +102,7 @@ trait AstForSimpleStatementsCreator { this: AstCreator =>
       .controlStructureType(ControlStructureTypes.BREAK)
       .lineNumber(line(stmt))
       .columnNumber(column(stmt))
-      .code(stmt.toString)
+      .code(code(stmt))
     Ast(node)
   }
 
@@ -111,7 +111,7 @@ trait AstForSimpleStatementsCreator { this: AstCreator =>
       .controlStructureType(ControlStructureTypes.CONTINUE)
       .lineNumber(line(stmt))
       .columnNumber(column(stmt))
-      .code(stmt.toString)
+      .code(code(stmt))
     Ast(node)
   }
 
@@ -245,7 +245,7 @@ trait AstForSimpleStatementsCreator { this: AstCreator =>
     val returnNode = NewReturn()
       .lineNumber(line(ret))
       .columnNumber(column(ret))
-      .code(ret.toString)
+      .code(code(ret))
     if (ret.getExpression.isPresent) {
       val expectedType = scope.enclosingMethodReturnType.getOrElse(ExpectedType.empty)
       val exprAsts     = astsForExpression(ret.getExpression.get(), expectedType)
@@ -268,7 +268,7 @@ trait AstForSimpleStatementsCreator { this: AstCreator =>
       .methodFullName("<operator>.throw")
       .lineNumber(line(stmt))
       .columnNumber(column(stmt))
-      .code(stmt.toString())
+      .code(code(stmt))
       .dispatchType(DispatchTypes.STATIC_DISPATCH)
 
     val args = astsForExpression(stmt.getExpression, ExpectedType.empty)
@@ -281,28 +281,19 @@ trait AstForSimpleStatementsCreator { this: AstCreator =>
   }
 
   private[statements] def astsForTry(stmt: TryStmt): Seq[Ast] = {
-    val tryNode = NewControlStructure()
-      .controlStructureType(ControlStructureTypes.TRY)
-      .code("try")
-      .lineNumber(line(stmt))
-      .columnNumber(column(stmt))
-
+    val tryNode   = controlStructureNode(stmt, ControlStructureTypes.TRY, "try")
     val resources = stmt.getResources.asScala.flatMap(astsForExpression(_, expectedType = ExpectedType.empty)).toList
-    val tryAst    = astForBlockStatement(stmt.getTryBlock, codeStr = "try")
-    val catchAsts = stmt.getCatchClauses.asScala.map(astForCatchClause)
-    val catchBlock = Option
-      .when(catchAsts.nonEmpty) {
-        Ast(NewBlock().code("catch")).withChildren(catchAsts)
-      }
-      .toList
-    val finallyAst =
-      stmt.getFinallyBlock.toScala.map(astForBlockStatement(_, "finally")).toList
 
-    val controlStructureAst = Ast(tryNode)
-      .withChild(tryAst)
-      .withChildren(catchBlock)
-      .withChildren(finallyAst)
-
+    val tryAst = astForBlockStatement(stmt.getTryBlock, codeStr = "try")
+    val catchAsts = stmt.getCatchClauses.asScala.toList.map { catchClause =>
+      val catchNode = controlStructureNode(catchClause, ControlStructureTypes.CATCH, "catch")
+      Ast(catchNode).withChild(astForCatchClause(catchClause))
+    }
+    val finallyAst = stmt.getFinallyBlock.toScala.map { finallyBlock =>
+      val finallyNode = controlStructureNode(finallyBlock, ControlStructureTypes.FINALLY, "finally")
+      Ast(finallyNode).withChild(astForBlockStatement(finallyBlock, "finally"))
+    }
+    val controlStructureAst = tryCatchAst(tryNode, tryAst, catchAsts, finallyAst)
     resources.appended(controlStructureAst)
   }
 }

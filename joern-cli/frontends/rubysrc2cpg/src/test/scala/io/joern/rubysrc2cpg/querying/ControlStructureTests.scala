@@ -1,6 +1,6 @@
 package io.joern.rubysrc2cpg.querying
 
-import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.SimpleIdentifier
+import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, Operators}
 import io.shiftleft.codepropertygraph.generated.nodes.{Block, Call, Identifier, Literal}
@@ -293,9 +293,20 @@ class ControlStructureTests extends RubyCode2CpgFixture {
     whileCond.code shouldBe "true"
     whileCond.lineNumber shouldBe Some(2)
 
-    putsHi.methodFullName shouldBe "__builtin:puts"
+    putsHi.methodFullName shouldBe s"$kernelPrefix:puts"
     putsHi.code shouldBe "puts 'hi'"
     putsHi.lineNumber shouldBe Some(2)
+  }
+
+  "rescue nil is represented by a TRY CONTROL_STRUCTURE node" in {
+    val cpg = code("""
+                     |def test1
+                     |  @dev.close rescue nil
+                     |end
+                     |""".stripMargin)
+    val List(rescueNode) = cpg.method("test1").tryBlock.l
+    rescueNode.controlStructureType shouldBe ControlStructureTypes.TRY
+    val List(body, rescueBody, implicitReturnBody) = rescueNode.astChildren.l
   }
 
   "`begin ... rescue ... end is represented by a `TRY` CONTROL_STRUCTURE node" in {

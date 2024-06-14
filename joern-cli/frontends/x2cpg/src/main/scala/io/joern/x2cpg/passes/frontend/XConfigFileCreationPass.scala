@@ -1,7 +1,7 @@
 package io.joern.x2cpg.passes.frontend
 
 import better.files.File
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.NewConfigFile
 import io.shiftleft.passes.ConcurrentWriterCpgPass
 import io.shiftleft.semanticcpg.language._
@@ -114,7 +114,9 @@ class JavaConfigFileCreationPass(cpg: Cpg, rootDir: Option[String] = None)
     // JPA
     pathEndFilter("persistence.xml"),
     // HIBERNATE
-    pathEndFilter("cfg.xml")
+    pathEndFilter("cfg.xml"),
+    // MAVEN
+    pathEndFilter("pom.xml")
   )
 
   private def mybatisFilter(file: File): Boolean = {
