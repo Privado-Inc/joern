@@ -20,7 +20,7 @@ class MethodAndTypeCacheBuilderPass(
   config: Config,
   goMod: GoModHelper,
   goGlobal: GoGlobal,
-  tmpDir: Option[File] = None
+  tmpDir: File
 ) {
   private val logger = LoggerFactory.getLogger(getClass)
   def process(): Seq[AstCreator] = {
@@ -28,19 +28,10 @@ class MethodAndTypeCacheBuilderPass(
       .map(file =>
         Future {
           try {
-            val relFilePath = tmpDir.map(dir => {
-              SourceFiles.toRelativePath(file, dir.pathAsString).replace(".json", "")
-            })
+            val relFilePath = SourceFiles.toRelativePath(file, tmpDir.pathAsString).replace(".json", "")
             val astCreator =
-              new AstCreator(file, relFilePath.getOrElse("dummyfile.go"), goMod, goGlobal, tmpDir)(
-                config.schemaValidation
-              )
+              new AstCreator(file, relFilePath, goMod, goGlobal)(config.schemaValidation)
             val diffGraph = astCreator.buildCache(cpgOpt)
-            if (goGlobal.processingDependencies) {
-              astCreator.cleanup()
-            } else {
-              astCreator.cacheSerializeAndStore()
-            }
             Some(astCreator, diffGraph)
           } catch
             case exception: Exception =>

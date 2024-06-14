@@ -5,9 +5,8 @@ import io.joern.gosrc2cpg.parser.ParserAst.*
 import io.joern.gosrc2cpg.parser.{ParserKeys, ParserNodeInfo}
 import io.joern.gosrc2cpg.utils.UtilityConstants.fileSeparateorPattern
 import io.joern.x2cpg.{Ast, ValidationMode}
-import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 import io.shiftleft.codepropertygraph.generated.nodes.NewNamespaceBlock
+import io.shiftleft.codepropertygraph.generated.{Cpg, DiffGraphBuilder}
 import ujson.{Arr, Obj, Value}
 
 import java.io.File
@@ -16,8 +15,7 @@ import scala.util.Try
 trait CacheBuilder(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
   def buildCache(cpgOpt: Option[Cpg]): DiffGraphBuilder = {
-    val diffGraph    = new DiffGraphBuilder
-    val parserResult = init()
+    val diffGraph = new DiffGraphBuilder
     try {
       if (checkIfGivenDependencyPackageCanBeProcessed()) {
         cpgOpt.map { _ =>
@@ -42,8 +40,8 @@ trait CacheBuilder(implicit withSchemaValidation: ValidationMode) { this: AstCre
   }
 
   private def checkIfGivenDependencyPackageCanBeProcessed(): Boolean =
-    !goGlobal.processingDependencies || goGlobal.processingDependencies && goGlobal.aliasToNameSpaceMapping
-      .containsValue(fullyQualifiedPackage)
+    !goGlobal.processingDependencies || goGlobal.processingDependencies && goGlobal.nameSpaceMetaDataMap
+      .containsKey(fullyQualifiedPackage)
 
   private def identifyAndRecordPackagesWithDifferentName(): Unit = {
     // record the package to full namespace mapping only when declared package name is not matching with containing folder name

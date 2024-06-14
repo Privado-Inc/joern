@@ -4,7 +4,7 @@ import io.joern.x2cpg.Ast
 import org.slf4j.LoggerFactory
 
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentSkipListSet}
-class GoGlobal(val testflag: Boolean = false) {
+class GoGlobal {
   private val logger             = LoggerFactory.getLogger(getClass)
   var mainModule: Option[String] = None
   var processingDependencies     = false
@@ -39,7 +39,7 @@ class GoGlobal(val testflag: Boolean = false) {
     val existingVal = aliasToNameSpaceMapping.putIfAbsent(alias, namespace)
     // NOTE: !namespace.startsWith(mainModule.get) this check will not add the mapping for main source code imports.
     // This will make sure to add the entry in CacheBuilder, which in turn creates the required Package level TypeDecl AST structure as well.
-    if (existingVal == null && (mainModule == None || (mainModule != None && !namespace.startsWith(mainModule.get)))) {
+    if (existingVal == null) {
       recordForThisNamespace(namespace)
     } else if (existingVal != namespace) {
       // TODO: This might need better way of recording the information.
@@ -48,8 +48,11 @@ class GoGlobal(val testflag: Boolean = false) {
   }
 
   def recordForThisNamespace(namespace: String): Boolean = {
-    val existing = nameSpaceMetaDataMap.putIfAbsent(namespace, NameSpaceMetaData())
-    existing == null
+    if (mainModule == None || (mainModule != None && !namespace.startsWith(mainModule.get))) {
+      val existing = nameSpaceMetaDataMap.putIfAbsent(namespace, NameSpaceMetaData())
+      return existing == null
+    }
+    false
   }
 
   def getMethodMetadata(namespace: String, methodName: String): Option[MethodCacheMetaData] = {
@@ -138,13 +141,6 @@ class GoGlobal(val testflag: Boolean = false) {
     */
   def checkForDependencyFlags(name: String): Boolean = {
     !processingDependencies || processingDependencies && name.headOption.exists(_.isUpper)
-  }
-  def firstCleanup(): Unit = {
-    if (!testflag) {
-      aliasToNameSpaceMapping.clear()
-      lambdaSignatureToLambdaTypeMap.clear()
-      nameSpaceMetaDataMap.clear()
-    }
   }
 }
 

@@ -7,6 +7,7 @@ import io.joern.gosrc2cpg.parser.GoAstJsonParser
 import io.joern.gosrc2cpg.passes.{
   AstCreationPass,
   DownloadDependenciesPass,
+  InitialMainSrcPass,
   MethodAndTypeCacheBuilderPass,
   PackageCtorCreationPass
 }
@@ -16,8 +17,7 @@ import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
 import io.joern.x2cpg.X2CpgFrontend
 import io.joern.x2cpg.passes.frontend.MetaDataPass
 import io.joern.x2cpg.utils.Report
-import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.codepropertygraph.generated.Languages
+import io.shiftleft.codepropertygraph.generated.{Cpg, Languages}
 
 import java.nio.file.Paths
 import scala.util.Try
@@ -42,6 +42,7 @@ class GoSrc2Cpg(goGlobalOption: Option[GoGlobal] = Option(GoGlobal())) extends X
               )
             )
             goGlobal.mainModule = goMod.flatMap(modHelper => modHelper.getModMetaData().map(mod => mod.module.name))
+//            InitialMainSrcPass(cpg, astGenResult.parsedFiles, config, goMod.get, goGlobal, tmpDir).createAndApply()
             val astCreators =
               new MethodAndTypeCacheBuilderPass(
                 Some(cpg),
@@ -49,7 +50,7 @@ class GoSrc2Cpg(goGlobalOption: Option[GoGlobal] = Option(GoGlobal())) extends X
                 config,
                 goMod.get,
                 goGlobal,
-                Some(tmpDir)
+                tmpDir
               )
                 .process()
             if (config.fetchDependencies) {
