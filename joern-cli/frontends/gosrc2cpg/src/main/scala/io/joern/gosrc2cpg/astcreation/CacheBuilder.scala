@@ -5,7 +5,6 @@ import io.joern.gosrc2cpg.parser.ParserAst.*
 import io.joern.gosrc2cpg.parser.{ParserKeys, ParserNodeInfo}
 import io.joern.gosrc2cpg.utils.UtilityConstants.fileSeparateorPattern
 import io.joern.x2cpg.{Ast, ValidationMode}
-import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 import io.shiftleft.codepropertygraph.generated.nodes.NewNamespaceBlock
 import ujson.{Arr, Obj, Value}
@@ -15,34 +14,23 @@ import scala.util.Try
 
 trait CacheBuilder(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
-  def buildCache(cpgOpt: Option[Cpg]): DiffGraphBuilder = {
-    val diffGraph = new DiffGraphBuilder
+  def buildCache: Unit = {
     try {
-      if (checkIfGivenDependencyPackageCanBeProcessed()) {
-        cpgOpt.map { _ =>
-          // We don't want to process this part when third party dependencies are being processed.
-          if (goGlobal.recordForThisNamespace(fullyQualifiedPackage)) {
-            // java.util.Set.Add method will return true when set already doesn't contain the same value.
-            val rootNode = createParserNodeInfo(parserResult.json)
-            val ast      = astForPackage(rootNode)
-            Ast.storeInDiffGraph(ast, diffGraph)
-          }
-        }
-        identifyAndRecordPackagesWithDifferentName()
-        findAndProcess(parserResult.json)
-        // NOTE: For dependencies we are just caching the global variables Types.
-        processPackageLevelGolbalVaraiblesAndConstants(parserResult.json)
+      if (goGlobal.recordForThisNamespace(fullyQualifiedPackage)) {
+        // java.util.Set.Add method will return true when set already doesn't contain the same value.
+        val rootNode = createParserNodeInfo(parserResult.json)
+        val ast      = astForPackage(rootNode)
+        Ast.storeInDiffGraph(ast, diffGraph)
       }
+      identifyAndRecordPackagesWithDifferentName()
+      findAndProcess(parserResult.json)
+      // NOTE: For dependencies we are just caching the global variables Types.
+      processPackageLevelGolbalVaraiblesAndConstants(parserResult.json)
     } catch {
       case ex: Exception =>
         logger.warn(s"Error: While processing - ${parserResult.fullPath}", ex)
     }
-    diffGraph
   }
-
-  private def checkIfGivenDependencyPackageCanBeProcessed(): Boolean =
-    !goGlobal.processingDependencies || goGlobal.processingDependencies && goGlobal.aliasToNameSpaceMapping
-      .containsValue(fullyQualifiedPackage)
 
   private def identifyAndRecordPackagesWithDifferentName(): Unit = {
     // record the package to full namespace mapping only when declared package name is not matching with containing folder name
@@ -94,14 +82,6 @@ trait CacheBuilder(implicit withSchemaValidation: ValidationMode) { this: AstCre
     json match {
       case obj: Obj =>
         if (
-          json.obj
-            .contains(ParserKeys.NodeType) && obj(ParserKeys.NodeType).str == "ast.ImportSpec" && !json.obj.contains(
-            ParserKeys.NodeReferenceId
-          ) && !goGlobal.processingDependencies
-        ) {
-          // NOTE: Dependency code is not being processed here.
-          processImports(obj, true)
-        } else if (
           json.obj
             .contains(ParserKeys.NodeType) && obj(ParserKeys.NodeType).str == "ast.TypeSpec" && !json.obj.contains(
             ParserKeys.NodeReferenceId
@@ -168,27 +148,6 @@ trait CacheBuilder(implicit withSchemaValidation: ValidationMode) { this: AstCre
       (name, fullName, ast)
     } else
       ("", "", Seq.empty)
-  }
-
-  protected def processImports(importDecl: Value, recordFindings: Boolean = false): (String, String) = {
-    val importedEntity = importDecl(ParserKeys.Path).obj(ParserKeys.Value).str.replaceAll("\"", "")
-    if (recordFindings) {
-      goMod.recordUsedDependencies(importedEntity)
-    }
-    val importedAsOption =
-      Try(importDecl(ParserKeys.Name).obj(ParserKeys.Name).str).toOption
-    importedAsOption match {
-      case Some(importedAs) =>
-        // As these alias could be different for each file. Hence we maintain the cache at file level.
-        if (recordFindings)
-          aliasToNameSpaceMapping.put(importedAs, importedEntity)
-        (importedEntity, importedAs)
-      case _ =>
-        val derivedImportedAs = importedEntity.split("/").last
-        if (recordFindings)
-          goGlobal.recordAliasToNamespaceMapping(derivedImportedAs, importedEntity)
-        (importedEntity, derivedImportedAs)
-    }
   }
 
   protected def processFuncDecl(funcDeclVal: Value): MethodMetadata = {

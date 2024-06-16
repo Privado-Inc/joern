@@ -7,6 +7,7 @@ import io.joern.gosrc2cpg.parser.GoAstJsonParser
 import io.joern.gosrc2cpg.passes.{
   AstCreationPass,
   DownloadDependenciesPass,
+  InitialMainSrcPass,
   MethodAndTypeCacheBuilderPass,
   PackageCtorCreationPass
 }
@@ -41,6 +42,7 @@ class GoSrc2Cpg(goGlobalOption: Option[GoGlobal] = Option(GoGlobal())) extends X
               )
             )
             goGlobal.mainModule = goMod.flatMap(modHelper => modHelper.getModMetaData().map(mod => mod.module.name))
+            InitialMainSrcPass(cpg, astGenResult.parsedFiles, config, goMod.get, goGlobal, tmpDir).createAndApply()
             val astCreators =
               new MethodAndTypeCacheBuilderPass(
                 Some(cpg),

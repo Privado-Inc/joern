@@ -35,6 +35,7 @@ class AstCreator(
     with AstForMethodCallExpressionCreator
     with CacheBuilder
     with AstForLambdaCreator
+    with InitialMainSrcProcessor
     with AstGenNodeBuilder[AstCreator] {
 
   protected val logger: Logger                                   = LoggerFactory.getLogger(classOf[AstCreator])
