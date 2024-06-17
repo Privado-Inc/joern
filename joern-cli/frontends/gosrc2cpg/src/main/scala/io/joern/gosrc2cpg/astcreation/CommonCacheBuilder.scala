@@ -3,59 +3,20 @@ package io.joern.gosrc2cpg.astcreation
 import io.joern.gosrc2cpg.datastructures.MethodCacheMetaData
 import io.joern.gosrc2cpg.parser.ParserAst.*
 import io.joern.gosrc2cpg.parser.{ParserKeys, ParserNodeInfo}
-import io.joern.gosrc2cpg.utils.UtilityConstants.fileSeparateorPattern
 import io.joern.x2cpg.{Ast, ValidationMode}
-import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
-import io.shiftleft.codepropertygraph.generated.nodes.NewNamespaceBlock
-import ujson.{Arr, Obj, Value}
+import ujson.Value
 
-import java.io.File
 import scala.util.Try
 
-trait CacheBuilder(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
+trait CommonCacheBuilder(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
-  def buildCache: Unit = {
-    try {
-      if (goGlobal.recordForThisNamespace(fullyQualifiedPackage)) {
-        // java.util.Set.Add method will return true when set already doesn't contain the same value.
-        val rootNode = createParserNodeInfo(parserResult.json)
-        val ast      = astForPackage(rootNode)
-        Ast.storeInDiffGraph(ast, diffGraph)
-      }
-      identifyAndRecordPackagesWithDifferentName()
-      findAndProcess(parserResult.json)
-      // NOTE: For dependencies we are just caching the global variables Types.
-      processPackageLevelGolbalVaraiblesAndConstants(parserResult.json)
-    } catch {
-      case ex: Exception =>
-        logger.warn(s"Error: While processing - ${parserResult.fullPath}", ex)
-    }
-  }
-
-  private def identifyAndRecordPackagesWithDifferentName(): Unit = {
+  protected def identifyAndRecordPackagesWithDifferentName(): Unit = {
     // record the package to full namespace mapping only when declared package name is not matching with containing folder name
     if (declaredPackageName != fullyQualifiedPackage.split("/").last)
       goGlobal.recordAliasToNamespaceMapping(declaredPackageName, fullyQualifiedPackage)
   }
 
-  private def astForPackage(rootNode: ParserNodeInfo): Ast = {
-    val pathTokens = relPathFileName.split(fileSeparateorPattern)
-    val packageFolderPath = if (pathTokens.nonEmpty && pathTokens.size > 1) {
-      s"${File.separator}${pathTokens.dropRight(1).mkString(File.separator)}"
-    } else {
-      s"${File.separator}"
-    }
-
-    val namespaceBlock = NewNamespaceBlock()
-      .name(fullyQualifiedPackage)
-      .fullName(fullyQualifiedPackage)
-      .filename(packageFolderPath)
-    val fakePackageTypeDecl =
-      typeDeclNode(rootNode, fullyQualifiedPackage, fullyQualifiedPackage, packageFolderPath, fullyQualifiedPackage)
-    Ast(namespaceBlock).withChild(Ast(fakePackageTypeDecl))
-  }
-
-  private def processPackageLevelGolbalVaraiblesAndConstants(json: Value): Unit = {
+  protected def processPackageLevelGolbalVaraiblesAndConstants(json: Value): Unit = {
     json(ParserKeys.Decls).arrOpt
       .getOrElse(List())
       .map(createParserNodeInfo)
@@ -78,50 +39,7 @@ trait CacheBuilder(implicit withSchemaValidation: ValidationMode) { this: AstCre
       })
   }
 
-  private def findAndProcess(json: Value): Unit = {
-    json match {
-      case obj: Obj =>
-        if (
-          json.obj
-            .contains(ParserKeys.NodeType) && obj(ParserKeys.NodeType).str == "ast.TypeSpec" && !json.obj.contains(
-            ParserKeys.NodeReferenceId
-          )
-        ) {
-          processTypeSepc(createParserNodeInfo(obj))
-        } else if (
-          json.obj
-            .contains(ParserKeys.NodeType) && obj(ParserKeys.NodeType).str == "ast.FuncDecl" && !json.obj.contains(
-            ParserKeys.NodeReferenceId
-          )
-        ) {
-          processFuncDecl(obj)
-          createParserNodeInfo(obj)
-        } else if (
-          json.obj
-            .contains(ParserKeys.NodeType) && obj(ParserKeys.NodeType).str == "ast.ValueSpec" && !json.obj.contains(
-            ParserKeys.NodeReferenceId
-          ) && !goGlobal.processingDependencies
-        ) {
-          // NOTE: Dependency code is not being processed here.
-          createParserNodeInfo(obj)
-        } else if (
-          json.obj
-            .contains(ParserKeys.NodeType) && obj(ParserKeys.NodeType).str == "ast.FuncLit" && !json.obj.contains(
-            ParserKeys.NodeReferenceId
-          ) && !goGlobal.processingDependencies
-        ) {
-          // NOTE: Dependency code is not being processed here.
-          processFuncLiteral(obj)
-        }
-
-        obj.value.values.foreach(subJson => findAndProcess(subJson))
-      case arr: Arr =>
-        arr.value.foreach(subJson => findAndProcess(subJson))
-      case _ =>
-    }
-  }
-
-  private def processFuncLiteral(funcLit: Value): Unit = {
+  protected def processFuncLiteral(funcLit: Value): Unit = {
     val LambdaFunctionMetaData(signature, _, _, _, _) = generateLambdaSignature(
       createParserNodeInfo(funcLit(ParserKeys.Type))
     )

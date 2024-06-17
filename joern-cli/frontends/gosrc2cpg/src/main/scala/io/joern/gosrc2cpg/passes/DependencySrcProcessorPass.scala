@@ -10,7 +10,7 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import scala.util.{Failure, Success, Try}
 
-class InitialMainSrcPass(
+class DependencySrcProcessorPass(
   cpg: Cpg,
   astFiles: List[String],
   config: Config,
@@ -18,11 +18,11 @@ class InitialMainSrcPass(
   goGlobal: GoGlobal,
   tmpDir: File
 ) extends BasePassForAstProcessing(cpg, astFiles, config, goMod, goGlobal, tmpDir) {
-  protected override val logger: Logger = LoggerFactory.getLogger(classOf[InitialMainSrcPass])
+  protected override val logger: Logger = LoggerFactory.getLogger(classOf[DependencySrcProcessorPass])
 
   override def processAst(diffGraph: DiffGraphBuilder, astCreator: AstCreator): Unit = {
     Try {
-      diffGraph.absorb(astCreator.buildCacheFromMainSrc())
+      astCreator.buildCacheFromDepSrc()
     } match {
       case Failure(exception) =>
         logger.warn(s"Failed to build the pre processing cache: '${astCreator.parserResult.fullPath}'", exception)

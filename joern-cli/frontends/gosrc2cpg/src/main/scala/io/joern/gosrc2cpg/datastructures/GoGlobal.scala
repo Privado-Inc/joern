@@ -40,19 +40,21 @@ class GoGlobal {
     // NOTE: !namespace.startsWith(mainModule.get) this check will not add the mapping for main source code imports.
     // This will make sure to add the entry in CacheBuilder, which in turn creates the required Package level TypeDecl AST structure as well.
     if (existingVal == null) {
-      recordForThisNamespace(namespace)
+      recordForThisNamespaceThroughImports(namespace)
     } else if (existingVal != namespace) {
       // TODO: This might need better way of recording the information.
       logger.warn(s"more than one namespaces are found for given alias `$alias` -> `$existingVal` and `$namespace`")
     }
   }
 
+  def recordForThisNamespaceThroughImports(namespace: String): Unit = {
+    if (mainModule == None || (mainModule != None && !namespace.startsWith(mainModule.get)))
+      recordForThisNamespace(namespace)
+  }
+
   def recordForThisNamespace(namespace: String): Boolean = {
-    if (mainModule == None || (mainModule != None && !namespace.startsWith(mainModule.get))) {
-      val existing = nameSpaceMetaDataMap.putIfAbsent(namespace, NameSpaceMetaData())
-      return existing == null
-    }
-    false
+    val existing = nameSpaceMetaDataMap.putIfAbsent(namespace, NameSpaceMetaData())
+    existing == null
   }
 
   def getMethodMetadata(namespace: String, methodName: String): Option[MethodCacheMetaData] = {
