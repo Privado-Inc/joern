@@ -65,6 +65,7 @@ trait InitialMainSrcProcessor(implicit withSchemaValidation: ValidationMode) { t
           )
         ) {
           identifyUserPackagesFromImports(obj)
+          processImports(obj)
         } else if (
           json.obj
             .contains(ParserKeys.NodeType) && obj(ParserKeys.NodeType).str == "ast.TypeSpec" && !json.obj.contains(

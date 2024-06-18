@@ -95,6 +95,22 @@ trait CommonCacheBuilder(implicit withSchemaValidation: ValidationMode) { this: 
     } else
       MethodMetadata()
   }
+
+  protected def processImports(importDecl: Value): (String, String) = {
+    val importedEntity = importDecl(ParserKeys.Path).obj(ParserKeys.Value).str.replaceAll("\"", "")
+    val importedAsOption =
+      Try(importDecl(ParserKeys.Name).obj(ParserKeys.Name).str).toOption
+    importedAsOption match {
+      case Some(importedAs) =>
+        // As these alias could be different for each file. Hence we maintain the cache at file level.
+        aliasToNameSpaceMapping.put(importedAs, importedEntity)
+        (importedEntity, importedAs)
+      case _ =>
+        val derivedImportedAs = importedEntity.split("/").last
+        aliasToNameSpaceMapping.put(derivedImportedAs, importedEntity)
+        (importedEntity, derivedImportedAs)
+    }
+  }
 }
 
 case class MethodMetadata(

@@ -23,6 +23,13 @@ trait DepdencySrcProcessor(implicit withSchemaValidation: ValidationMode) { this
       case obj: Obj =>
         if (
           json.obj
+            .contains(ParserKeys.NodeType) && obj(ParserKeys.NodeType).str == "ast.ImportSpec" && !json.obj.contains(
+            ParserKeys.NodeReferenceId
+          )
+        ) {
+          processImports(obj)
+        } else if (
+          json.obj
             .contains(ParserKeys.NodeType) && obj(ParserKeys.NodeType).str == "ast.TypeSpec" && !json.obj.contains(
             ParserKeys.NodeReferenceId
           )
