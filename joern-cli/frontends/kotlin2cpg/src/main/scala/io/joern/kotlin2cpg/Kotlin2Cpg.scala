@@ -1,26 +1,33 @@
 package io.joern.kotlin2cpg
 
 import better.files.File
-import io.joern.kotlin2cpg.compiler.{CompilerAPI, ErrorLoggingMessageCollector}
+import io.joern.kotlin2cpg.compiler.CompilerAPI
+import io.joern.kotlin2cpg.compiler.ErrorLoggingMessageCollector
 import io.joern.kotlin2cpg.files.SourceFilesPicker
 import io.joern.kotlin2cpg.interop.JavasrcInterop
 import io.joern.kotlin2cpg.jar4import.UsesService
 import io.joern.kotlin2cpg.passes.*
 import io.joern.kotlin2cpg.types.{ContentSourcesPicker, DefaultTypeInfoProvider, TypeRenderer}
-import io.joern.x2cpg.SourceFiles.filterFile
+import io.joern.x2cpg.SourceFiles
+import io.joern.x2cpg.X2CpgFrontend
 import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
-import io.joern.x2cpg.{SourceFiles, X2CpgFrontend}
-import io.joern.x2cpg.passes.frontend.{MetaDataPass, TypeNodePass}
-import io.joern.x2cpg.utils.dependency.{DependencyResolver, DependencyResolverParams, GradleConfigKeys}
-import io.shiftleft.codepropertygraph.Cpg
+import io.joern.x2cpg.passes.frontend.MetaDataPass
+import io.joern.x2cpg.passes.frontend.TypeNodePass
+import io.joern.x2cpg.utils.dependency.DependencyResolver
+import io.joern.x2cpg.utils.dependency.DependencyResolverParams
+import io.joern.x2cpg.utils.dependency.GradleConfigKeys
+import io.joern.x2cpg.SourceFiles.filterFile
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.Languages
 import io.shiftleft.utils.IOUtils
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreEnvironment
 import org.jetbrains.kotlin.psi.KtFile
 import org.slf4j.LoggerFactory
 
-import java.nio.file.{Files, Paths}
-import scala.jdk.CollectionConverters.{CollectionHasAsScala, EnumerationHasAsScala}
+import java.nio.file.Files
+import java.nio.file.Paths
+import scala.jdk.CollectionConverters.CollectionHasAsScala
+import scala.jdk.CollectionConverters.EnumerationHasAsScala
 import scala.util.Try
 import scala.util.matching.Regex
 
@@ -208,7 +215,7 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
       val defaultContentRootJars  = gatherDefaultContentRootJars(sourceDir, config, filesWithJavaExtension)
       val dirsForSourcesToCompile = gatherDirsForSourcesToCompile(sourceDir)
       val environment = CompilerAPI.makeEnvironment(
-        Seq(sourceDir),
+        dirsForSourcesToCompile,
         filesWithJavaExtension,
         defaultContentRootJars,
         new ErrorLoggingMessageCollector
