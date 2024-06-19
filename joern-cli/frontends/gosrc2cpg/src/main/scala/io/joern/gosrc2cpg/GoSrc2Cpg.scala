@@ -16,8 +16,7 @@ import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
 import io.joern.x2cpg.X2CpgFrontend
 import io.joern.x2cpg.passes.frontend.MetaDataPass
 import io.joern.x2cpg.utils.Report
-import io.shiftleft.codepropertygraph.Cpg
-import io.shiftleft.codepropertygraph.generated.Languages
+import io.shiftleft.codepropertygraph.generated.{Cpg, Languages}
 import io.shiftleft.utils.StatsLogger
 
 import java.nio.file.Paths
@@ -47,7 +46,14 @@ class GoSrc2Cpg(goGlobalOption: Option[GoGlobal] = Option(GoGlobal())) extends X
             goGlobal.mainModule = goMod.flatMap(modHelper => modHelper.getModMetaData().map(mod => mod.module.name))
             StatsLogger.initiateNewStage("Type info cache builder")
             val astCreators =
-              new MethodAndTypeCacheBuilderPass(Some(cpg), astGenResult.parsedFiles, config, goMod.get, goGlobal)
+              new MethodAndTypeCacheBuilderPass(
+                Some(cpg),
+                astGenResult.parsedFiles,
+                config,
+                goMod.get,
+                goGlobal,
+                tmpDir
+              )
                 .process()
             StatsLogger.endLastStage()
             if (config.fetchDependencies) {

@@ -1,9 +1,9 @@
 package io.joern.pysrc2cpg.dataflow
 
 import io.joern.dataflowengineoss.language.toExtendedCfgNode
-import io.joern.dataflowengineoss.semanticsloader.FlowSemantic
+import io.joern.dataflowengineoss.semanticsloader.{FlowMapping, FlowSemantic, PassThroughMapping}
 import io.joern.pysrc2cpg.PySrc2CpgFixture
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.{Literal, Member, Method}
 import io.shiftleft.semanticcpg.language.*
 
@@ -32,6 +32,191 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
     def sink       = cpg.call("print").argument
     val List(flow) = sink.reachableByFlows(source).map(flowToResultPairs).l
     flow shouldBe List(("foo(20)", 2), ("x = foo(20)", 2), ("print(x)", 3))
+  }
+
+  "flow from aliased literal to imported external method call return value" in {
+    val cpg = code("""
+        |from helpers import foo
+        |a = 20
+        |print(foo(a))
+        |""".stripMargin)
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows.map(flowToResultPairs) shouldBe List(List(("a = 20", 3), ("foo(a)", 4)))
+  }
+
+  "flow from literal directly used in imported external method call return value" in {
+    val cpg = code("""
+        |from helpers import foo
+        |print(foo(20))
+        |""".stripMargin)
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows.map(flowToResultPairs) shouldBe List(List(("foo(20)", 3)))
+  }
+
+  "no flow from aliased literal to imported external method call return value given empty semantics" in {
+    val cpg = code("""
+        |from helpers import foo
+        |a = 20
+        |print(foo(a))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("helpers.py:<module>.foo", List())))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from aliased literal to imported external method call return value given receiver-only semantics" in {
+    val cpg = code("""
+        |from helpers import foo
+        |a = 20
+        |print(foo(a))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("helpers.py:<module>.foo", List(FlowMapping(0, 0)))))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from aliased literal to imported external method call return value given argument1-only semantics" ignore {
+    val cpg = code("""
+        |from helpers import foo
+        |a = 20
+        |print(foo(a))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("helpers.py:<module>.foo", List(FlowMapping(1, 1)))))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from literal to imported external method return value given empty semantics" ignore {
+    val cpg = code("""
+        |from helpers import foo
+        |print(foo(20))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("helpers.py:<module>.foo", List())))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from literal to imported external method return value given receiver-only semantics" ignore {
+    val cpg = code("""
+        |from helpers import foo
+        |print(foo(20))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("helpers.py:<module>.foo", List(FlowMapping(0, 0)))))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from literal to imported external method return value given argument1-only semantics" ignore {
+    val cpg = code("""
+        |from helpers import foo
+        |print(foo(20))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("helpers.py:<module>.foo", List(FlowMapping(1, 1)))))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from aliased literal to method call return value given empty semantics" in {
+    val cpg = code("""
+        |def foo(x):
+        |  return x
+        |
+        |a = 20
+        |print(foo(a))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("Test0.py:<module>.foo", List())))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from aliased literal to method call return value given receiver-only semantics" in {
+    val cpg = code("""
+        |def foo(x):
+        |  return x
+        |
+        |a = 20
+        |print(foo(a))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("Test0.py:<module>.foo", List(FlowMapping(0, 0)))))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from aliased literal to method call return value given argument1-only semantics" ignore {
+    val cpg = code("""
+        |def foo(x):
+        |  return x
+        |
+        |a = 20
+        |print(foo(a))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("Test0.py:<module>.foo", List(FlowMapping(1, 1)))))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from literal to method call return value given empty semantics" ignore {
+    val cpg = code("""
+        |def foo(x):
+        |  return x
+        |
+        |print(foo(20))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("Test0.py:<module>.foo", List())))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from literal to method call return value given receiver-only semantics" ignore {
+    val cpg = code("""
+        |def foo(x):
+        |  return x
+        |
+        |print(foo(20))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("Test0.py:<module>.foo", List(FlowMapping(0, 0)))))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
+  }
+
+  "no flow from literal to method call return value given argument1-only semantics" ignore {
+    val cpg = code("""
+        |def foo(x):
+        |  return x
+        |
+        |print(foo(20))
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic("Test0.py:<module>.foo", List(FlowMapping(1, 1)))))
+    val source = cpg.literal("20").l
+    val sink   = cpg.call("print").argument(1).l
+    val flows  = sink.reachableByFlows(source).l
+    flows shouldBe empty
   }
 
   "chained call" in {
@@ -450,6 +635,113 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
     def source     = cpg.literal("\"X\"")
     val List(flow) = sink.reachableByFlows(source).map(flowToResultPairs).l
     flow shouldBe List(("a.run(\"X\")", 4), ("x = a.run(\"X\")", 4), ("tmp0[\"x\"] = x", 6))
+  }
+
+  "flow from literals in dictionary literal assignment and first argument to second argument" in {
+    val cpg = code("""
+        |x = {'x': 10}
+        |print(1, x)
+        |""".stripMargin)
+
+    def source              = cpg.literal
+    def sink                = cpg.call("print").argument(2)
+    val List(flow1, flow10) = sink.reachableByFlows(source).map(flowToResultPairs).sortBy(_.length).l
+    flow1 shouldBe List(("print(1, x)", 3))
+    flow10 shouldBe List(
+      ("tmp0['x'] = 10", 2),
+      ("tmp0", 2),
+      ("x = tmp0 = {}\ntmp0['x'] = 10\ntmp0", 2),
+      ("print(1, x)", 3)
+    )
+  }
+
+  "flow from literal in dictionary literal assignment to second argument, using custom flows" in {
+    val cpg = code("""
+        |x = {'x': 10}
+        |print(1, x)
+        |""".stripMargin)
+      .withExtraFlows(List(FlowSemantic(".*print", List(PassThroughMapping), true)))
+
+    def source       = cpg.literal
+    def sink         = cpg.call("print").argument.argumentIndex(2)
+    val List(flow10) = sink.reachableByFlows(source).map(flowToResultPairs).l
+    flow10 shouldBe List(
+      ("tmp0['x'] = 10", 2),
+      ("tmp0", 2),
+      ("x = tmp0 = {}\ntmp0['x'] = 10\ntmp0", 2),
+      ("print(1, x)", 3)
+    )
+  }
+
+  "flow from literals in dictionary literal and first argument to second argument" in {
+    val cpg = code("""
+        |print(1, {'x': 10})
+        |""".stripMargin)
+
+    def source       = cpg.literal
+    def sink         = cpg.call("print").argument.argumentIndex(2)
+    val List(flow10) = sink.reachableByFlows(source).map(flowToResultPairs).l
+    flow10 shouldBe List(("tmp0['x'] = 10", 2), ("tmp0", 2))
+  }
+
+  "flow from literals into a dictionary literal used as an argument to an external call" in {
+    val cpg = code("""
+        |import bar
+        |x = 100
+        |bar.foo('D').baz(A='A', B=b, C={'Property': x})
+        |""".stripMargin)
+
+    def source        = cpg.literal
+    def sink          = cpg.call("baz").argument.argumentName("C")
+    val List(flow100) = sink.reachableByFlows(source).map(flowToResultPairs).l
+    flow100 shouldBe List(("x = 100", 3), ("tmp0['Property'] = x", 4), ("tmp0", 4))
+  }
+
+  "flow from literal in an imported dictionary literal to `print`" in {
+    val cpg = code(
+      """
+        |from p1.bar import baz
+        |print(baz)
+        |""".stripMargin,
+      "foo.py"
+    ).moreCode(
+      """
+        |baz = {"Property1": "foo"}
+        |""".stripMargin,
+      "p1/bar.py"
+    )
+    val source     = cpg.literal("\"foo\"")
+    val sink       = cpg.call("print").argument(1)
+    val List(flow) = sink.reachableByFlows(source).map(flowToResultPairs).l
+
+    flow shouldBe List(("tmp0[\"Property1\"] = \"foo\"", 2), ("baz = import(p1.bar, baz)", 2), ("print(baz)", 3))
+  }
+
+  "flow from literal in an imported method-returned dictionary to `print`" in {
+    val cpg = code(
+      """
+        |import bar
+        |print(bar.baz())
+        |""".stripMargin,
+      "main.py"
+    ).moreCode(
+      """
+        |def baz():
+        |  return {"Property": "foo"}
+        |""".stripMargin,
+      "bar.py"
+    )
+    val source     = cpg.literal("\"foo\"")
+    val sink       = cpg.call("print").argument(1)
+    val List(flow) = sink.reachableByFlows(source).map(flowToResultPairs).l
+
+    flow shouldBe List(
+      ("tmp0[\"Property\"] = \"foo\"", 3),
+      ("tmp0", 3),
+      ("return {\"Property\": \"foo\"}", 3),
+      ("RET", 2),
+      ("bar.baz()", 3)
+    )
   }
 
   "flow from global variable defined in imported file and used as argument to `print`" in {
