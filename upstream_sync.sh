@@ -2,6 +2,9 @@
 
 set -e
 
+git config user.name "GitHub Actions Bot"
+git config user.email "<>"
+
 git remote add upstream https://github.com/joernio/joern
 
 usage() {
