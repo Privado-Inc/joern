@@ -26,7 +26,7 @@ jobs:
         with:
           branch: ${{ env.LATEST_TAG }}
 
-      - run: ./upstream_sync.sh --branch ${{ env.LATEST_TAG }}
+      - run: bash ./upstream_sync.sh --branch ${{ env.LATEST_TAG }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
