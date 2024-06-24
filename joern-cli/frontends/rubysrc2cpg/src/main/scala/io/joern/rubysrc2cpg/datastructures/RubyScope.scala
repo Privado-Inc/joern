@@ -1,14 +1,15 @@
 package io.joern.rubysrc2cpg.datastructures
 
 import better.files.File
-import io.joern.rubysrc2cpg.astcreation.GlobalTypes
-import io.joern.rubysrc2cpg.astcreation.GlobalTypes.builtinPrefix
+import io.joern.rubysrc2cpg.passes.GlobalTypes
+import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
 import io.joern.x2cpg.Defines
 import io.joern.rubysrc2cpg.passes.Defines as RDefines
 import io.joern.x2cpg.datastructures.*
 import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{DeclarationNew, NewLocal, NewMethodParameterIn}
 
+import java.io.File as JFile
 import scala.collection.mutable
 import scala.reflect.ClassTag
 import scala.util.Try
@@ -17,25 +18,25 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     extends Scope[String, DeclarationNew, TypedScopeElement]
     with TypedScope[RubyMethod, RubyField, RubyType](summary) {
 
-  private val builtinMethods = GlobalTypes.builtinFunctions
-    .map(m => RubyMethod(m, List.empty, Defines.Any, Some(GlobalTypes.builtinPrefix)))
+  private val builtinMethods = GlobalTypes.kernelFunctions
+    .map(m => RubyMethod(m, List.empty, Defines.Any, Some(GlobalTypes.kernelPrefix)))
     .toList
 
   override val typesInScope: mutable.Set[RubyType] =
-    mutable.Set(RubyType(GlobalTypes.builtinPrefix, builtinMethods, List.empty))
+    mutable.Set(RubyType(GlobalTypes.kernelPrefix, builtinMethods, List.empty))
 
   // Add some built-in methods that are significant
   // TODO: Perhaps create an offline pre-built list of methods
   typesInScope.addAll(
     Seq(
       RubyType(
-        s"$builtinPrefix.Array",
-        List(RubyMethod("[]", List.empty, s"$builtinPrefix.Array", Option(s"$builtinPrefix.Array"))),
+        s"$kernelPrefix.Array",
+        List(RubyMethod("[]", List.empty, s"$kernelPrefix.Array", Option(s"$kernelPrefix.Array"))),
         List.empty
       ),
       RubyType(
-        s"$builtinPrefix.Hash",
-        List(RubyMethod("[]", List.empty, s"$builtinPrefix.Hash", Option(s"$builtinPrefix.Hash"))),
+        s"$kernelPrefix.Hash",
+        List(RubyMethod("[]", List.empty, s"$kernelPrefix.Hash", Option(s"$kernelPrefix.Hash"))),
         List.empty
       )
     )
@@ -47,6 +48,22 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     *   using the stack, will initialize a new module scope object.
     */
   def newProgramScope: Option[ProgramScope] = surroundingScopeFullName.map(ProgramScope.apply)
+
+  /** @return
+    *   true if the top of the stack is the program/module.
+    */
+  def isSurroundedByProgramScope: Boolean = {
+    stack
+      .take(2)
+      .filterNot {
+        case ScopeElement(BlockScope(_), _) => true
+        case _                              => false
+      }
+      .headOption match {
+      case Some(ScopeElement(ProgramScope(_), _)) => true
+      case _                                      => false
+    }
+  }
 
   def pushField(field: FieldDecl): Unit = {
     popScope().foreach {
@@ -83,6 +100,30 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     super.pushNewScope(mappedScopeNode)
   }
 
+  /** Variables entering children scope persist into parent scopes, so the variables should be transferred to the
+    * top-level method, returning the next block so that locals can be attached.
+    */
+  override def addToScope(identifier: String, variable: DeclarationNew): TypedScopeElement = {
+    variable match {
+      case _: NewMethodParameterIn => super.addToScope(identifier, variable)
+      case _ =>
+        stack.collectFirst {
+          case x @ ScopeElement(_: MethodLikeScope, _) => x
+          case x @ ScopeElement(_: ProgramScope, _)    => x
+        } match {
+          case Some(target) =>
+            val newTarget = target.addVariable(identifier, variable)
+
+            val targetIdx = stack.indexOf(target)
+            val prefix    = stack.take(targetIdx)
+            val suffix    = stack.takeRight(stack.size - targetIdx - 1)
+            stack = prefix ++ List(newTarget) ++ suffix
+            prefix.lastOption.map(_.scopeNode).getOrElse(newTarget.scopeNode)
+          case None => super.addToScope(identifier, variable)
+        }
+    }
+  }
+
   def addRequire(
     projectRoot: String,
     currentFilePath: String,
@@ -96,7 +137,7 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     val resolvedPath =
       if (isRelative) {
         Try((File(currentFilePath).parent / path).pathAsString).toOption
-          .map(_.stripPrefix(s"$projectRoot/"))
+          .map(_.stripPrefix(s"$projectRoot${JFile.separator}"))
           .getOrElse(path)
       } else {
         path
@@ -107,7 +148,9 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
         val dir = File(projectRoot) / resolvedPath
         if (dir.isDirectory)
           dir.list
-            .map(_.pathAsString.stripPrefix(s"$projectRoot/").stripSuffix(".rb"))
+            .map(
+              _.pathAsString.stripPrefix(s"$projectRoot${JFile.separator}").stripSuffix(".rb").replaceAll("\\\\", "/")
+            )
             .toList
         else Nil
       } else {
@@ -195,6 +238,17 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     x.fullName
   }
 
+  /** Searches the surrounding classes for a class that matches the given value. Returns it if found.
+    */
+  def getSurroundingType(value: String): Option[TypeLikeScope] = {
+    stack
+      .collect { case ScopeElement(x: TypeLikeScope, _) => x }
+      .collectFirst {
+        case x: TypeLikeScope if x.fullName.split('.').toSeq.endsWith(value.split('.')) =>
+          x
+      }
+  }
+
   /** @return
     *   the corresponding node label according to the scope element.
     */
@@ -274,18 +328,12 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
       .orElse(tryResolveStubbedTypeReference(typeName))
       .orElse {
         super.tryResolveTypeReference(normalizedTypeName) match {
-          case None if GlobalTypes.builtinFunctions.contains(normalizedTypeName) =>
-            // TODO: Create a builtin.json for the program summary to load
-            Option(RubyType(s"${GlobalTypes.builtinPrefix}.$normalizedTypeName", List.empty, List.empty))
+          case None if GlobalTypes.kernelFunctions.contains(normalizedTypeName) =>
+            Option(RubyType(s"${GlobalTypes.kernelPrefix}.$normalizedTypeName", List.empty, List.empty))
+          case None if GlobalTypes.bundledClasses.contains(normalizedTypeName) =>
+            Option(RubyType(s"<${GlobalTypes.builtinPrefix}.$normalizedTypeName>", List.empty, List.empty))
           case None =>
-            summary.namespaceToType.flatMap(_._2).collectFirst {
-              case x if x.name.split("[.]").endsWith(normalizedTypeName.split("[.]")) =>
-                typesInScope.addOne(x)
-                x
-              case x if x.name.split("[.]").lastOption.contains(normalizedTypeName) =>
-                typesInScope.addOne(x)
-                x
-            }
+            None
           case x => x
         }
       }

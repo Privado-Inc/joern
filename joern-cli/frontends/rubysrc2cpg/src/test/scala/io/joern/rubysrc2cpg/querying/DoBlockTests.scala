@@ -2,6 +2,8 @@ package io.joern.rubysrc2cpg.querying
 
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.joern.x2cpg.Defines
+import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
+import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 
@@ -100,6 +102,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
         case (myArray: Identifier) :: (lambdaRef: MethodRef) :: Nil =>
           myArray.argumentIndex shouldBe 0
           myArray.name shouldBe "my_array"
+          myArray.code shouldBe "my_array"
 
           lambdaRef.argumentIndex shouldBe 1
           lambdaRef.methodFullName shouldBe "Test0.rb:<global>::program:<lambda>0"
@@ -109,7 +112,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
     }
 
     "have the call under the closure" in {
-      inside(cpg.method("<lambda>0").call.l) {
+      inside(cpg.method("<lambda>0").call.nameExact("puts").l) {
         case puts :: Nil =>
           puts.name shouldBe "puts"
           puts.code shouldBe "puts item"
@@ -164,6 +167,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
         case (hash: Identifier) :: (lambdaRef: MethodRef) :: Nil =>
           hash.argumentIndex shouldBe 0
           hash.name shouldBe "hash"
+          hash.code shouldBe "hash"
 
           lambdaRef.argumentIndex shouldBe 1
           lambdaRef.methodFullName shouldBe "Test0.rb:<global>::program:<lambda>0"
@@ -173,7 +177,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
     }
 
     "have the calls under the closure" in {
-      inside(cpg.method("<lambda>0").call.l) {
+      inside(cpg.method("<lambda>0").call.nameExact("puts").l) {
         case puts1 :: puts2 :: Nil =>
           puts1.name shouldBe "puts"
           puts1.code shouldBe "puts key"
@@ -249,8 +253,8 @@ class DoBlockTests extends RubyCode2CpgFixture {
               tmpLocal.name shouldBe "<tmp-0>"
               tmpAssign.code shouldBe "<tmp-0> = Array.new(x) { |i| i += 1 }"
 
-              newCall.name shouldBe Defines.ConstructorMethodName
-              newCall.methodFullName shouldBe "__builtin.Array:<init>"
+              newCall.name shouldBe "new"
+              newCall.methodFullName shouldBe s"$kernelPrefix.Array:initialize"
 
               inside(newCall.argument.l) {
                 case (_: Identifier) :: (x: Identifier) :: (closure: MethodRef) :: Nil =>
