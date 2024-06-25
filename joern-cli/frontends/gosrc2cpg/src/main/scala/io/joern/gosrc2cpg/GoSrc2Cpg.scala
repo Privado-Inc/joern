@@ -39,17 +39,13 @@ class GoSrc2Cpg(goGlobalOption: Option[GoGlobal] = Option(GoGlobal())) extends X
             )
             StatsLogger.endLastStage()
             goGlobal.mainModule = goMod.flatMap(modHelper => modHelper.getModMetaData().map(mod => mod.module.name))
-            StatsLogger.initiateNewStage("Type info cache builder")
             InitialMainSrcPass(cpg, astGenResult.parsedFiles, config, goMod.get, goGlobal, tmpDir).createAndApply()
             if goGlobal.pkgLevelVarAndConstantAstMap.size() > 0 then
               PackageCtorCreationPass(cpg, config, goGlobal).createAndApply()
-            StatsLogger.endLastStage()
             if (config.fetchDependencies) {
-              StatsLogger.initiateNewStage("Download dependencies pass")
               goGlobal.processingDependencies = true
               DownloadDependenciesPass(cpg, goMod.get, goGlobal, config).process()
               goGlobal.processingDependencies = false
-              StatsLogger.endLastStage()
             }
             AstCreationPass(cpg, astGenResult.parsedFiles, config, goMod.get, goGlobal, tmpDir, report).createAndApply()
             report.print()
