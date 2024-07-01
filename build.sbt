@@ -2,7 +2,7 @@ name                     := "joern"
 ThisBuild / organization := "io.joern"
 ThisBuild / scalaVersion := "3.4.2"
 
-val cpgVersion = "1.6.16"
+val cpgVersion = "0.1.6"
 
 lazy val joerncli          = Projects.joerncli
 lazy val querydb           = Projects.querydb
@@ -61,6 +61,7 @@ createDistribution := {
 }
 
 ThisBuild / resolvers ++= Seq(
+  "Github Package Registry" at "https://maven.pkg.github.com/Privado-Inc/codepropertygraph",
   Resolver.mavenLocal,
   "Sonatype OSS" at "https://oss.sonatype.org/content/repositories/public",
   "Atlassian" at "https://packages.atlassian.com/mvn/maven-atlassian-external",
@@ -85,3 +86,13 @@ ThisBuild / developers := List(
 publish / skip := true // don't publish the root project
 
 ThisBuild / Test / packageBin / publishArtifact := true
+
+githubOwner      := "Privado-Inc"
+githubRepository := "joern"
+credentials +=
+  Credentials(
+    "GitHub Package Registry",
+    "maven.pkg.github.com",
+    "Privado-Inc",
+    sys.env.getOrElse("GITHUB_TOKEN", "N/A")
+  )
