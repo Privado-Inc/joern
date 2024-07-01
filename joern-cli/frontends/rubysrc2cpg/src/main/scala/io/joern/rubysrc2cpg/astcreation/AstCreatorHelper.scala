@@ -1,5 +1,4 @@
 package io.joern.rubysrc2cpg.astcreation
-import io.joern.rubysrc2cpg.astcreation.GlobalTypes.{builtinFunctions, builtinPrefix}
 import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.{
   ClassFieldIdentifier,
   DummyNode,
@@ -9,30 +8,33 @@ import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.{
   RubyNode
 }
 import io.joern.rubysrc2cpg.datastructures.{BlockScope, FieldDecl}
-import io.joern.x2cpg.{Ast, ValidationMode}
-import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, Operators}
-import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.joern.rubysrc2cpg.passes.Defines
-import io.joern.rubysrc2cpg.passes.Defines.RubyOperators
+import io.joern.rubysrc2cpg.passes.GlobalTypes
+import io.joern.rubysrc2cpg.passes.GlobalTypes.{kernelFunctions, kernelPrefix}
+import io.joern.x2cpg.{Ast, ValidationMode}
+import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, Operators}
 
 trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
   protected def computeClassFullName(name: String): String  = s"${scope.surroundingScopeFullName.head}.$name"
   protected def computeMethodFullName(name: String): String = s"${scope.surroundingScopeFullName.head}:$name"
 
-  override def column(node: RubyNode): Option[Integer]    = node.column
-  override def columnEnd(node: RubyNode): Option[Integer] = node.columnEnd
-  override def line(node: RubyNode): Option[Integer]      = node.line
-  override def lineEnd(node: RubyNode): Option[Integer]   = node.lineEnd
-  override def code(node: RubyNode): String               = shortenCode(node.text)
+  override def column(node: RubyNode): Option[Int]    = node.column
+  override def columnEnd(node: RubyNode): Option[Int] = node.columnEnd
+  override def line(node: RubyNode): Option[Int]      = node.line
+  override def lineEnd(node: RubyNode): Option[Int]   = node.lineEnd
+  override def code(node: RubyNode): String           = shortenCode(node.text)
 
-  protected def isBuiltin(x: String): Boolean      = builtinFunctions.contains(x)
-  protected def prefixAsBuiltin(x: String): String = s"$builtinPrefix$pathSep$x"
-  protected def pathSep                            = "."
+  protected def isBuiltin(x: String): Boolean            = kernelFunctions.contains(x)
+  protected def prefixAsKernelDefined(x: String): String = s"$kernelPrefix$pathSep$x"
+  protected def prefixAsBundledType(x: String): String   = s"${GlobalTypes.builtinPrefix}.$x"
+  protected def isBundledClass(x: String): Boolean       = GlobalTypes.bundledClasses.contains(x)
+  protected def pathSep                                  = "."
 
   private def astForFieldInstance(name: String, node: RubyNode & RubyFieldIdentifier): Ast = {
     val identName = node match {
-      case _: InstanceFieldIdentifier => Defines.This
+      case _: InstanceFieldIdentifier => Defines.Self
       case _: ClassFieldIdentifier    => scope.surroundingTypeFullName.map(_.split("[.]").last).getOrElse(Defines.Any)
     }
 
@@ -84,10 +86,14 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
   protected def astForAssignment(
     lhs: NewNode,
     rhs: NewNode,
-    lineNumber: Option[Integer],
-    columnNumber: Option[Integer]
+    lineNumber: Option[Int],
+    columnNumber: Option[Int]
   ): Ast = {
-    val code = Seq(lhs, rhs).collect { case x: AstNodeNew => x.code }.mkString(" = ")
+    astForAssignment(Ast(lhs), Ast(rhs), lineNumber, columnNumber)
+  }
+
+  protected def astForAssignment(lhs: Ast, rhs: Ast, lineNumber: Option[Int], columnNumber: Option[Int]): Ast = {
+    val code = Seq(lhs, rhs).flatMap(_.root).collect { case x: ExpressionNew => x.code }.mkString(" = ")
     val assignment = NewCall()
       .name(Operators.assignment)
       .methodFullName(Operators.assignment)
@@ -96,7 +102,18 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
       .lineNumber(lineNumber)
       .columnNumber(columnNumber)
 
-    callAst(assignment, Seq(Ast(lhs), Ast(rhs)))
+    callAst(assignment, Seq(lhs, rhs))
+  }
+
+  protected def memberForMethod(
+    method: NewMethod,
+    astParentType: Option[String] = None,
+    astParentFullName: Option[String] = None
+  ): NewMember = {
+    val member = NewMember().name(method.name).code(method.name).dynamicTypeHintFullName(Seq(method.fullName))
+    astParentType.foreach(member.astParentType(_))
+    astParentFullName.foreach(member.astParentFullName(_))
+    member
   }
 
   protected val UnaryOperatorNames: Map[String, String] = Map(
@@ -146,94 +163,4 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
     "||=" -> Operators.assignmentOr,
     "&&=" -> Operators.assignmentAnd
   )
-}
-
-// TODO: Move this to a more appropriate place?
-object GlobalTypes {
-  val builtinPrefix = "__builtin"
-
-  /* Sources:
-   * https://ruby-doc.org/docs/ruby-doc-bundle/Manual/man-1.4/function.html
-   * https://ruby-doc.org/3.2.2/Kernel.html
-   *
-   * We comment-out methods that require an explicit "receiver" (target of member access.)
-   */
-  val builtinFunctions: Set[String] = Set(
-    "Array",
-    "Complex",
-    "Float",
-    "Hash",
-    "Integer",
-    "Rational",
-    "String",
-    "__callee__",
-    "__dir__",
-    "__method__",
-    "abort",
-    "at_exit",
-    "autoload",
-    "autoload?",
-    "binding",
-    "block_given?",
-    "callcc",
-    "caller",
-    "caller_locations",
-    "catch",
-    "chomp",
-    "chomp!",
-    "chop",
-    "chop!",
-    // "class",
-    // "clone",
-    "eval",
-    "exec",
-    "exit",
-    "exit!",
-    "fail",
-    "fork",
-    "format",
-    // "frozen?",
-    "gets",
-    "global_variables",
-    "gsub",
-    "gsub!",
-    "iterator?",
-    "lambda",
-    "load",
-    "local_variables",
-    "loop",
-    "open",
-    "p",
-    "print",
-    "printf",
-    "proc",
-    "putc",
-    "puts",
-    "raise",
-    "rand",
-    "readline",
-    "readlines",
-    "require",
-    "require_relative",
-    "select",
-    "set_trace_func",
-    "sleep",
-    "spawn",
-    "sprintf",
-    "srand",
-    "sub",
-    "sub!",
-    "syscall",
-    "system",
-    "tap",
-    "test",
-    // "then",
-    "throw",
-    "trace_var",
-    // "trap",
-    "untrace_var",
-    "warn"
-    // "yield_self",
-  )
-
 }

@@ -1,7 +1,8 @@
 package io.joern.pysrc2cpg
 
 import io.joern.x2cpg.ValidationMode
-import io.shiftleft.codepropertygraph.Cpg
+import io.joern.x2cpg.frontendspecific.pysrc2cpg.Constants
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.Languages
 import overflowdb.BatchedUpdate
 import overflowdb.BatchedUpdate.DiffGraphBuilder
@@ -32,7 +33,7 @@ class Py2Cpg(
   schemaValidationMode: ValidationMode,
   enableFileContent: Boolean
 ) {
-  private val diffGraph   = new DiffGraphBuilder()
+  private val diffGraph   = Cpg.newDiffGraphBuilder
   private val nodeBuilder = new NodeBuilder(diffGraph)
   private val edgeBuilder = new EdgeBuilder(diffGraph)
 

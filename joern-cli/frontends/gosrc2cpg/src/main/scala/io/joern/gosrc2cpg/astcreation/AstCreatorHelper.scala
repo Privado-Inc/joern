@@ -1,14 +1,12 @@
 package io.joern.gosrc2cpg.astcreation
 
-import io.joern.gosrc2cpg.datastructures.GoGlobal
 import io.joern.gosrc2cpg.parser.ParserAst.*
 import io.joern.gosrc2cpg.parser.{ParserAst, ParserKeys, ParserNodeInfo}
 import io.joern.x2cpg.utils.NodeBuilders.newModifierNode
 import io.joern.x2cpg.{Ast, Defines as XDefines}
 import io.shiftleft.codepropertygraph.generated.nodes.{NewModifier, NewNode}
 import io.shiftleft.codepropertygraph.generated.{EvaluationStrategies, ModifierTypes, PropertyNames}
-import org.apache.commons.lang3.StringUtils
-import ujson.Value
+import ujson.{Arr, Obj, Value}
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -18,6 +16,26 @@ trait AstCreatorHelper { this: AstCreator =>
 
   private val parserNodeCache = mutable.TreeMap[Long, ParserNodeInfo]()
 
+  protected def preProcessParserNodeCache(json: Value): Unit = {
+    json match {
+      case obj: Obj =>
+        // TODO: Add unit tests for "ast.ValueSpec" and "ast.FuncLit"
+        if (
+          json.obj
+            .contains(ParserKeys.NodeType) && (obj(ParserKeys.NodeType).str == "ast.FuncDecl" || obj(
+            ParserKeys.NodeType
+          ).str == "ast.ValueSpec" || obj(ParserKeys.NodeType).str == "ast.FuncLit" || obj(
+            ParserKeys.NodeType
+          ).str == "ast.TypeSpec") && !json.obj.contains(ParserKeys.NodeReferenceId)
+        ) {
+          createParserNodeInfo(obj)
+        }
+        obj.value.values.foreach(subJson => preProcessParserNodeCache(subJson))
+      case arr: Arr =>
+        arr.value.foreach(subJson => preProcessParserNodeCache(subJson))
+      case _ =>
+    }
+  }
   protected def createParserNodeInfo(json: Value): ParserNodeInfo = {
     Try(json(ParserKeys.NodeReferenceId).num.toLong) match
       case Failure(_) =>
@@ -41,7 +59,7 @@ trait AstCreatorHelper { this: AstCreator =>
           case None        =>
             // If the parser node info does not exist in the cache, log a warning message and create a null-safe parser node info
             val nodeType = json(ParserKeys.NodeType).str
-            logger.warn(s"Unhandled node_type $nodeType filename: $relPathFileName")
+            logger.warn(s"Unhandled node_type $nodeType filename: $jsonAstFilePath")
             nullSafeCreateParserNodeInfo(None)
   }
 
@@ -113,22 +131,29 @@ trait AstCreatorHelper { this: AstCreator =>
     }
   }
 
-  protected def line(node: Value): Option[Integer] = Try(node(ParserKeys.NodeLineNo).num).toOption.map(_.toInt)
+  protected def line(node: Value): Option[Int] = Try(node(ParserKeys.NodeLineNo).num).toOption.map(_.toInt)
 
-  protected def column(node: Value): Option[Integer] = Try(node(ParserKeys.NodeColNo).num).toOption.map(_.toInt)
+  protected def column(node: Value): Option[Int] = Try(node(ParserKeys.NodeColNo).num).toOption.map(_.toInt)
 
-  protected def lineEndNo(node: Value): Option[Integer] = Try(node(ParserKeys.NodeLineEndNo).num).toOption.map(_.toInt)
+  protected def lineEndNo(node: Value): Option[Int] = Try(node(ParserKeys.NodeLineEndNo).num).toOption.map(_.toInt)
 
-  protected def columnEndNo(node: Value): Option[Integer] = Try(node(ParserKeys.NodeColEndNo).num).toOption.map(_.toInt)
+  protected def columnEndNo(node: Value): Option[Int] = Try(node(ParserKeys.NodeColEndNo).num).toOption.map(_.toInt)
 
-  protected def positionLookupTables(source: String): Map[Int, String] = {
-    source
-      .split("\n")
-      .zipWithIndex
-      .map { case (sourceLine, lineNumber) =>
-        (lineNumber + 1, sourceLine)
-      }
-      .toMap
+  protected def positionLookupTables: Map[Int, String] = {
+    val result = if (!goGlobal.processingDependencies) {
+      val map = parserResult.fileContent
+        .split("\n")
+        .zipWithIndex
+        .map { case (sourceLine, lineNumber) =>
+          (lineNumber + 1, sourceLine)
+        }
+        .toMap
+      map
+    } else {
+      Map[Int, String]()
+    }
+    parserResult.fileContent = ""
+    result
   }
 
   protected def resolveAliasToFullName(alias: String): String = {

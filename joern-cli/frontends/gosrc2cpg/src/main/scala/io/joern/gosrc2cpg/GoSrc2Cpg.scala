@@ -4,20 +4,14 @@ import better.files.File
 import io.joern.gosrc2cpg.datastructures.GoGlobal
 import io.joern.gosrc2cpg.model.GoModHelper
 import io.joern.gosrc2cpg.parser.GoAstJsonParser
-import io.joern.gosrc2cpg.passes.{
-  AstCreationPass,
-  DownloadDependenciesPass,
-  MethodAndTypeCacheBuilderPass,
-  PackageCtorCreationPass
-}
+import io.joern.gosrc2cpg.passes.*
 import io.joern.gosrc2cpg.utils.AstGenRunner
 import io.joern.gosrc2cpg.utils.AstGenRunner.GoAstGenRunnerResult
 import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
 import io.joern.x2cpg.X2CpgFrontend
 import io.joern.x2cpg.passes.frontend.MetaDataPass
 import io.joern.x2cpg.utils.Report
-import io.shiftleft.codepropertygraph.Cpg
-import io.shiftleft.codepropertygraph.generated.Languages
+import io.shiftleft.codepropertygraph.generated.{Cpg, Languages}
 import io.shiftleft.utils.StatsLogger
 
 import java.nio.file.Paths
@@ -33,11 +27,11 @@ class GoSrc2Cpg(goGlobalOption: Option[GoGlobal] = Option(GoGlobal())) extends X
         goGlobalOption
           .orElse(Option(GoGlobal()))
           .foreach(goGlobal => {
-            new MetaDataPass(cpg, Languages.GOLANG, config.inputPath).createAndApply()
+            MetaDataPass(cpg, Languages.GOLANG, config.inputPath).createAndApply()
             StatsLogger.initiateNewStage("AST Generator")
             val astGenResult = new AstGenRunner(config).execute(tmpDir).asInstanceOf[GoAstGenRunnerResult]
             goMod = Some(
-              new GoModHelper(
+              GoModHelper(
                 Some(config),
                 astGenResult.parsedModFile
                   .flatMap(modFile => GoAstJsonParser.readModFile(Paths.get(modFile)).map(x => x))
@@ -45,21 +39,15 @@ class GoSrc2Cpg(goGlobalOption: Option[GoGlobal] = Option(GoGlobal())) extends X
             )
             StatsLogger.endLastStage()
             goGlobal.mainModule = goMod.flatMap(modHelper => modHelper.getModMetaData().map(mod => mod.module.name))
-            StatsLogger.initiateNewStage("Type info cache builder")
-            val astCreators =
-              new MethodAndTypeCacheBuilderPass(Some(cpg), astGenResult.parsedFiles, config, goMod.get, goGlobal)
-                .process()
-            StatsLogger.endLastStage()
-            if (config.fetchDependencies) {
-              StatsLogger.initiateNewStage("Download dependencies pass")
-              goGlobal.processingDependencies = true
-              new DownloadDependenciesPass(goMod.get, goGlobal, config).process()
-              goGlobal.processingDependencies = false
-              StatsLogger.endLastStage()
-            }
-            new AstCreationPass(cpg, astCreators, report).createAndApply()
+            InitialMainSrcPass(cpg, astGenResult.parsedFiles, config, goMod.get, goGlobal, tmpDir).createAndApply()
             if goGlobal.pkgLevelVarAndConstantAstMap.size() > 0 then
-              new PackageCtorCreationPass(cpg, config, goGlobal).createAndApply()
+              PackageCtorCreationPass(cpg, config, goGlobal).createAndApply()
+            if (config.fetchDependencies) {
+              goGlobal.processingDependencies = true
+              DownloadDependenciesPass(cpg, goMod.get, goGlobal, config).process()
+              goGlobal.processingDependencies = false
+            }
+            AstCreationPass(cpg, astGenResult.parsedFiles, config, goMod.get, goGlobal, tmpDir, report).createAndApply()
             report.print()
           })
       }

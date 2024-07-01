@@ -35,8 +35,8 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
         |}
         |""".stripMargin)
       inside(cpg.method.isNotStub.fullName.l) { case List(f, m) =>
-        f shouldBe "Q.V.f"
-        m shouldBe "Q.V.C.m"
+        f shouldBe "Q.V.f:int()"
+        m shouldBe "Q.V.C.m:int()"
       }
 
       inside(cpg.namespaceBlock.nameNot("<global>").l) { case List(q, v) =>
@@ -50,9 +50,9 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
 
         inside(q.method.l) { case List(f, m) =>
           f.name shouldBe "f"
-          f.fullName shouldBe "Q.V.f"
+          f.fullName shouldBe "Q.V.f:int()"
           m.name shouldBe "m"
-          m.fullName shouldBe "Q.V.C.m"
+          m.fullName shouldBe "Q.V.C.m:int()"
         }
       }
 
@@ -66,25 +66,23 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
         |  int f(); // f is a member of V, but is only declared here
         |}
         | 
-        |int V::f() // definition of V's member f outside of V
+        |int Q::V::f() // definition of V's member f outside of V
         |           // f's enclosing namespaces are still the global namespace, Q, and Q::V
         |{
-        |  extern void h(); // This declares ::Q::V::h
+        |  extern void h();
         |  return 0;
         |}
         | 
-        |int V::C::m() // definition of V::C::m outside of the namespace (and the class body)
+        |int Q::V::C::m() // definition of V::C::m outside of the namespace (and the class body)
         |              // enclosing namespaces are the global namespace, Q, and Q::V
         |{ return 0; }
         |""".stripMargin)
       inside(cpg.method.nameNot("<global>").fullName.l) { case List(m1, f1, f2, h, m2) =>
-        // TODO: this looks strange too it first glance. But as Eclipse CDT does not provide any
-        //  mapping from definitions outside of namespace into them we cant reconstruct proper full-names.
-        m1 shouldBe "Q.V.C.m"
-        f1 shouldBe "Q.V.f"
-        h shouldBe "V.f.h"
-        f2 shouldBe "V.f"
-        m2 shouldBe "V.C.m"
+        m1 shouldBe "Q.V.C.m:int()"
+        f1 shouldBe "Q.V.f:int()"
+        f2 shouldBe "Q.V.f:int()"
+        h shouldBe "h:void()"
+        m2 shouldBe "Q.V.C.m:int()"
       }
 
       inside(cpg.namespaceBlock.nameNot("<global>").l) { case List(q, v) =>
@@ -129,9 +127,9 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
       }
 
       inside(cpg.method.internal.nameNot("<global>").fullName.l) { case List(f, g, h) =>
-        f shouldBe "f"
-        g shouldBe "A.g"
-        h shouldBe "h"
+        f shouldBe "f:void()"
+        g shouldBe "A.g:void()"
+        h shouldBe "h:void()"
       }
 
       inside(cpg.method.nameExact("h").ast.isCall.code.l) { case List(c1, c2, c3, c4) =>
@@ -165,16 +163,16 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
       }
 
       inside(cpg.method.internal.nameNot("<global>").fullName.l) { case List(f, g, h) =>
-        f shouldBe "f"
-        g shouldBe "A.g"
-        h shouldBe "h"
+        f shouldBe "f:void()"
+        g shouldBe "A.g:void()"
+        h shouldBe "h:void()"
       }
 
       inside(cpg.call.filterNot(_.name == Operators.fieldAccess).l) { case List(f, g) =>
-        f.name shouldBe "X.f"
-        f.methodFullName shouldBe "X.f"
-        g.name shouldBe "X.g"
-        g.methodFullName shouldBe "X.g"
+        f.name shouldBe "f"
+        f.methodFullName shouldBe "f:void()"
+        g.name shouldBe "g"
+        g.methodFullName shouldBe "A.g:void()"
       }
     }
 
@@ -204,19 +202,19 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
       }
 
       inside(cpg.method.internal.nameNot("<global>").l) { case List(f1, f2, foo, bar) =>
-        f1.fullName shouldBe "A.f"
-        f1.signature shouldBe "void A.f (int)"
-        f2.fullName shouldBe "A.f"
-        f2.signature shouldBe "void A.f (char)"
-        foo.fullName shouldBe "foo"
-        bar.fullName shouldBe "bar"
+        f1.fullName shouldBe "A.f:void(int)"
+        f1.signature shouldBe "void(int)"
+        f2.fullName shouldBe "A.f:void(char)"
+        f2.signature shouldBe "void(char)"
+        foo.fullName shouldBe "foo:void()"
+        bar.fullName shouldBe "bar:void()"
       }
 
       inside(cpg.call.l) { case List(c1, c2) =>
         c1.name shouldBe "f"
-        c1.methodFullName shouldBe "f"
+        c1.methodFullName shouldBe "A.f:void(int)"
         c2.name shouldBe "f"
-        c2.methodFullName shouldBe "f"
+        c2.methodFullName shouldBe "A.f:void(char)"
       }
     }
 
@@ -371,35 +369,18 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
           finalClasses.name shouldBe "FinalClasses"
           finalClasses.fullName shouldBe "FinalClasses"
       }
-      inside(cpg.typ.name("A").derivedTypeTransitive.l) { case List(b1, c11, c12, b2, c21, c22, c23) =>
-        b1.name shouldBe "B1"
-        b1.fullName shouldBe "IntermediateClasses.B1"
-        b1.typeDeclFullName shouldBe "IntermediateClasses.B1"
 
-        c11.name shouldBe "C11"
-        c11.fullName shouldBe "FinalClasses.C11"
-        c11.typeDeclFullName shouldBe "FinalClasses.C11"
-
-        c12.name shouldBe "C12"
-        c12.fullName shouldBe "FinalClasses.C12"
-        c12.typeDeclFullName shouldBe "FinalClasses.C12"
-
-        b2.name shouldBe "B2"
-        b2.fullName shouldBe "IntermediateClasses.B2"
-        b2.typeDeclFullName shouldBe "IntermediateClasses.B2"
-
-        c21.name shouldBe "C21"
-        c21.fullName shouldBe "FinalClasses.C21"
-        c21.typeDeclFullName shouldBe "FinalClasses.C21"
-
-        c22.name shouldBe "C22"
-        c22.fullName shouldBe "FinalClasses.C22"
-        c22.typeDeclFullName shouldBe "FinalClasses.C22"
-
-        c23.name shouldBe "C23"
-        c23.fullName shouldBe "FinalClasses.C23"
-        c23.typeDeclFullName shouldBe "FinalClasses.C23"
-      }
+      cpg.typ.name("A").derivedTypeTransitive.typeDeclFullName.sorted.l shouldBe List(
+        "FinalClasses.C11",
+        "FinalClasses.C12",
+        "FinalClasses.C21",
+        "FinalClasses.C22",
+        "FinalClasses.C23",
+        "IntermediateClasses.B1",
+        "IntermediateClasses.B1*",
+        "IntermediateClasses.B2",
+        "IntermediateClasses.B2*"
+      )
     }
 
   }

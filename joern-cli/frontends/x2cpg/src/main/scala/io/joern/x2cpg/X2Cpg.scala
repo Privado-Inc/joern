@@ -3,7 +3,7 @@ package io.joern.x2cpg
 import better.files.File
 import io.joern.x2cpg.X2Cpg.{applyDefaultOverlays, withErrorsToConsole}
 import io.joern.x2cpg.layers.{Base, CallGraph, ControlFlow, TypeRelations}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext}
 import org.slf4j.LoggerFactory
 import overflowdb.Config
@@ -117,14 +117,35 @@ abstract class X2CpgMain[T <: X2CpgConfig[T], X <: X2CpgFrontend[?]](val cmdLine
   implicit defaultConfig: T
 ) {
 
+  private val logger = LoggerFactory.getLogger(classOf[X2CpgMain[T, X]])
+
+  private def logVersionAndArgs(args: Array[String]): Unit = {
+    val frontendName = frontend.getClass.getSimpleName.stripSuffix("$")
+    val joernVersion =
+      // We only have a proper version there if joern was build using sbt assembly. Otherwise, it might be null.
+      Option(frontend.getClass.getPackage.getImplementationVersion).map(v => s"v$v").getOrElse("local build")
+    val logText = s"Executing $frontendName ($joernVersion) with arguments: ${args.mkString(" ")}"
+    logger.debug(logText)
+  }
+
+  private def logOutputPath(outputPath: String): Unit = {
+    if (X2CpgConfig.defaultOutputPath == outputPath) {
+      // We only log the output path of no explicit path was given by the user.
+      // Otherwise, the user obviously knows the path.
+      logger.info(s"The resulting CPG will be stored at ${File(outputPath)}")
+    }
+  }
+
   /** method that evaluates frontend with configuration
     */
   def run(config: T, frontend: X): Unit
 
   def main(args: Array[String]): Unit = {
+    logVersionAndArgs(args)
     X2Cpg.parseCommandLine(args, cmdLineParser, defaultConfig) match {
       case Some(config) =>
         try {
+          logOutputPath(config.outputPath)
           run(config, frontend)
         } catch {
           case ex: Throwable =>

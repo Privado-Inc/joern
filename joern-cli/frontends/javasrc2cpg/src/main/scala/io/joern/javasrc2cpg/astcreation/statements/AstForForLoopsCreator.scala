@@ -23,6 +23,7 @@ import org.slf4j.LoggerFactory
 
 import scala.jdk.CollectionConverters.*
 import scala.jdk.OptionConverters.RichOptional
+import scala.util.Try
 
 trait AstForForLoopsCreator { this: AstCreator =>
 
@@ -229,7 +230,7 @@ trait AstForForLoopsCreator { this: AstCreator =>
     )
   }
 
-  private def nativeForEachIdxLocalNode(lineNo: Option[Integer]): NewLocal = {
+  private def nativeForEachIdxLocalNode(lineNo: Option[Int]): NewLocal = {
     val idxName      = nextIndexName()
     val typeFullName = TypeConstants.Int
     val idxLocal =
@@ -242,7 +243,7 @@ trait AstForForLoopsCreator { this: AstCreator =>
     idxLocal
   }
 
-  private def nativeForEachIdxInitializerAst(lineNo: Option[Integer], idxLocal: NewLocal): Ast = {
+  private def nativeForEachIdxInitializerAst(lineNo: Option[Int], idxLocal: NewLocal): Ast = {
     val idxName = idxLocal.name
     val idxInitializerCallNode = newOperatorCallNode(
       Operators.assignment,
@@ -261,11 +262,7 @@ trait AstForForLoopsCreator { this: AstCreator =>
       .withRefEdge(idxIdentifierArg, idxLocal)
   }
 
-  private def nativeForEachCompareAst(
-    lineNo: Option[Integer],
-    iterableSource: NodeTypeInfo,
-    idxLocal: NewLocal
-  ): Ast = {
+  private def nativeForEachCompareAst(lineNo: Option[Int], iterableSource: NodeTypeInfo, idxLocal: NewLocal): Ast = {
     val idxName = idxLocal.name
 
     val compareNode = newOperatorCallNode(
@@ -295,7 +292,7 @@ trait AstForForLoopsCreator { this: AstCreator =>
       .withRefEdges(fieldAccessIdentifier, iterableSourceNode.toList)
   }
 
-  private def nativeForEachIncrementAst(lineNo: Option[Integer], idxLocal: NewLocal): Ast = {
+  private def nativeForEachIncrementAst(lineNo: Option[Int], idxLocal: NewLocal): Ast = {
     val incrementNode = newOperatorCallNode(
       Operators.postIncrement,
       code = s"${idxLocal.name}++",
@@ -325,8 +322,9 @@ trait AstForForLoopsCreator { this: AstCreator =>
 
     maybeVariable match {
       case Some(variable) =>
-        val name         = variable.getNameAsString
-        val typeFullName = typeInfoCalc.fullName(variable.getType).getOrElse("ANY")
+        val name = variable.getNameAsString
+        val typeFullName =
+          tryWithSafeStackOverflow(variable.getType).toOption.flatMap(typeInfoCalc.fullName).getOrElse("ANY")
         val localNode = partialLocalNode
           .name(name)
           .code(variable.getNameAsString)
@@ -341,7 +339,7 @@ trait AstForForLoopsCreator { this: AstCreator =>
     }
   }
 
-  private def iteratorLocalForForEach(lineNumber: Option[Integer]): NewLocal = {
+  private def iteratorLocalForForEach(lineNumber: Option[Int]): NewLocal = {
     val iteratorLocalName = nextIterableName()
     NewLocal()
       .name(iteratorLocalName)
@@ -354,7 +352,7 @@ trait AstForForLoopsCreator { this: AstCreator =>
     iterExpr: Expression,
     iteratorLocalNode: NewLocal,
     iterableType: Option[String],
-    lineNo: Option[Integer]
+    lineNo: Option[Int]
   ): Ast = {
     val iteratorAssignNode =
       newOperatorCallNode(Operators.assignment, code = "", typeFullName = Some(TypeConstants.Iterator), line = lineNo)
@@ -383,7 +381,7 @@ trait AstForForLoopsCreator { this: AstCreator =>
       .withRefEdge(iteratorAssignIdentifier, iteratorLocalNode)
   }
 
-  private def hasNextCallAstForForEach(iteratorLocalNode: NewLocal, lineNo: Option[Integer]): Ast = {
+  private def hasNextCallAstForForEach(iteratorLocalNode: NewLocal, lineNo: Option[Int]): Ast = {
     val iteratorHasNextCallNode =
       newCallNode(
         "hasNext",
