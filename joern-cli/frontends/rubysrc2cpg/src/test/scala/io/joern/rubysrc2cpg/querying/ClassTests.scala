@@ -3,7 +3,7 @@ package io.joern.rubysrc2cpg.querying
 import io.joern.rubysrc2cpg.passes.{GlobalTypes, Defines as RubyDefines}
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.joern.x2cpg.Defines
-import io.shiftleft.codepropertygraph.generated.Operators
+import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 
@@ -466,12 +466,14 @@ class ClassTests extends RubyCode2CpgFixture {
     }
   }
 
-  "fully qualified base types" should {
+  "base types names extending a class in the definition" should {
 
     val cpg = code("""require "rails/all"
         |
         |module Bar
-        | class Baz
+        | module Baz
+        |   class Boz
+        |   end
         | end
         |end
         |
@@ -479,12 +481,12 @@ class ClassTests extends RubyCode2CpgFixture {
         |  class Application < Rails::Application
         |  end
         |
-        |  class Foo < Bar::Baz
+        |  class Foo < Bar::Baz::Boz
         |  end
         |end
         |""".stripMargin)
 
-    "not confuse the internal `Application` with `Rails::Application` and leave the type unresolved" in {
+    "handle a qualified base type from an external type correctly" in {
       inside(cpg.typeDecl("Application").headOption) {
         case Some(app) =>
           app.inheritsFromTypeFullName.head shouldBe "Rails.Application"
@@ -492,10 +494,10 @@ class ClassTests extends RubyCode2CpgFixture {
       }
     }
 
-    "resolve the internal type being referenced" in {
+    "handle a deeply qualified internal base type correctly" in {
       inside(cpg.typeDecl("Foo").headOption) {
         case Some(app) =>
-          app.inheritsFromTypeFullName.head shouldBe "Test0.rb:<global>::program.Bar.Baz"
+          app.inheritsFromTypeFullName.head shouldBe "Bar.Baz.Boz"
         case None => fail("Expected a type decl for 'Foo', instead got nothing")
       }
     }
@@ -574,6 +576,23 @@ class ClassTests extends RubyCode2CpgFixture {
             case xs => fail(s"Expected one method for init, instead got ${xs.name.mkString(", ")}")
           }
         case xs => fail(s"Expected TypeDecl for Foo, instead got ${xs.name.mkString(", ")}")
+      }
+    }
+
+    "call the body method" in {
+      inside(cpg.call.nameExact(RubyDefines.TypeDeclBody).headOption) {
+        case Some(bodyCall) =>
+          bodyCall.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
+          bodyCall.methodFullName shouldBe s"Test0.rb:<global>::program.Foo:${RubyDefines.TypeDeclBody}"
+
+          bodyCall.receiver.isEmpty shouldBe true
+          inside(bodyCall.argumentOption(0)) {
+            case Some(selfArg: Call) =>
+              selfArg.name shouldBe Operators.fieldAccess
+              selfArg.code shouldBe "self::Foo"
+            case None => fail("Expected `self` argument")
+          }
+        case None => fail("Expected <body> call")
       }
     }
   }
@@ -780,6 +799,28 @@ class ClassTests extends RubyCode2CpgFixture {
             case xs => fail(s"Expected lhs and rhs for assignment call, got [${xs.code.mkString(",")}]")
           }
         case xs => fail(s"Expected one call for assignment, got [${xs.code.mkString(",")}]")
+      }
+    }
+  }
+
+  "Class definition on one line" should {
+    val cpg = code("""
+        |class X 1 end
+        |""".stripMargin)
+
+    "create TYPE_DECL" in {
+      inside(cpg.typeDecl.name("X").l) {
+        case xClass :: Nil =>
+          inside(xClass.astChildren.isMethod.l) {
+            case bodyMethod :: initMethod :: Nil =>
+              inside(bodyMethod.block.astChildren.l) {
+                case (literal: Literal) :: Nil =>
+                  literal.code shouldBe "1"
+                case xs => fail(s"Exepcted literal for body method, got [${xs.code.mkString(",")}]")
+              }
+            case xs => fail(s"Expected body and init method, got [${xs.code.mkString(",")}]")
+          }
+        case xs => fail(s"Expected one class, got [${xs.code.mkString(",")}]")
       }
     }
   }
