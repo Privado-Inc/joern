@@ -3,6 +3,7 @@ package io.joern.c2cpg.astcreation
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
 import io.joern.x2cpg.{Ast, ValidationMode}
+import io.joern.x2cpg.Defines as X2CpgDefines
 import org.eclipse.cdt.core.dom.ast.*
 import org.eclipse.cdt.core.dom.ast.cpp.*
 import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPASTAliasDeclaration
@@ -99,19 +100,36 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
     case i: IASTEqualsInitializer =>
       val operatorName = Operators.assignment
       val callNode_ =
-        callNode(declarator, code(declarator), operatorName, operatorName, DispatchTypes.STATIC_DISPATCH)
+        callNode(
+          declarator,
+          code(declarator),
+          operatorName,
+          operatorName,
+          DispatchTypes.STATIC_DISPATCH,
+          None,
+          Some(X2CpgDefines.Any)
+        )
       val left  = astForNode(declarator.getName)
       val right = astForNode(i.getInitializerClause)
       callAst(callNode_, List(left, right))
     case i: ICPPASTConstructorInitializer =>
-      val name      = ASTStringUtil.getSimpleName(declarator.getName)
-      val callNode_ = callNode(declarator, code(declarator), name, name, DispatchTypes.STATIC_DISPATCH)
-      val args      = i.getArguments.toList.map(x => astForNode(x))
+      val name = ASTStringUtil.getSimpleName(declarator.getName)
+      val callNode_ =
+        callNode(declarator, code(declarator), name, name, DispatchTypes.STATIC_DISPATCH, None, Some(X2CpgDefines.Any))
+      val args = i.getArguments.toList.map(x => astForNode(x))
       callAst(callNode_, args)
     case i: IASTInitializerList =>
       val operatorName = Operators.assignment
       val callNode_ =
-        callNode(declarator, code(declarator), operatorName, operatorName, DispatchTypes.STATIC_DISPATCH)
+        callNode(
+          declarator,
+          code(declarator),
+          operatorName,
+          operatorName,
+          DispatchTypes.STATIC_DISPATCH,
+          None,
+          Some(X2CpgDefines.Any)
+        )
       val left  = astForNode(declarator.getName)
       val right = astForNode(i)
       callAst(callNode_, List(left, right))
@@ -151,7 +169,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
   protected def astForASMDeclaration(asm: IASTASMDeclaration): Ast = Ast(unknownNode(asm, code(asm)))
 
   private def astForStructuredBindingDeclaration(decl: ICPPASTStructuredBindingDeclaration): Ast = {
-    val node = blockNode(decl, Defines.empty, Defines.voidTypeName)
+    val node = blockNode(decl, Defines.Empty, Defines.Void)
     scope.pushNewScope(node)
     val childAsts = decl.getNames.toList.map { name =>
       astForNode(name)
@@ -212,8 +230,9 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
           case d: IASTDeclarator if d.getInitializer != null =>
             astForInitializer(d, d.getInitializer)
           case arrayDecl: IASTArrayDeclarator =>
-            val op           = Operators.arrayInitializer
-            val initCallNode = callNode(arrayDecl, code(arrayDecl), op, op, DispatchTypes.STATIC_DISPATCH)
+            val op = Operators.arrayInitializer
+            val initCallNode =
+              callNode(arrayDecl, code(arrayDecl), op, op, DispatchTypes.STATIC_DISPATCH, None, Some(X2CpgDefines.Any))
             val initArgs =
               arrayDecl.getArrayModifiers.toList.filter(m => m.getConstantExpression != null).map(astForNode)
             callAst(initCallNode, initArgs)
@@ -272,7 +291,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
         calls,
         s"$fullname:${io.joern.x2cpg.Defines.StaticInitMethodName}",
         None,
-        Defines.anyTypeName,
+        Defines.Any,
         Some(filename),
         lineNumber,
         columnNumber
@@ -318,7 +337,15 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
     if (enumerator.getValue != null) {
       val operatorName = Operators.assignment
       val callNode_ =
-        callNode(enumerator, code(enumerator), operatorName, operatorName, DispatchTypes.STATIC_DISPATCH)
+        callNode(
+          enumerator,
+          code(enumerator),
+          operatorName,
+          operatorName,
+          DispatchTypes.STATIC_DISPATCH,
+          None,
+          Some(X2CpgDefines.Any)
+        )
       val left  = astForNode(enumerator.getName)
       val right = astForNode(enumerator.getValue)
       val ast   = callAst(callNode_, List(left, right))
@@ -370,7 +397,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
         calls,
         s"$deAliasedFullName:${io.joern.x2cpg.Defines.StaticInitMethodName}",
         None,
-        Defines.anyTypeName,
+        Defines.Any,
         Some(filename),
         lineNumber,
         columnNumber
