@@ -1,9 +1,9 @@
 package io.shiftleft.semanticcpg.language.types.expressions.generalizations
 
-import io.shiftleft.codepropertygraph.generated.nodes._
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.semanticcpg.language.*
 import overflowdb.traversal.help
-import overflowdb.traversal.help.Doc
+import io.shiftleft.codepropertygraph.generated.help.Doc
 
 @help.Traversal(elementType = classOf[CfgNode])
 class CfgNodeTraversal[A <: CfgNode](val traversal: Iterator[A]) extends AnyVal {
