@@ -10,6 +10,7 @@ import scopt.OParser
 final case class Config(
   phpIni: Option[String] = None,
   phpParserBin: Option[String] = None,
+  phpExtensions: Set[String] = Set(),
   downloadDependencies: Boolean = false
 ) extends X2CpgConfig[Config]
     with TypeRecoveryParserConfig[Config]
@@ -22,6 +23,10 @@ final case class Config(
 
   def withPhpParserBin(phpParserBin: String): Config = {
     copy(phpParserBin = Some(phpParserBin)).withInheritedFields(this)
+  }
+
+  def withExtensions(phpExtensions: Set[String]): Config = {
+    copy(phpExtensions = phpExtensions).withInheritedFields(this)
   }
 
   override def withDownloadDependencies(downloadDependencies: Boolean): Config = {
