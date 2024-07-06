@@ -9,8 +9,7 @@ import io.shiftleft.semanticcpg.language.importresolver.*
 import io.shiftleft.semanticcpg.language.operatorextension.OpNodes
 import io.shiftleft.semanticcpg.language.operatorextension.OpNodes.{Assignment, FieldAccess}
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.BatchedUpdate
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 import scopt.OParser
 
 import java.util.regex.Pattern
@@ -151,7 +150,7 @@ abstract class XTypeRecoveryPassGenerator[CompilationUnitType <: AstNode](
     if (postTypeRecoveryAndPropagation)
       res.append(
         new CpgPass(cpg):
-          override def run(builder: BatchedUpdate.DiffGraphBuilder): Unit = {
+          override def run(builder: DiffGraphBuilder): Unit = {
             XTypeRecoveryPassGenerator.linkMembersToTheirRefs(cpg, builder)
           }
       )
@@ -555,7 +554,7 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
     isFieldCache.getOrElseUpdate(i, isFieldUncached(i))
 
   protected def isFieldUncached(i: Identifier): Boolean =
-    i.method.typeDecl.member.nameExact(i.name).nonEmpty
+    Try(i.method.typeDecl.member.nameExact(i.name).nonEmpty).getOrElse(false)
 
   /** Associates the types with the identifier. This may sometimes be an identifier that should be considered a field
     * which this method uses [[isField]] to determine.
@@ -569,7 +568,9 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
     val fieldName = getFieldName(fa).split(Pattern.quote(pathSep)).last
     Try(cpg.member.nameExact(fieldName).typeDecl.fullName.filterNot(_.contains("ANY")).toSet) match
       case Failure(exception) =>
-        logger.warn("Unable to obtain name of member's parent type declaration", exception)
+        logger.warn(
+          s"Unable to obtain name of member's parent type declaration: ${cpg.member.nameExact(fieldName).propertiesMap.mkString(",")}"
+        )
         Set.empty
       case Success(typeDeclNames) => typeDeclNames
   }
