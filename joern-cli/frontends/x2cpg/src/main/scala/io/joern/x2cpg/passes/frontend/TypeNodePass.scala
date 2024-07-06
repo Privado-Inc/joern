@@ -4,7 +4,7 @@ import io.joern.x2cpg.passes.frontend.TypeNodePass.fullToShortName
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.NewType
 import io.shiftleft.passes.{KeyPool, CpgPass}
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.codepropertygraph.generated.PropertyNames
 
 import scala.collection.mutable
@@ -74,6 +74,11 @@ object TypeNodePass {
   }
 
   def fullToShortName(typeName: String): String = {
-    typeName.takeWhile(_ != ':').split('.').lastOption.getOrElse(typeName)
+    if (typeName.endsWith(">")) {
+      // special case for typeFullName with generics as suffix
+      typeName.takeWhile(c => c != ':' && c != '<').split('.').lastOption.getOrElse(typeName)
+    } else {
+      typeName.takeWhile(_ != ':').split('.').lastOption.getOrElse(typeName)
+    }
   }
 }
