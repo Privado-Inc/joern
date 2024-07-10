@@ -55,6 +55,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     case node: SelfIdentifier           => astForSelfIdentifier(node)
     case node: BreakStatement           => astForBreakStatement(node)
     case node: StatementList            => astForStatementList(node)
+    case node: ReturnExpression         => astForReturnStatement(node)
     case node: DummyNode                => Ast(node.node)
     case node: Unknown                  => astForUnknown(node)
     case x =>
@@ -171,7 +172,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     Ast(typeRefNode(node, code(node), node.typeFullName))
   }
 
-  protected def astForMemberCall(node: MemberCall): Ast = {
+  protected def astForMemberCall(node: MemberCall, isStatic: Boolean = false): Ast = {
 
     def createMemberCall(n: MemberCall): Ast = {
       val baseAst     = astForExpression(n.target) // this wil be something like self.Foo
@@ -195,11 +196,15 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
         }
         .getOrElse(XDefines.Any -> XDefines.DynamicCallUnknownFullName)
       val argumentAsts = n.arguments.map(astForMethodCallArgument)
-      val dispatchType = DispatchTypes.DYNAMIC_DISPATCH
+      val dispatchType = if (isStatic) DispatchTypes.STATIC_DISPATCH else DispatchTypes.DYNAMIC_DISPATCH
 
       val call = callNode(n, code(n), n.methodName, XDefines.DynamicCallUnknownFullName, dispatchType)
       if methodFullName != XDefines.DynamicCallUnknownFullName then call.possibleTypes(Seq(methodFullName))
-      callAst(call, argumentAsts, base = Option(baseAst), receiver = Option(receiverAst))
+      if (isStatic) {
+        callAst(call, argumentAsts, base = Option(baseAst)).copy(receiverEdges = Nil)
+      } else {
+        callAst(call, argumentAsts, base = Option(baseAst), receiver = Option(receiverAst))
+      }
     }
 
     def determineMemberAccessBase(target: RubyNode): RubyNode = target match {
@@ -360,6 +365,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
                     astForExpression(node.lhs)
                   case _ => astForExpression(node.lhs)
                 }
+
                 val rhsAst = astForExpression(node.rhs)
 
                 // If this is a simple object instantiation assignment, we can give the LHS variable a type hint
@@ -548,7 +554,8 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
 
     val argumentAsts = node.elements.flatMap(elem =>
       elem match
-        case associationNode: Association => astForAssociationHash(associationNode, tmp)
+        case associationNode: Association         => astForAssociationHash(associationNode, tmp)
+        case splattingRubyNode: SplattingRubyNode => astForSplattingRubyNode(splattingRubyNode) :: Nil
         case node =>
           logger.warn(s"Could not represent element: ${code(node)} ($relativeFileName), skipping")
           astForUnknown(node) :: Nil
@@ -813,7 +820,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
           x.argumentIndex_=(-1)
         }
         value
-      case _: StaticLiteral => astForExpression(assoc)
+      case _: (LiteralExpr | RubyCall) => astForExpression(assoc)
       case x =>
         logger.warn(s"Not explicitly handled argument association key of type ${x.getClass.getSimpleName}")
         astForExpression(assoc)
