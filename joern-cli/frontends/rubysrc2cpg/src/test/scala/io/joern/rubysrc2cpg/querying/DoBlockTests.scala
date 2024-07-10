@@ -207,14 +207,16 @@ class DoBlockTests extends RubyCode2CpgFixture {
         |""".stripMargin)
 
     // Basic assertions for expected behaviour
-    "create the declarations for the closure" in {
-      inside(cpg.method("<lambda>.*").l) {
+    "create the declarations for the closure with captured local" in {
+      inside(cpg.method.isLambda.l) {
         case m :: Nil =>
           m.name should startWith("<lambda>")
+          val myValue = m.local.nameExact("myValue").head
+          myValue.closureBindingId shouldBe Option("Test0.rb:<global>::program:myValue")
         case xs => fail(s"Expected exactly one closure method decl, instead got [${xs.code.mkString(",")}]")
       }
 
-      inside(cpg.typeDecl("<lambda>.*").l) {
+      inside(cpg.typeDecl.isLambda.l) {
         case m :: Nil =>
           m.name should startWith("<lambda>")
         case xs => fail(s"Expected exactly one closure type decl, instead got [${xs.code.mkString(",")}]")
@@ -224,7 +226,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
     "annotate the nodes via CAPTURE bindings" in {
       cpg.all.collectAll[ClosureBinding].l match {
         case myValue :: Nil =>
-          myValue.closureOriginalName.head shouldBe "myValue"
+          myValue.closureOriginalName shouldBe Option("myValue")
           inside(myValue._localViaRefOut) {
             case Some(local) =>
               local.name shouldBe "myValue"
@@ -312,6 +314,58 @@ class DoBlockTests extends RubyCode2CpgFixture {
           testName.code shouldBe "'Foo'"
           testMethod.referencedMethod.call.nameExact("puts").nonEmpty shouldBe true
         case xs => fail(s"Expected a literal and method ref argument, instead got $xs")
+      }
+    }
+
+  }
+
+  "A lambda with arrow syntax" should {
+
+    val cpg = code("""
+        |arrow_lambda = ->(y) { y }
+        |""".stripMargin)
+
+    "create a lambda method with a `y` parameter" in {
+      inside(cpg.method.isLambda.headOption) {
+        case Some(lambda) =>
+          lambda.code shouldBe "{ y }"
+          lambda.parameter.name.l shouldBe List("self", "y")
+        case xs => fail(s"Expected a lambda method")
+      }
+    }
+
+    "create a method ref assigned to `arrow_lambda`" in {
+      inside(cpg.method.isModule.assignment.code("arrow_lambda.*").headOption) {
+        case Some(lambdaAssign) =>
+          lambdaAssign.target.asInstanceOf[Identifier].name shouldBe "arrow_lambda"
+          lambdaAssign.source.asInstanceOf[MethodRef].methodFullName shouldBe "Test0.rb:<global>::program:<lambda>0"
+        case xs => fail(s"Expected an assignment to a lambda")
+      }
+    }
+
+  }
+
+  "A lambda with lambda keyword syntax" should {
+
+    val cpg = code("""
+        |a_lambda = lambda { |y| y }
+        |""".stripMargin)
+
+    "create a lambda method with a `y` parameter" in {
+      inside(cpg.method.isLambda.headOption) {
+        case Some(lambda) =>
+          lambda.code shouldBe "{ |y| y }"
+          lambda.parameter.name.l shouldBe List("self", "y")
+        case xs => fail(s"Expected a lambda method")
+      }
+    }
+
+    "create a method ref assigned to `arrow_lambda`" in {
+      inside(cpg.method.isModule.assignment.code("a_lambda.*").headOption) {
+        case Some(lambdaAssign) =>
+          lambdaAssign.target.asInstanceOf[Identifier].name shouldBe "a_lambda"
+          lambdaAssign.source.asInstanceOf[MethodRef].methodFullName shouldBe "Test0.rb:<global>::program:<lambda>0"
+        case xs => fail(s"Expected an assignment to a lambda")
       }
     }
 

@@ -3,7 +3,7 @@ package io.joern.rubysrc2cpg.querying
 import io.joern.rubysrc2cpg.passes.{GlobalTypes, Defines as RubyDefines}
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.joern.x2cpg.Defines
-import io.shiftleft.codepropertygraph.generated.Operators
+import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 
@@ -354,8 +354,7 @@ class ClassTests extends RubyCode2CpgFixture {
 
   }
 
-  // TODO: This should be remodelled as a property access `animal.bark = METHOD_REF`
-  "a basic singleton class" ignore {
+  "a basic singleton class extending an object instance" should {
     val cpg = code("""class Animal; end
         |animal = Animal.new
         |
@@ -363,35 +362,52 @@ class ClassTests extends RubyCode2CpgFixture {
         |  def bark
         |    'Woof'
         |  end
+        |
+        |  def legs
+        |     4
+        |  end
         |end
         |
         |animal.bark # => 'Woof'
         |""".stripMargin)
 
-    "generate a type decl with the associated members" in {
-      inside(cpg.typeDecl.nameExact("<anon-class-0>").l) {
-        case anonClass :: Nil =>
-          anonClass.name shouldBe "<anon-class-0>"
-          anonClass.fullName shouldBe "Test0.rb:<global>::program.<anon-class-0>"
-          // TODO: Attempt to resolve the below with the `scope` class once we're handling constructors
-          anonClass.inheritsFromTypeFullName shouldBe Seq("animal")
-          inside(anonClass.method.l) {
-            case defaultConstructor :: bark :: Nil =>
-              defaultConstructor.name shouldBe Defines.ConstructorMethodName
-              defaultConstructor.fullName shouldBe s"Test0.rb:<global>::program.<anon-class-0>:${Defines.ConstructorMethodName}"
+    "Create assignments to method refs for methods on singleton object" in {
+      inside(cpg.method.isModule.block.assignment.l) {
+        case _ :: _ :: _ :: barkAssignment :: legsAssignment :: Nil =>
+          inside(barkAssignment.argument.l) {
+            case (lhs: Call) :: (rhs: MethodRef) :: Nil =>
+              val List(identifier, fieldIdentifier) = lhs.argument.l: @unchecked
+              identifier.code shouldBe "animal"
+              fieldIdentifier.code shouldBe "bark"
 
-              bark.name shouldBe "bark"
-              bark.fullName shouldBe "Test0.rb:<global>::program.<anon-class-0>:bark"
-            case xs => fail(s"Expected a single method, but got [${xs.map(x => x.label -> x.code).mkString(",")}]")
+              rhs.methodFullName shouldBe "Test0.rb:<global>::program:<lambda>0"
+            case xs => fail(s"Expected two arguments for assignment, got [${xs.code.mkString(",")}]")
           }
-        case xs => fail(s"Expected a single anonymous class, but got [${xs.map(x => x.label -> x.code).mkString(",")}]")
+
+          inside(legsAssignment.argument.l) {
+            case (lhs: Call) :: (rhs: MethodRef) :: Nil =>
+              val List(identifier, fieldIdentifier) = lhs.argument.l: @unchecked
+              identifier.code shouldBe "animal"
+              fieldIdentifier.code shouldBe "legs"
+
+              rhs.methodFullName shouldBe "Test0.rb:<global>::program:<lambda>1"
+            case xs => fail(s"Expected two arguments for assignment, got [${xs.code.mkString(",")}]")
+          }
+        case xs => fail(s"Expected five assignments, got [${xs.code.mkString(",")}]")
       }
     }
 
-    "register that `animal` may possibly be an instantiation of the singleton type" in {
-      cpg.local("animal").possibleTypes.l should contain("Test0.rb:<global>::program.<anon-class-0>")
-    }
+    "Create lambda methods for methods on singleton object" in {
+      inside(cpg.method.isLambda.l) {
+        case barkLambda :: legsLambda :: Nil =>
+          val List(barkLambdaParam) = barkLambda.method.parameter.l
+          val List(legsLambdaParam) = legsLambda.method.parameter.l
 
+          barkLambdaParam.code shouldBe RubyDefines.Self
+          legsLambdaParam.code shouldBe RubyDefines.Self
+        case xs => fail(s"Expected two lambdas, got [${xs.code.mkString(",")}]")
+      }
+    }
   }
 
   "if: <val> as function param" should {
@@ -466,12 +482,14 @@ class ClassTests extends RubyCode2CpgFixture {
     }
   }
 
-  "fully qualified base types" should {
+  "base types names extending a class in the definition" should {
 
     val cpg = code("""require "rails/all"
         |
         |module Bar
-        | class Baz
+        | module Baz
+        |   class Boz
+        |   end
         | end
         |end
         |
@@ -479,12 +497,12 @@ class ClassTests extends RubyCode2CpgFixture {
         |  class Application < Rails::Application
         |  end
         |
-        |  class Foo < Bar::Baz
+        |  class Foo < Bar::Baz::Boz
         |  end
         |end
         |""".stripMargin)
 
-    "not confuse the internal `Application` with `Rails::Application` and leave the type unresolved" in {
+    "handle a qualified base type from an external type correctly" in {
       inside(cpg.typeDecl("Application").headOption) {
         case Some(app) =>
           app.inheritsFromTypeFullName.head shouldBe "Rails.Application"
@@ -492,10 +510,10 @@ class ClassTests extends RubyCode2CpgFixture {
       }
     }
 
-    "resolve the internal type being referenced" in {
+    "handle a deeply qualified internal base type correctly" in {
       inside(cpg.typeDecl("Foo").headOption) {
         case Some(app) =>
-          app.inheritsFromTypeFullName.head shouldBe "Test0.rb:<global>::program.Bar.Baz"
+          app.inheritsFromTypeFullName.head shouldBe "Bar.Baz.Boz"
         case None => fail("Expected a type decl for 'Foo', instead got nothing")
       }
     }
@@ -574,6 +592,23 @@ class ClassTests extends RubyCode2CpgFixture {
             case xs => fail(s"Expected one method for init, instead got ${xs.name.mkString(", ")}")
           }
         case xs => fail(s"Expected TypeDecl for Foo, instead got ${xs.name.mkString(", ")}")
+      }
+    }
+
+    "call the body method" in {
+      inside(cpg.call.nameExact(RubyDefines.TypeDeclBody).headOption) {
+        case Some(bodyCall) =>
+          bodyCall.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
+          bodyCall.methodFullName shouldBe s"Test0.rb:<global>::program.Foo:${RubyDefines.TypeDeclBody}"
+
+          bodyCall.receiver.isEmpty shouldBe true
+          inside(bodyCall.argumentOption(0)) {
+            case Some(selfArg: Call) =>
+              selfArg.name shouldBe Operators.fieldAccess
+              selfArg.code shouldBe "self::Foo"
+            case None => fail("Expected `self` argument")
+          }
+        case None => fail("Expected <body> call")
       }
     }
   }
@@ -781,6 +816,49 @@ class ClassTests extends RubyCode2CpgFixture {
           }
         case xs => fail(s"Expected one call for assignment, got [${xs.code.mkString(",")}]")
       }
+    }
+  }
+
+  "Class definition on one line" should {
+    val cpg = code("""
+        |class X 1 end
+        |""".stripMargin)
+
+    "create TYPE_DECL" in {
+      inside(cpg.typeDecl.name("X").l) {
+        case xClass :: Nil =>
+          inside(xClass.astChildren.isMethod.l) {
+            case bodyMethod :: initMethod :: Nil =>
+              inside(bodyMethod.block.astChildren.l) {
+                case (literal: Literal) :: Nil =>
+                  literal.code shouldBe "1"
+                case xs => fail(s"Exepcted literal for body method, got [${xs.code.mkString(",")}]")
+              }
+            case xs => fail(s"Expected body and init method, got [${xs.code.mkString(",")}]")
+          }
+        case xs => fail(s"Expected one class, got [${xs.code.mkString(",")}]")
+      }
+    }
+  }
+
+  "A call to super" should {
+    val cpg = code("""
+        |class A
+        |  def foo(a)
+        |  end
+        |end
+        |class B < A
+        |  def foo(a)
+        |    super(a)
+        |  end
+        |end
+        |""".stripMargin)
+
+    "create a simple call" in {
+      val superCall = cpg.call.nameExact("super").head
+      superCall.code shouldBe "super(a)"
+      superCall.name shouldBe "super"
+      superCall.methodFullName shouldBe Defines.DynamicCallUnknownFullName
     }
   }
 }

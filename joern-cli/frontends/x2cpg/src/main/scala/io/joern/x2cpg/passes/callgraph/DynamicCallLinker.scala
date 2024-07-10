@@ -5,12 +5,12 @@ import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.{Call, Method, TypeDecl}
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, PropertyNames}
 import io.shiftleft.passes.CpgPass
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import org.slf4j.{Logger, LoggerFactory}
 import overflowdb.{NodeDb, NodeRef}
 
 import scala.collection.mutable
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 
 /** We compute the set of possible call-targets for each dynamic call, and add them as CALL edges to the graph, based on
   * call.methodFullName, method.name and method.signature, the inheritance hierarchy and the AST of typedecls and
@@ -56,10 +56,10 @@ class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
     initMaps()
     // ValidM maps class C and method name N to the set of
     // func ptrs implementing N for C and its subclasses
-    for (
-      typeDecl <- cpg.typeDecl;
+    for {
+      typeDecl <- cpg.typeDecl
       method   <- typeDecl._methodViaAstOut
-    ) {
+    } {
       val methodName = method.fullName
       val candidates = allSubclasses(typeDecl.fullName).flatMap { staticLookup(_, method) }
       validM.put(methodName, candidates)
