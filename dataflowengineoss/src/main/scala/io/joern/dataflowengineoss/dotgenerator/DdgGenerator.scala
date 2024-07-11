@@ -1,15 +1,13 @@
 package io.joern.dataflowengineoss.dotgenerator
 
 import io.joern.dataflowengineoss.DefaultSemantics
-import io.shiftleft.codepropertygraph.generated.nodes._
+import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, Properties}
-import io.joern.dataflowengineoss.language._
+import io.joern.dataflowengineoss.language.*
 import io.joern.dataflowengineoss.semanticsloader.Semantics
 import io.shiftleft.semanticcpg.dotgenerator.DotSerializer.{Edge, Graph}
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.utils.MemberAccess.isGenericMemberAccessName
-import overflowdb.Node
-import overflowdb.traversal.jIteratortoTraversal
 
 import scala.collection.mutable
 
@@ -59,7 +57,7 @@ class DdgGenerator {
     }
   }
 
-  private def shouldBeDisplayed(v: Node): Boolean = !(
+  private def shouldBeDisplayed(v: StoredNode): Boolean = !(
     v.isInstanceOf[ControlStructure] ||
       v.isInstanceOf[JumpTarget]
   )

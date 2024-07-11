@@ -5,7 +5,7 @@ import io.shiftleft.codepropertygraph.generated.{Cpg, Operators}
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.modulevariable.OpNodes
 import io.shiftleft.semanticcpg.language.operatorextension.OpNodes.FieldAccess
-import overflowdb.traversal.help.Doc
+import io.shiftleft.codepropertygraph.generated.help.Doc
 
 class ModuleVariableAsLocalTraversal(traversal: Iterator[Local]) extends AnyVal {
 
@@ -30,7 +30,7 @@ class ModuleVariableAsFieldIdentifierTraversal(traversal: Iterator[FieldIdentifi
   @Doc(info = "Field identifiers representing module variables")
   def moduleVariables: Iterator[OpNodes.ModuleVariable] = {
     traversal.flatMap { fieldIdentifier =>
-      Cpg(fieldIdentifier.graph()).method
+      Cpg(fieldIdentifier.graph).method
         .fullNameExact(fieldIdentifier.inFieldAccess.argument(1).isIdentifier.typeFullName.toSeq*)
         .isModule
         .local
@@ -46,7 +46,7 @@ class ModuleVariableAsMemberTraversal(traversal: Iterator[Member]) extends AnyVa
   def moduleVariables: Iterator[OpNodes.ModuleVariable] = {
     val members          = traversal.toList
     lazy val memberNames = members.name.toSeq
-    members.headOption.map(m => Cpg(m.graph())) match
+    members.headOption.map(m => Cpg(m.graph)) match
       case Some(cpg) =>
         cpg.method
           .fullNameExact(members.typeDecl.fullName.toSeq*)

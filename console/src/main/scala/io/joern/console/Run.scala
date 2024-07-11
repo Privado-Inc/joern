@@ -6,7 +6,7 @@ import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext}
 import org.reflections8.Reflections
 import org.reflections8.util.{ClasspathHelper, ConfigurationBuilder}
 
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 
 object Run {
 
@@ -64,7 +64,7 @@ object Run {
          |
          |val opts = new OptsDynamic()
          |
-         | import _root_.overflowdb.BatchedUpdate.DiffGraphBuilder
+         | import _root_.io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
          | implicit def _diffGraph: DiffGraphBuilder = opts.commit.diffGraphBuilder
          | def diffGraph = _diffGraph
          |""".stripMargin
