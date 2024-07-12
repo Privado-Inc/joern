@@ -27,26 +27,21 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
         astForUnknown(node) :: Nil
   }
 
-  private def getBaseClassName(node: RubyNode): Option[String] = {
+  private def getBaseClassName(node: RubyNode): String = {
     node match
       case simpleIdentifier: SimpleIdentifier =>
-        val name = simpleIdentifier.text
-        scope.lookupVariable(name) match {
-          case Some(_) => Option(name) // in the case of singleton classes, we want to keep the variable name
-          case None    => scope.tryResolveTypeReference(name).map(_.name).orElse(Option(name))
-        }
+        simpleIdentifier.text
       case _: SelfIdentifier =>
-        scope.surroundingTypeFullName
+        Defines.Self
       case qualifiedBaseClass: MemberAccess =>
-        scope
-          .tryResolveTypeReference(qualifiedBaseClass.toString)
-          .map(_.name)
-          .orElse(Option(qualifiedBaseClass.toString))
+        qualifiedBaseClass.text.replace("::", ".")
+      case qualifiedBaseClass: MemberCall =>
+        qualifiedBaseClass.text.replace("::", ".")
       case x =>
         logger.warn(
-          s"Base class names of type ${x.getClass} are not supported yet: ${code(node)} ($relativeFileName), skipping"
+          s"Base class names of type ${x.getClass} are not supported yet: ${code(node)} ($relativeFileName), returning string as-is"
         )
-        None
+        x.text
   }
 
   private def astForSimpleNamedClassDeclaration(
@@ -54,8 +49,8 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
     nameIdentifier: SimpleIdentifier
   ): Seq[Ast] = {
     val className     = nameIdentifier.text
-    val inheritsFrom  = node.baseClass.flatMap(getBaseClassName).toList
-    val classFullName = computeClassFullName(className)
+    val inheritsFrom  = node.baseClass.map(getBaseClassName).toList
+    val classFullName = computeFullName(className)
     val typeDecl = typeDeclNode(
       node = node,
       name = className,
@@ -146,12 +141,20 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
         .withChildren(fieldSingletonMemberNodes.map(_._2))
     val bodyMemberCallAst =
       node.bodyMemberCall match {
-        case Some(bodyMemberCall) => astForMemberCall(bodyMemberCall)
+        case Some(bodyMemberCall) => astForTypeDeclBodyCall(bodyMemberCall, classFullName)
         case None                 => Ast()
       }
 
     (typeDeclAst :: singletonTypeDeclAst :: Nil).foreach(Ast.storeInDiffGraph(_, diffGraph))
     prefixAst :: bodyMemberCallAst :: Nil
+  }
+
+  private def astForTypeDeclBodyCall(node: TypeDeclBodyCall, typeFullName: String): Ast = {
+    val callAst = astForMemberCall(node.toMemberCall, isStatic = true)
+    callAst.nodes.collectFirst {
+      case c: NewCall if c.name == Defines.TypeDeclBody => c.methodFullName(s"$typeFullName.${Defines.TypeDeclBody}")
+    }
+    callAst
   }
 
   private def createTypeRefPointer(typeDecl: NewTypeDecl): Ast = {
@@ -208,7 +211,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
   // creates a `def <name>() { return <fieldName> }` METHOD, for <fieldName> = @<name>.
   private def astForGetterMethod(node: FieldsDeclaration, fieldName: String): Ast = {
     val name     = fieldName.drop(1)
-    val fullName = computeMethodFullName(name)
+    val fullName = computeFullName(name)
     val method = methodNode(
       node = node,
       name = name,
@@ -238,7 +241,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
   // creates a `def <name>=(x) { <fieldName> = x }` METHOD, for <fieldName> = @<name>
   private def astForSetterMethod(node: FieldsDeclaration, fieldName: String): Ast = {
     val name     = fieldName.drop(1) + "="
-    val fullName = computeMethodFullName(name)
+    val fullName = computeFullName(name)
     val method = methodNode(
       node = node,
       name = name,
