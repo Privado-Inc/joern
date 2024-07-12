@@ -22,41 +22,44 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
   val tmpGen: FreshNameGenerator[String] = FreshNameGenerator(i => s"<tmp-$i>")
 
   protected def astForExpression(node: RubyNode): Ast = node match
-    case node: StaticLiteral            => astForStaticLiteral(node)
-    case node: HereDocNode              => astForHereDoc(node)
-    case node: DynamicLiteral           => astForDynamicLiteral(node)
-    case node: UnaryExpression          => astForUnary(node)
-    case node: BinaryExpression         => astForBinary(node)
-    case node: MemberAccess             => astForMemberAccess(node)
-    case node: MemberCall               => astForMemberCall(node)
-    case node: ObjectInstantiation      => astForObjectInstantiation(node)
-    case node: IndexAccess              => astForIndexAccess(node)
-    case node: SingleAssignment         => astForSingleAssignment(node)
-    case node: AttributeAssignment      => astForAttributeAssignment(node)
-    case node: TypeIdentifier           => astForTypeIdentifier(node)
-    case node: RubyIdentifier           => astForSimpleIdentifier(node)
-    case node: SimpleCall               => astForSimpleCall(node)
-    case node: RequireCall              => astForRequireCall(node)
-    case node: IncludeCall              => astForIncludeCall(node)
-    case node: YieldExpr                => astForYield(node)
-    case node: RangeExpression          => astForRange(node)
-    case node: ArrayLiteral             => astForArrayLiteral(node)
-    case node: HashLiteral              => astForHashLiteral(node)
-    case node: Association              => astForAssociation(node)
-    case node: IfExpression             => astForIfExpression(node)
-    case node: UnlessExpression         => astForUnlessExpression(node)
-    case node: RescueExpression         => astForRescueExpression(node)
-    case node: CaseExpression           => blockAst(NewBlock(), astsForCaseExpression(node).toList)
-    case node: MandatoryParameter       => astForMandatoryParameter(node)
-    case node: SplattingRubyNode        => astForSplattingRubyNode(node)
-    case node: AnonymousTypeDeclaration => astForAnonymousTypeDeclaration(node)
-    case node: ProcOrLambdaExpr         => astForProcOrLambdaExpr(node)
-    case node: RubyCallWithBlock[_]     => astForCallWithBlock(node)
-    case node: SelfIdentifier           => astForSelfIdentifier(node)
-    case node: BreakStatement           => astForBreakStatement(node)
-    case node: StatementList            => astForStatementList(node)
-    case node: DummyNode                => Ast(node.node)
-    case node: Unknown                  => astForUnknown(node)
+    case node: StaticLiteral                    => astForStaticLiteral(node)
+    case node: HereDocNode                      => astForHereDoc(node)
+    case node: DynamicLiteral                   => astForDynamicLiteral(node)
+    case node: UnaryExpression                  => astForUnary(node)
+    case node: BinaryExpression                 => astForBinary(node)
+    case node: MemberAccess                     => astForMemberAccess(node)
+    case node: MemberCall                       => astForMemberCall(node)
+    case node: ObjectInstantiation              => astForObjectInstantiation(node)
+    case node: IndexAccess                      => astForIndexAccess(node)
+    case node: SingleAssignment                 => astForSingleAssignment(node)
+    case node: AttributeAssignment              => astForAttributeAssignment(node)
+    case node: TypeIdentifier                   => astForTypeIdentifier(node)
+    case node: RubyIdentifier                   => astForSimpleIdentifier(node)
+    case node: SimpleCall                       => astForSimpleCall(node)
+    case node: RequireCall                      => astForRequireCall(node)
+    case node: IncludeCall                      => astForIncludeCall(node)
+    case node: YieldExpr                        => astForYield(node)
+    case node: RangeExpression                  => astForRange(node)
+    case node: ArrayLiteral                     => astForArrayLiteral(node)
+    case node: HashLiteral                      => astForHashLiteral(node)
+    case node: Association                      => astForAssociation(node)
+    case node: IfExpression                     => astForIfExpression(node)
+    case node: UnlessExpression                 => astForUnlessExpression(node)
+    case node: RescueExpression                 => astForRescueExpression(node)
+    case node: CaseExpression                   => blockAst(NewBlock(), astsForCaseExpression(node).toList)
+    case node: MandatoryParameter               => astForMandatoryParameter(node)
+    case node: SplattingRubyNode                => astForSplattingRubyNode(node)
+    case node: AnonymousTypeDeclaration         => astForAnonymousTypeDeclaration(node)
+    case node: ProcOrLambdaExpr                 => astForProcOrLambdaExpr(node)
+    case node: SingletonObjectMethodDeclaration => astForSingletonObjectMethodDeclaration(node)
+    case node: RubyCallWithBlock[_]             => astForCallWithBlock(node)
+    case node: SelfIdentifier                   => astForSelfIdentifier(node)
+    case node: BreakStatement                   => astForBreakStatement(node)
+    case node: StatementList                    => astForStatementList(node)
+    case node: ReturnExpression                 => astForReturnStatement(node)
+    case node: NextExpression                   => astForNextExpression(node)
+    case node: DummyNode                        => Ast(node.node)
+    case node: Unknown                          => astForUnknown(node)
     case x =>
       logger.warn(s"Unhandled expression of type ${x.getClass.getSimpleName}")
       astForUnknown(node)
@@ -171,7 +174,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     Ast(typeRefNode(node, code(node), node.typeFullName))
   }
 
-  protected def astForMemberCall(node: MemberCall): Ast = {
+  protected def astForMemberCall(node: MemberCall, isStatic: Boolean = false): Ast = {
 
     def createMemberCall(n: MemberCall): Ast = {
       val baseAst     = astForExpression(n.target) // this wil be something like self.Foo
@@ -184,22 +187,26 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
       }
       val (receiverFullName, methodFullName) = receiverAst.nodes
         .collectFirst {
-          case _ if builtinType.isDefined => builtinType.get  -> s"${builtinType.get}:${n.methodName}"
+          case _ if builtinType.isDefined => builtinType.get  -> s"${builtinType.get}.${n.methodName}"
           case x: NewMethodRef            => x.methodFullName -> x.methodFullName
           case _ =>
             (n.target match {
               case ma: MemberAccess => scope.tryResolveTypeReference(ma.memberName).map(_.name)
               case _                => typeFromCallTarget(n.target)
-            }).map(x => x -> s"$x:${n.methodName}")
+            }).map(x => x -> s"$x.${n.methodName}")
               .getOrElse(XDefines.Any -> XDefines.DynamicCallUnknownFullName)
         }
         .getOrElse(XDefines.Any -> XDefines.DynamicCallUnknownFullName)
       val argumentAsts = n.arguments.map(astForMethodCallArgument)
-      val dispatchType = DispatchTypes.DYNAMIC_DISPATCH
+      val dispatchType = if (isStatic) DispatchTypes.STATIC_DISPATCH else DispatchTypes.DYNAMIC_DISPATCH
 
       val call = callNode(n, code(n), n.methodName, XDefines.DynamicCallUnknownFullName, dispatchType)
       if methodFullName != XDefines.DynamicCallUnknownFullName then call.possibleTypes(Seq(methodFullName))
-      callAst(call, argumentAsts, base = Option(baseAst), receiver = Option(receiverAst))
+      if (isStatic) {
+        callAst(call, argumentAsts, base = Option(baseAst)).copy(receiverEdges = Nil)
+      } else {
+        callAst(call, argumentAsts, base = Option(baseAst), receiver = Option(receiverAst))
+      }
     }
 
     def determineMemberAccessBase(target: RubyNode): RubyNode = target match {
@@ -262,7 +269,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
       as referring to the singleton class.
      */
     val (receiverTypeFullName, fullName) = scope.tryResolveTypeReference(className) match {
-      case Some(typeMetaData) => s"${typeMetaData.name}<class>" -> s"${typeMetaData.name}:$methodName"
+      case Some(typeMetaData) => s"${typeMetaData.name}<class>" -> s"${typeMetaData.name}.$methodName"
       case None               => XDefines.Any                   -> XDefines.DynamicCallUnknownFullName
     }
     /*
@@ -302,8 +309,8 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     val argumentAsts = node match {
       case x: SimpleObjectInstantiation => x.arguments.map(astForMethodCallArgument)
       case x: ObjectInstantiationWithBlock =>
-        val Seq(_, methodRef) = astForDoBlock(x.block): @unchecked
-        x.arguments.map(astForMethodCallArgument) :+ methodRef
+        val Seq(typeRef, _) = astForDoBlock(x.block): @unchecked
+        x.arguments.map(astForMethodCallArgument) :+ typeRef
     }
 
     val constructorCall    = callNode(node, code(node), callName, fullName, DispatchTypes.DYNAMIC_DISPATCH)
@@ -360,6 +367,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
                     astForExpression(node.lhs)
                   case _ => astForExpression(node.lhs)
                 }
+
                 val rhsAst = astForExpression(node.rhs)
 
                 // If this is a simple object instantiation assignment, we can give the LHS variable a type hint
@@ -472,24 +480,22 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     astForSimpleCall(node.asSimpleCall)
   }
 
-  /** A yield in Ruby could either return the result of the block, or simply call the block, depending on runtime
-    * conditions. Thus we embed this in a conditional expression where the condition itself is some non-deterministic
-    * placeholder.
+  /** A yield in Ruby calls an explicit (or implicit) proc parameter and returns its value. This can be lowered as
+    * block.call(), which is effectively how one invokes a proc parameter in any case.
     */
   protected def astForYield(node: YieldExpr): Ast = {
     scope.useProcParam match {
       case Some(param) =>
-        val call = astForExpression(
-          SimpleCall(SimpleIdentifier()(node.span.spanStart(param)), node.arguments)(node.span.spanStart(param))
-        )
-        val ret = returnAst(returnNode(node, code(node)))
-        val cond = astForExpression(
-          SimpleCall(SimpleIdentifier()(node.span.spanStart(tmpGen.fresh)), List())(node.span.spanStart("<nondet>"))
-        )
-        callAst(
-          callNode(node, code(node), Operators.conditional, Operators.conditional, DispatchTypes.STATIC_DISPATCH),
-          List(cond, call, ret)
-        )
+        // We do not know if we necessarily have an explicit proc param here, or if we need to create a new one
+        if (scope.lookupVariable(param).isEmpty) {
+          scope.anonProcParam.map { param =>
+            val paramNode = ProcParameter(param)(node.span.spanStart(s"&$param"))
+            astForParameter(paramNode, -1)
+          }
+        }
+        val loweredCall =
+          MemberCall(SimpleIdentifier()(node.span.spanStart(param)), ".", "call", node.arguments)(node.span)
+        astForExpression(loweredCall)
       case None =>
         logger.warn(s"Yield expression outside of method scope: ${code(node)} ($relativeFileName), skipping")
         astForUnknown(node)
@@ -548,7 +554,8 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
 
     val argumentAsts = node.elements.flatMap(elem =>
       elem match
-        case associationNode: Association => astForAssociationHash(associationNode, tmp)
+        case associationNode: Association         => astForAssociationHash(associationNode, tmp)
+        case splattingRubyNode: SplattingRubyNode => astForSplattingRubyNode(splattingRubyNode) :: Nil
         case node =>
           logger.warn(s"Could not represent element: ${code(node)} ($relativeFileName), skipping")
           astForUnknown(node) :: Nil
@@ -728,7 +735,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     val methodName  = memberAccess.memberName
     // TODO: Type recovery should potentially resolve this
     val methodFullName = typeFromCallTarget(memberAccess.target)
-      .map(x => s"$x:$methodName")
+      .map(x => s"$x.$methodName")
       .getOrElse(XDefines.DynamicCallUnknownFullName)
     val argumentAsts = node.arguments.map(astForMethodCallArgument)
     val call =
@@ -753,7 +760,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
         ) // Check if this is a method invocation of a member imported into scope
       match {
         case Some(m) =>
-          scope.typeForMethod(m).map(t => t.name -> s"${t.name}:${m.name}").getOrElse(defaultResult)
+          scope.typeForMethod(m).map(t => t.name -> s"${t.name}.${m.name}").getOrElse(defaultResult)
         case None => defaultResult
       }
 
@@ -774,8 +781,22 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
   }
 
   private def astForProcOrLambdaExpr(node: ProcOrLambdaExpr): Ast = {
-    val Seq(_, methodRef) = astForDoBlock(node.block): @unchecked
-    methodRef
+    val Seq(typeRef, _) = astForDoBlock(node.block): @unchecked
+    typeRef
+  }
+
+  private def astForSingletonObjectMethodDeclaration(node: SingletonObjectMethodDeclaration): Ast = {
+    val methodAstsWithRefs = astForMethodDeclaration(node, isSingletonObjectMethod = true)
+
+    // Set span contents
+    methodAstsWithRefs.flatMap(_.nodes).foreach {
+      case m: NewMethodRef => DummyNode(m.copy)(node.body.span.spanStart(m.code))
+      case _               =>
+    }
+
+    val Seq(typeRef, _) = methodAstsWithRefs
+
+    typeRef
   }
 
   private def astForMethodCallArgument(node: RubyNode): Ast = {
@@ -783,11 +804,11 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
       // Associations in method calls are keyword arguments
       case assoc: Association => astForKeywordArgument(assoc)
       case block: RubyBlock =>
-        val Seq(methodDecl, typeDecl, _, methodRef) = astForDoBlock(block)
+        val Seq(methodDecl, typeDecl, typeRef, _) = astForDoBlock(block)
         Ast.storeInDiffGraph(methodDecl, diffGraph)
         Ast.storeInDiffGraph(typeDecl, diffGraph)
 
-        methodRef
+        typeRef
       case selfMethod: SingletonMethodDeclaration =>
         // Last element is the method declaration, the prefix methods would be `foo = def foo (...)` pointers in other
         // contexts, but this would be empty as a method call argument
@@ -799,7 +820,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
         }
         Ast.storeInDiffGraph(methodDeclAst, diffGraph)
         scope.surroundingScopeFullName
-          .map(s => Ast(methodRefNode(node, selfMethod.span.text, s"$s:${selfMethod.methodName}", Defines.Any)))
+          .map(s => Ast(methodRefNode(node, selfMethod.span.text, s"$s.${selfMethod.methodName}", Defines.Any)))
           .getOrElse(Ast())
       case _ => astForExpression(node)
   }
@@ -813,7 +834,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
           x.argumentIndex_=(-1)
         }
         value
-      case _: StaticLiteral => astForExpression(assoc)
+      case _: (LiteralExpr | RubyCall) => astForExpression(assoc)
       case x =>
         logger.warn(s"Not explicitly handled argument association key of type ${x.getClass.getSimpleName}")
         astForExpression(assoc)

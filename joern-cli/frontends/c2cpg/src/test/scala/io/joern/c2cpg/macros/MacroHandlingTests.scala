@@ -2,13 +2,13 @@ package io.joern.c2cpg.macros
 
 import io.joern.c2cpg.testfixtures.C2CpgSuite
 import io.joern.c2cpg.testfixtures.DataFlowCodeToCpgSuite
-import io.joern.dataflowengineoss.language._
+import io.joern.dataflowengineoss.language.*
 import io.shiftleft.codepropertygraph.generated.DispatchTypes
 import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.codepropertygraph.generated.nodes.Block
 import io.shiftleft.codepropertygraph.generated.nodes.Call
 import io.shiftleft.codepropertygraph.generated.nodes.Identifier
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class MacroHandlingTests extends C2CpgSuite {
 
@@ -231,7 +231,7 @@ class MacroHandlingTests extends C2CpgSuite {
     """.stripMargin)
 
     "should not result in malformed CFGs when expanding a nested macro with block" in {
-      cpg.all.collectAll[Block].l.count(b => b.cfgOut.size > 1) shouldBe 0
+      cpg.all.collectAll[Block].l.count(b => b._cfgOut.size > 1) shouldBe 0
     }
   }
 
