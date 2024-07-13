@@ -910,8 +910,8 @@ class AstCreationPassTests extends AstC2CpgSuite {
        |}
       """.stripMargin)
       inside(cpg.method.name("main").ast.isCall.codeExact("(*strLenFunc)(\"123\")").l) { case List(call) =>
-        call.name shouldBe Defines.operatorPointerCall
-        call.methodFullName shouldBe Defines.operatorPointerCall
+        call.name shouldBe Defines.OperatorPointerCall
+        call.methodFullName shouldBe Defines.OperatorPointerCall
       }
     }
 
@@ -2123,7 +2123,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
       val cpg          = code("class Foo { char (*(*x())[5])() }", "test.cpp")
       val List(method) = cpg.method.nameNot("<global>").l
       method.name shouldBe "x"
-      method.fullName shouldBe "Foo.x:char (* (*)[5])()()"
+      method.fullName shouldBe "Foo.x:char(*(*)[5])()()"
       method.code shouldBe "char (*(*x())[5])()"
       method.signature shouldBe "char()"
     }
