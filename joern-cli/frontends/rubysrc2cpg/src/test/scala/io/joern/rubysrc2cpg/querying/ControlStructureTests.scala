@@ -293,7 +293,7 @@ class ControlStructureTests extends RubyCode2CpgFixture {
     whileCond.code shouldBe "true"
     whileCond.lineNumber shouldBe Some(2)
 
-    putsHi.methodFullName shouldBe s"$kernelPrefix:puts"
+    putsHi.methodFullName shouldBe s"$kernelPrefix.puts"
     putsHi.code shouldBe "puts 'hi'"
     putsHi.lineNumber shouldBe Some(2)
   }
@@ -516,6 +516,20 @@ class ControlStructureTests extends RubyCode2CpgFixture {
 
         case xs => fail(s"Expected three return expressions, instead found ${xs.code.mkString(", ")}")
       }
+    }
+  }
+
+  "Generate continue node for next" in {
+    val cpg = code("""
+                     |for i in arr do
+                     |   next if i % 2 == 0
+                     |end
+                     |""".stripMargin)
+
+    inside(cpg.controlStructure.controlStructureType(ControlStructureTypes.CONTINUE).l) {
+      case nextControl :: Nil =>
+        nextControl.code shouldBe "next"
+      case xs => fail(s"Expected next to be continue, got [${xs.code.mkString(",")}]")
     }
   }
 }

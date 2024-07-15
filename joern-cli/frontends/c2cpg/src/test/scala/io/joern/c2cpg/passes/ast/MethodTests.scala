@@ -3,7 +3,7 @@ package io.joern.c2cpg.passes.ast
 import io.joern.c2cpg.testfixtures.C2CpgSuite
 import io.shiftleft.codepropertygraph.generated.EvaluationStrategies
 import io.shiftleft.codepropertygraph.generated.NodeTypes
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
 class MethodTests extends C2CpgSuite {
@@ -268,6 +268,34 @@ class MethodTests extends C2CpgSuite {
       cpg.call.name("abs").callee(NoResolve).size shouldBe 1
     }
 
+  }
+
+  "Static modifier for methods" should {
+    "be correct" in {
+      val cpg = code(
+        """
+          |static void staticCMethodDecl();
+          |static void staticCMethodDef() {}
+          |""".stripMargin,
+        "test.c"
+      ).moreCode(
+        """
+          |class A {
+          |  static void staticCPPMethodDecl();
+          |	 static void staticCPPMethodDef() {}
+          |};
+          |""".stripMargin,
+        "test.cpp"
+      )
+      val List(m1, m2, m3, m4) = cpg.method
+        .nameExact("staticCMethodDecl", "staticCMethodDef", "staticCPPMethodDecl", "staticCPPMethodDef")
+        .isStatic
+        .l
+      m1.fullName shouldBe "staticCMethodDecl"
+      m2.fullName shouldBe "staticCMethodDef"
+      m3.fullName shouldBe "A.staticCPPMethodDecl:void()"
+      m4.fullName shouldBe "A.staticCPPMethodDef:void()"
+    }
   }
 
   "Method name, signature and full name tests" should {

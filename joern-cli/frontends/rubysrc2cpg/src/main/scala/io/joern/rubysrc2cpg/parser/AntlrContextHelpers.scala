@@ -26,6 +26,17 @@ object AntlrContextHelpers {
         text = ctx.getStart.getInputStream.getText(new Interval(startIndex, stopIndex))
       )
     }
+
+    /** @return
+      *   true if this token's text is the same as a keyword, false if otherwise.
+      */
+    def isKeyword: Boolean = {
+      // See RubyParser for why the bounds are used
+      val minBound = 19
+      val maxBound = 56
+      val typ      = ctx.start.getType
+      typ >= minBound && typ <= maxBound
+    }
   }
 
   sealed implicit class CompoundStatementContextHelper(ctx: CompoundStatementContext) {
@@ -210,7 +221,9 @@ object AntlrContextHelpers {
       case ctx: AssociationsArgumentListContext =>
         Option(ctx.associationList()).map(_.associations).getOrElse(List.empty)
       case ctx: SplattingArgumentArgumentListContext =>
-        Option(ctx.splattingArgument()).toList
+        Option(ctx.splattingArgument()).toList ++ Option(ctx.blockArgument()).toList ++ Option(
+          ctx.operatorExpressionList()
+        ).toList
       case ctx: BlockArgumentArgumentListContext =>
         Option(ctx.blockArgument()).toList
       case ctx =>
