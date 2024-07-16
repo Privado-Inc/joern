@@ -10,7 +10,7 @@ import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import org.eclipse.cdt.core.dom.ast.{IASTNode, IASTTranslationUnit}
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 import java.util.concurrent.ConcurrentHashMap
 import scala.collection.mutable
@@ -82,12 +82,12 @@ class AstCreator(
     methodAstParentStack.push(fakeGlobalMethod)
     scope.pushNewScope(fakeGlobalMethod)
 
-    val blockNode_ = blockNode(iASTTranslationUnit, Defines.empty, registerType(Defines.anyTypeName))
+    val blockNode_ = blockNode(iASTTranslationUnit)
 
     val declsAsts = allDecls.flatMap(astsForDeclaration)
     setArgumentIndices(declsAsts)
 
-    val methodReturn = newMethodReturnNode(iASTTranslationUnit, Defines.anyTypeName)
+    val methodReturn = methodReturnNode(iASTTranslationUnit, Defines.Any)
     Ast(fakeGlobalTypeDecl).withChild(
       methodAst(fakeGlobalMethod, Seq.empty, blockAst(blockNode_, declsAsts), methodReturn)
     )
@@ -100,7 +100,7 @@ class AstCreator(
   }
 
   override protected def lineEnd(node: IASTNode): Option[Int] = {
-    nullSafeFileLocation(node).map(_.getEndingLineNumber)
+    nullSafeFileLocationLast(node).map(_.getEndingLineNumber)
   }
 
   protected def column(node: IASTNode): Option[Int] = {
