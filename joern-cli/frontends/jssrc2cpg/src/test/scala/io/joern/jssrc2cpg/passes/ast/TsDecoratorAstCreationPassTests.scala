@@ -1,8 +1,8 @@
 package io.joern.jssrc2cpg.passes.ast
 
 import io.joern.jssrc2cpg.testfixtures.AstJsSrc2CpgSuite
-import io.joern.jssrc2cpg.passes.Defines
-import io.shiftleft.semanticcpg.language._
+import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
+import io.shiftleft.semanticcpg.language.*
 
 class TsDecoratorAstCreationPassTests extends AstJsSrc2CpgSuite(".ts") {
 

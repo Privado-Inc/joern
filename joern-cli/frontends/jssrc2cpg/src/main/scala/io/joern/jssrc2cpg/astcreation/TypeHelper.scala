@@ -1,8 +1,8 @@
 package io.joern.jssrc2cpg.astcreation
 
-import io.joern.jssrc2cpg.parser.BabelAst._
+import io.joern.jssrc2cpg.parser.BabelAst.*
 import io.joern.jssrc2cpg.parser.BabelNodeInfo
-import io.joern.jssrc2cpg.passes.Defines
+import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
 
 import java.util.regex.Pattern
 
@@ -110,7 +110,7 @@ trait TypeHelper { this: AstCreator =>
     val matcher = ImportMatcher.matcher(value)
     this.rootTypeDecl.headOption match {
       case Some(typeDecl)            => typeDecl.fullName
-      case None if matcher.matches() => matcher.group(2).stripSuffix(".js").concat(".js::program")
+      case None if matcher.matches() => matcher.group(2).stripSuffix(".js").concat(s".js:${Defines.Program}")
       case None                      => value
     }
   }

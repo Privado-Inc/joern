@@ -5,7 +5,7 @@ import io.joern.ghidra2cpg.utils.Decompiler
 import io.joern.ghidra2cpg.passes.FunctionPass
 import io.joern.ghidra2cpg.processors.ArmProcessor
 import io.joern.ghidra2cpg.utils.Utils.{checkIfExternal, createMethodNode, createReturnNode}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.NewBlock
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, nodes}
 
@@ -18,7 +18,7 @@ class ArmFunctionPass(
 ) extends FunctionPass(ArmProcessor, currentProgram, functions, cpg, decompiler) {
 
   override def runOnPart(diffGraphBuilder: DiffGraphBuilder, function: Function): Unit = {
-    val localDiffGraph = new DiffGraphBuilder()
+    val localDiffGraph = Cpg.newDiffGraphBuilder
     // we need it just once with default settings
     val blockNode: NewBlock = nodes.NewBlock().code("").order(0)
     try {

@@ -1,7 +1,7 @@
 package io.joern.php2cpg.passes
 
-import io.shiftleft.passes.ConcurrentWriterCpgPass
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.passes.ForkJoinParallelCpgPass
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.EdgeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{
   AstNode,
@@ -13,7 +13,7 @@ import io.shiftleft.codepropertygraph.generated.nodes.{
   NewNode,
   TypeDecl
 }
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.joern.php2cpg.astcreation.AstCreator
 import io.joern.php2cpg.parser.Domain
 import io.joern.php2cpg.parser.Domain.PhpOperators
@@ -26,13 +26,13 @@ object LocalCreationPass {
 }
 
 abstract class LocalCreationPass[ScopeType <: AstNode](cpg: Cpg)
-    extends ConcurrentWriterCpgPass[ScopeType](cpg)
+    extends ForkJoinParallelCpgPass[ScopeType](cpg)
     with AstNodeBuilder[AstNode, LocalCreationPass[ScopeType]] {
-  override protected def line(node: AstNode)                       = node.lineNumber
-  override protected def column(node: AstNode)                     = node.columnNumber
-  override protected def lineEnd(node: AstNode): Option[Integer]   = None
-  override protected def columnEnd(node: AstNode): Option[Integer] = None
-  override protected def code(node: AstNode): String               = node.code
+  override protected def line(node: AstNode)                   = node.lineNumber
+  override protected def column(node: AstNode)                 = node.columnNumber
+  override protected def lineEnd(node: AstNode): Option[Int]   = None
+  override protected def columnEnd(node: AstNode): Option[Int] = None
+  override protected def code(node: AstNode): String           = node.code
 
   protected def getIdentifiersInScope(node: AstNode): List[Identifier] = {
     node match {

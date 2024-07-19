@@ -1,20 +1,20 @@
 package io.shiftleft.semanticcpg.language
 
-import io.shiftleft.codepropertygraph.Cpg
-import io.shiftleft.codepropertygraph.generated.nodes._
+import io.shiftleft.codepropertygraph.generated.Cpg
+import io.shiftleft.codepropertygraph.generated.nodes.*
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 import overflowdb.BatchedUpdate.{DiffGraphBuilder, applyDiff}
 
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 
 class NewNodeStepsTest extends AnyWordSpec with Matchers {
   import io.shiftleft.semanticcpg.language.NewNodeNodeStepsTest._
 
   "stores NewNodes" in {
-    implicit val diffGraphBuilder: DiffGraphBuilder = new DiffGraphBuilder
+    implicit val diffGraphBuilder: DiffGraphBuilder = Cpg.newDiffGraphBuilder
     val newNode                                     = newTestNode()
-    val cpg                                         = Cpg.emptyCpg
+    val cpg                                         = Cpg.empty
     new NewNodeSteps(newNode.start).store()
 
     cpg.graph.nodes.toList.size shouldBe 0
@@ -29,8 +29,8 @@ class NewNodeStepsTest extends AnyWordSpec with Matchers {
 
   "stores containedNodes and connecting edge" when {
     "embedding a StoredNode and a NewNode" in {
-      implicit val diffGraphBuilder: DiffGraphBuilder = new DiffGraphBuilder
-      val cpg                                         = Cpg.emptyCpg
+      implicit val diffGraphBuilder: DiffGraphBuilder = Cpg.newDiffGraphBuilder
+      val cpg                                         = Cpg.empty
       val existingContainedNode                       = cpg.graph.addNode(42L, "MODIFIER").asInstanceOf[StoredNode]
       cpg.graph.V().asScala.toSet shouldBe Set(existingContainedNode)
 
@@ -43,8 +43,8 @@ class NewNodeStepsTest extends AnyWordSpec with Matchers {
     }
 
     "embedding a NewNode recursively" in {
-      implicit val diffGraphBuilder: DiffGraphBuilder = new DiffGraphBuilder
-      val cpg                                         = Cpg.emptyCpg
+      implicit val diffGraphBuilder: DiffGraphBuilder = Cpg.newDiffGraphBuilder
+      val cpg                                         = Cpg.empty
       val newContainedNodeL1                          = newTestNode()
       val newContainedNodeL0                          = newTestNode(evidence = List(newContainedNodeL1))
       val newNode                                     = newTestNode(evidence = List(newContainedNodeL0))

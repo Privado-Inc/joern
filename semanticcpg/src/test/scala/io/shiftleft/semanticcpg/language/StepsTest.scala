@@ -1,7 +1,7 @@
 package io.shiftleft.semanticcpg.language
 
-import io.shiftleft.codepropertygraph.Cpg
 import io.shiftleft.codepropertygraph.Cpg.docSearchPackages
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{NodeTypes, Properties}
 import io.shiftleft.semanticcpg.testing.MockCpg
@@ -195,7 +195,7 @@ class StepsTest extends AnyWordSpec with Matchers {
     implicit val availableWidthProvider: AvailableWidthProvider = new ConstantWidth(120)
 
     "show domain overview" in {
-      val domainStartersHelp = Cpg.emptyCpg.help
+      val domainStartersHelp = Cpg.empty.help
       domainStartersHelp should include(".comment")
       domainStartersHelp should include("All comments in source-based CPGs")
       domainStartersHelp should include(".arithmetic")
@@ -203,16 +203,16 @@ class StepsTest extends AnyWordSpec with Matchers {
     }
 
     "provide node-specific overview" in {
-      val methodStepsHelp = Cpg.emptyCpg.method.help
+      val methodStepsHelp = Cpg.empty.method.help
       methodStepsHelp should include("Available steps for Method")
       methodStepsHelp should include(".namespace")
       methodStepsHelp should include(".depth") // from AstNode
 
-      val methodStepsHelpVerbose = Cpg.emptyCpg.method.helpVerbose
+      val methodStepsHelpVerbose = Cpg.empty.method.helpVerbose
       methodStepsHelpVerbose should include("traversal name")
       methodStepsHelpVerbose should include("structure.MethodTraversal")
 
-      val assignmentStepsHelp = Cpg.emptyCpg.assignment.help
+      val assignmentStepsHelp = Cpg.empty.assignment.help
       assignmentStepsHelp should include("Left-hand sides of assignments") // from AssignmentTraversal
     }
 
@@ -321,8 +321,8 @@ class StepsTest extends AnyWordSpec with Matchers {
 //    def cfg: Iterator[CfgNode] = cpg.method.name("add")
 
     def ast: Iterator[AstNode] = cpg.method.name("foo").cast[AstNode]
-    ast.astParent.property(Properties.NAME).head shouldBe "AClass"
-    ast.head.astParent.property(Properties.NAME) shouldBe "AClass"
+    ast.astParent.property(Properties.Name).head shouldBe "AClass"
+    ast.head.astParent.property(Properties.Name) shouldBe "AClass"
 
     // methodForCallGraph
     method.call.size shouldBe 1
@@ -370,21 +370,21 @@ class StepsTest extends AnyWordSpec with Matchers {
 
     val (Seq(emptyCall), Seq(callWithProperties)) = cpg.call.l.partition(_.argumentName.isEmpty)
 
-    emptyCall.propertyOption(Properties.TYPE_FULL_NAME) shouldBe Optional.of("<empty>")
-    emptyCall.propertyOption(Properties.TYPE_FULL_NAME.name) shouldBe Optional.of("<empty>")
-    emptyCall.propertyOption(Properties.ARGUMENT_NAME) shouldBe Optional.empty
-    emptyCall.propertyOption(Properties.ARGUMENT_NAME.name) shouldBe Optional.empty
+    emptyCall.propertyOption(Properties.TypeFullName) shouldBe Optional.of("<empty>")
+    emptyCall.propertyOption(Properties.TypeFullName.name) shouldBe Optional.of("<empty>")
+    emptyCall.propertyOption(Properties.ArgumentName) shouldBe Optional.empty
+    emptyCall.propertyOption(Properties.ArgumentName.name) shouldBe Optional.empty
     // these ones are rather a historic accident it'd be better and more consistent to return `None` here -
     // we'll defer that change until after the flatgraph port though and just document it for now
-    emptyCall.propertyOption(Properties.DYNAMIC_TYPE_HINT_FULL_NAME) shouldBe Optional.of(Seq.empty)
-    emptyCall.propertyOption(Properties.DYNAMIC_TYPE_HINT_FULL_NAME.name) shouldBe Optional.of(Seq.empty)
+    emptyCall.propertyOption(Properties.DynamicTypeHintFullName) shouldBe Optional.of(Seq.empty)
+    emptyCall.propertyOption(Properties.DynamicTypeHintFullName.name) shouldBe Optional.of(Seq.empty)
 
-    callWithProperties.propertyOption(Properties.TYPE_FULL_NAME) shouldBe Optional.of("aa")
-    callWithProperties.propertyOption(Properties.TYPE_FULL_NAME.name) shouldBe Optional.of("aa")
-    callWithProperties.propertyOption(Properties.ARGUMENT_NAME) shouldBe Optional.of("bb")
-    callWithProperties.propertyOption(Properties.ARGUMENT_NAME.name) shouldBe Optional.of("bb")
-    callWithProperties.propertyOption(Properties.DYNAMIC_TYPE_HINT_FULL_NAME) shouldBe Optional.of(Seq("cc", "dd"))
-    callWithProperties.propertyOption(Properties.DYNAMIC_TYPE_HINT_FULL_NAME.name) shouldBe Optional.of(Seq("cc", "dd"))
+    callWithProperties.propertyOption(Properties.TypeFullName) shouldBe Optional.of("aa")
+    callWithProperties.propertyOption(Properties.TypeFullName.name) shouldBe Optional.of("aa")
+    callWithProperties.propertyOption(Properties.ArgumentName) shouldBe Optional.of("bb")
+    callWithProperties.propertyOption(Properties.ArgumentName.name) shouldBe Optional.of("bb")
+    callWithProperties.propertyOption(Properties.DynamicTypeHintFullName) shouldBe Optional.of(Seq("cc", "dd"))
+    callWithProperties.propertyOption(Properties.DynamicTypeHintFullName.name) shouldBe Optional.of(Seq("cc", "dd"))
   }
 
 }

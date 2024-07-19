@@ -2,8 +2,8 @@ package io.joern.jimple2cpg.querying.dataflow
 
 import io.joern.dataflowengineoss.language.toExtendedCfgNode
 import io.joern.jimple2cpg.testfixtures.JimpleDataFlowCodeToCpgSuite
-import io.shiftleft.codepropertygraph.Cpg
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.codepropertygraph.generated.Cpg
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.codepropertygraph.generated.Operators
 
 class FunctionCallTests extends JimpleDataFlowCodeToCpgSuite {

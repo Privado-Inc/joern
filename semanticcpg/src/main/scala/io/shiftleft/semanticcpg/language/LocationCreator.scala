@@ -1,8 +1,8 @@
 package io.shiftleft.semanticcpg.language
 
-import io.shiftleft.codepropertygraph.generated.nodes._
+import io.shiftleft.codepropertygraph.generated.nodes.*
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.traversal._
+import overflowdb.traversal.*
 
 import scala.annotation.tailrec
 
@@ -29,13 +29,7 @@ object LocationCreator {
     }
   }
 
-  def apply(
-    node: StoredNode,
-    symbol: String,
-    label: String,
-    lineNumber: Option[Integer],
-    method: Method
-  ): NewLocation = {
+  def apply(node: StoredNode, symbol: String, label: String, lineNumber: Option[Int], method: Method): NewLocation = {
 
     if (method == null) {
       NewLocation().node(node)

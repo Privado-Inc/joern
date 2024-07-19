@@ -1,12 +1,12 @@
 package io.joern.dataflowengineoss.dotgenerator
 
 import io.joern.dataflowengineoss.DefaultSemantics
-import io.shiftleft.codepropertygraph.generated.nodes._
+import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, Properties}
-import io.joern.dataflowengineoss.language._
+import io.joern.dataflowengineoss.language.*
 import io.joern.dataflowengineoss.semanticsloader.Semantics
 import io.shiftleft.semanticcpg.dotgenerator.DotSerializer.{Edge, Graph}
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.utils.MemberAccess.isGenericMemberAccessName
 import overflowdb.Node
 import overflowdb.traversal.jIteratortoTraversal
@@ -91,7 +91,7 @@ class DdgGenerator {
     val allInEdges = v
       .inE(EdgeTypes.REACHING_DEF)
       .map(x =>
-        Edge(x.outNode.asInstanceOf[StoredNode], v, srcVisible = true, x.property(Properties.VARIABLE), edgeType)
+        Edge(x.outNode.asInstanceOf[StoredNode], v, srcVisible = true, x.property(Properties.Variable), edgeType)
       )
 
     v match {

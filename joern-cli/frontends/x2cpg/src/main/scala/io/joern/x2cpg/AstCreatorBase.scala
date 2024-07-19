@@ -2,6 +2,7 @@ package io.joern.x2cpg
 
 import io.joern.x2cpg.passes.frontend.MetaDataPass
 import io.joern.x2cpg.utils.NodeBuilders.newMethodReturnNode
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, ModifierTypes}
 import io.shiftleft.passes.IntervalKeyPool
@@ -9,7 +10,7 @@ import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import overflowdb.BatchedUpdate.DiffGraphBuilder
 
 abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: ValidationMode) {
-  val diffGraph: DiffGraphBuilder = new DiffGraphBuilder
+  val diffGraph: DiffGraphBuilder = Cpg.newDiffGraphBuilder
 
   private val closureKeyPool = new IntervalKeyPool(first = 0, last = Long.MaxValue)
 
@@ -97,8 +98,8 @@ abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: V
     signature: Option[String],
     returnType: String,
     fileName: Option[String] = None,
-    lineNumber: Option[Integer] = None,
-    columnNumber: Option[Integer] = None
+    lineNumber: Option[Int] = None,
+    columnNumber: Option[Int] = None
   ): Ast = {
     val methodNode = NewMethod()
       .name(Defines.StaticInitMethodName)
@@ -147,7 +148,7 @@ abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: V
     }
   }
 
-  def wrapMultipleInBlock(asts: Seq[Ast], lineNumber: Option[Integer]): Ast = {
+  def wrapMultipleInBlock(asts: Seq[Ast], lineNumber: Option[Int]): Ast = {
     asts.toList match {
       case Nil        => blockAst(NewBlock().lineNumber(lineNumber))
       case ast :: Nil => ast
@@ -159,8 +160,8 @@ abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: V
     condition: Option[Ast],
     body: Seq[Ast],
     code: Option[String] = None,
-    lineNumber: Option[Integer] = None,
-    columnNumber: Option[Integer] = None
+    lineNumber: Option[Int] = None,
+    columnNumber: Option[Int] = None
   ): Ast = {
     var whileNode = NewControlStructure()
       .controlStructureType(ControlStructureTypes.WHILE)
@@ -176,8 +177,8 @@ abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: V
     condition: Option[Ast],
     body: Seq[Ast],
     code: Option[String] = None,
-    lineNumber: Option[Integer] = None,
-    columnNumber: Option[Integer] = None
+    lineNumber: Option[Int] = None,
+    columnNumber: Option[Int] = None
   ): Ast = {
     var doWhileNode = NewControlStructure()
       .controlStructureType(ControlStructureTypes.DO)
@@ -220,7 +221,15 @@ abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: V
   /** For the given try body, catch ASTs and finally AST, create a try-catch-finally AST with orders set correctly for
     * the ossdataflow engine.
     */
-  def tryCatchAst(tryNode: NewControlStructure, tryBodyAst: Ast, catchAsts: Seq[Ast], finallyAst: Option[Ast]): Ast = {
+  @deprecated(
+    "This will be removed once all frontends switched to `tryCatchAst` using ControlStructure nodes for catches/finally. Use `tryCatchAst` instead."
+  )
+  def tryCatchAstWithOrder(
+    tryNode: NewControlStructure,
+    tryBodyAst: Ast,
+    catchAsts: Seq[Ast],
+    finallyAst: Option[Ast]
+  ): Ast = {
     tryBodyAst.root.collect { case x: ExpressionNew => x }.foreach(_.order = 1)
     catchAsts.flatMap(_.root).collect { case x: ExpressionNew => x }.foreach(_.order = 2)
     finallyAst.flatMap(_.root).collect { case x: ExpressionNew => x }.foreach(_.order = 3)
@@ -228,6 +237,16 @@ abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: V
       .withChild(tryBodyAst)
       .withChildren(catchAsts)
       .withChildren(finallyAst.toList)
+  }
+
+  /** For the given try body, catch ASTs, and finally AST, create a try-catch-finally AST.
+    */
+  def tryCatchAst(tryNode: NewControlStructure, tryBodyAst: Ast, catchAsts: Seq[Ast], finallyAst: Option[Ast]): Ast = {
+    setArgumentIndices(tryBodyAst +: (catchAsts ++ finallyAst.toSeq))
+    Ast(tryNode)
+      .withChild(tryBodyAst)
+      .withChildren(catchAsts)
+      .withChildren(finallyAst.toSeq)
   }
 
   /** For a given block node and statement ASTs, create an AST that represents the block. The main purpose of this

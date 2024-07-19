@@ -21,8 +21,8 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
 
   protected def astForBlockStatement(blockStmt: IASTCompoundStatement, order: Int = -1): Ast = {
     val codeString = code(blockStmt)
-    val blockCode  = if (codeString == "{}" || codeString.isEmpty) Defines.empty else codeString
-    val node = blockNode(blockStmt, blockCode, registerType(Defines.voidTypeName))
+    val blockCode  = if (codeString == "{}" || codeString.isEmpty) Defines.Empty else codeString
+    val node = blockNode(blockStmt, blockCode, registerType(Defines.Void))
       .order(order)
       .argumentIndex(order)
     scope.pushNewScope(node)
@@ -123,18 +123,21 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
 
   private def astForTryStatement(tryStmt: ICPPASTTryBlockStatement): Ast = {
     val tryNode = controlStructureNode(tryStmt, ControlStructureTypes.TRY, "try")
-    val body    = nullSafeAst(tryStmt.getTryBody, 1)
-    val catches = tryStmt.getCatchHandlers.zipWithIndex.map { case (h, index) =>
-      astForCatchHandler(h, index + 2)
-    }.toIndexedSeq
-    Ast(tryNode).withChildren(body).withChildren(catches)
+    val bodyAst = nullSafeAst(tryStmt.getTryBody) match {
+      case Nil         => Ast()
+      case elem :: Nil => elem
+      case elements =>
+        setArgumentIndices(elements)
+        blockAst(blockNode(tryStmt.getTryBody)).withChildren(elements)
+    }
+    val catchAsts = tryStmt.getCatchHandlers.toSeq.map(astForCatchHandler)
+    tryCatchAst(tryNode, bodyAst, catchAsts, None)
   }
 
-  private def astForCatchHandler(catchHandler: ICPPASTCatchHandler, argIndex: Int): Ast = {
-    val catchNode =
-      controlStructureNode(catchHandler, ControlStructureTypes.CATCH, "catch").order(argIndex).argumentIndex(argIndex)
-    val declAst = nullSafeAst(catchHandler.getDeclaration)
-    val bodyAst = nullSafeAst(catchHandler.getCatchBody)
+  private def astForCatchHandler(catchHandler: ICPPASTCatchHandler): Ast = {
+    val catchNode = controlStructureNode(catchHandler, ControlStructureTypes.CATCH, "catch")
+    val declAst   = nullSafeAst(catchHandler.getDeclaration)
+    val bodyAst   = nullSafeAst(catchHandler.getCatchBody)
     Ast(catchNode).withChildren(declAst).withChildren(bodyAst)
   }
 
@@ -190,7 +193,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
   private def astForConditionExpression(expression: IASTExpression, explicitArgumentIndex: Option[Int] = None): Ast = {
     val ast = expression match {
       case exprList: IASTExpressionList =>
-        val compareAstBlock = blockNode(expression, Defines.empty, registerType(Defines.voidTypeName))
+        val compareAstBlock = blockNode(expression, Defines.Empty, registerType(Defines.Void))
         scope.pushNewScope(compareAstBlock)
         val compareBlockAstChildren = exprList.getExpressions.toList.map(nullSafeAst)
         setArgumentIndices(compareBlockAstChildren)
@@ -214,7 +217,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
     val code    = s"for ($codeInit$codeCond;$codeIter)"
     val forNode = controlStructureNode(forStmt, ControlStructureTypes.FOR, code)
 
-    val initAstBlock = blockNode(forStmt, Defines.empty, registerType(Defines.voidTypeName))
+    val initAstBlock = blockNode(forStmt, Defines.Empty, registerType(Defines.Void))
     scope.pushNewScope(initAstBlock)
     val initAst = blockAst(initAstBlock, nullSafeAst(forStmt.getInitializerStatement, 1).toList)
     scope.popScope()
@@ -259,7 +262,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
         (c, compareAst)
       case s: CPPASTIfStatement if s.getConditionExpression == null =>
         val c         = s"if (${nullSafeCode(s.getConditionDeclaration)})"
-        val exprBlock = blockNode(s.getConditionDeclaration, Defines.empty, Defines.voidTypeName)
+        val exprBlock = blockNode(s.getConditionDeclaration, Defines.Empty, Defines.Void)
         scope.pushNewScope(exprBlock)
         val a = astsForDeclaration(s.getConditionDeclaration)
         setArgumentIndices(a)
@@ -272,7 +275,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
     val thenAst = ifStmt.getThenClause match {
       case block: IASTCompoundStatement => astForBlockStatement(block)
       case other if other != null =>
-        val thenBlock = blockNode(other, Defines.empty, Defines.voidTypeName)
+        val thenBlock = blockNode(other, Defines.Empty, Defines.Void)
         scope.pushNewScope(thenBlock)
         val a = astsForStatement(other)
         setArgumentIndices(a)
@@ -288,7 +291,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
         Ast(elseNode).withChild(elseAst)
       case other if other != null =>
         val elseNode  = controlStructureNode(ifStmt.getElseClause, ControlStructureTypes.ELSE, "else")
-        val elseBlock = blockNode(other, Defines.empty, Defines.voidTypeName)
+        val elseBlock = blockNode(other, Defines.Empty, Defines.Void)
         scope.pushNewScope(elseBlock)
         val a = astsForStatement(other)
         setArgumentIndices(a)

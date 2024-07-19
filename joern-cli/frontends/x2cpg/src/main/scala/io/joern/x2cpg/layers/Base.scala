@@ -1,10 +1,10 @@
 package io.joern.x2cpg.layers
 
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.PropertyNames
 import io.shiftleft.passes.CpgPassBase
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext, LayerCreatorOptions}
-import io.joern.x2cpg.passes.base._
+import io.joern.x2cpg.passes.base.*
 
 object Base {
   val overlayName: String = "base"

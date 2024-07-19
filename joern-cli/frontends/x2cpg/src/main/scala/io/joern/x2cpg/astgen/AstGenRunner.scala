@@ -98,11 +98,11 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
     */
   protected val SupportedBinaries: Set[(OperatingSystemType, ArchitectureType)] = Set(
     Environment.OperatingSystemType.Windows -> Environment.ArchitectureType.X86,
-    Environment.OperatingSystemType.Windows -> Environment.ArchitectureType.ARM,
+    Environment.OperatingSystemType.Windows -> Environment.ArchitectureType.ARMv8,
     Environment.OperatingSystemType.Linux   -> Environment.ArchitectureType.X86,
-    Environment.OperatingSystemType.Linux   -> Environment.ArchitectureType.ARM,
+    Environment.OperatingSystemType.Linux   -> Environment.ArchitectureType.ARMv8,
     Environment.OperatingSystemType.Mac     -> Environment.ArchitectureType.X86,
-    Environment.OperatingSystemType.Mac     -> Environment.ArchitectureType.ARM
+    Environment.OperatingSystemType.Mac     -> Environment.ArchitectureType.ARMv8
   )
 
   /** Determines the name of the executable to run, based on the host system. Usually, AST GEN binaries support three
@@ -129,8 +129,8 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
       s"${metaData.name}-$x86Suffix"
     } else {
       Environment.architecture match {
-        case Environment.ArchitectureType.X86 => s"${metaData.name}-$x86Suffix"
-        case Environment.ArchitectureType.ARM => s"${metaData.name}-$armSuffix"
+        case Environment.ArchitectureType.X86   => s"${metaData.name}-$x86Suffix"
+        case Environment.ArchitectureType.ARMv8 => s"${metaData.name}-$armSuffix"
       }
     }
   }
@@ -160,7 +160,7 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
 
   protected def skippedFiles(in: File, astGenOut: List[String]): List[String]
 
-  protected def runAstGenNative(in: String, out: File, exclude: String)(implicit
+  protected def runAstGenNative(in: String, out: File, exclude: String, include: String)(implicit
     metaData: AstGenProgramMetaData
   ): Try[Seq[String]]
 
@@ -178,7 +178,7 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
     implicit val metaData: AstGenProgramMetaData = config.astGenMetaData
     val in                                       = File(config.inputPath)
     logger.info(s"Running ${metaData.name} on '${config.inputPath}'")
-    runAstGenNative(config.inputPath, out, config.ignoredFilesRegex.toString()) match {
+    runAstGenNative(config.inputPath, out, config.ignoredFilesRegex.toString(), "") match {
       case Success(result) =>
         val srcFiles = SourceFiles.determine(
           out.toString(),

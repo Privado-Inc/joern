@@ -5,8 +5,10 @@ import io.joern.dataflowengineoss.semanticsloader.FlowSemantic
 import io.joern.dataflowengineoss.testfixtures.{SemanticCpgTestFixture, SemanticTestCpg}
 import io.joern.javasrc2cpg.{Config, JavaSrc2Cpg}
 import io.joern.x2cpg.X2Cpg
+import io.joern.x2cpg.frontendspecific.javasrc2cpg
+import io.joern.x2cpg.passes.frontend.XTypeRecoveryConfig
 import io.joern.x2cpg.testfixtures.{Code2CpgFixture, DefaultTestCpg, LanguageFrontend, TestCpg}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.{Expression, Literal}
 import io.shiftleft.semanticcpg.language.*
 
@@ -31,7 +33,8 @@ class JavaSrcTestCpg(enableTypeRecovery: Boolean = false)
 
   override protected def applyPasses(): Unit = {
     super.applyPasses()
-    if (enableTypeRecovery) JavaSrc2Cpg.typeRecoveryPasses(this).foreach(_.createAndApply())
+    if (enableTypeRecovery)
+      javasrc2cpg.typeRecoveryPasses(this, XTypeRecoveryConfig(enabledDummyTypes = true)).foreach(_.createAndApply())
     applyOssDataFlow()
   }
 
