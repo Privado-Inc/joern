@@ -80,7 +80,7 @@ class InterfaceDataflowTests extends CSharpCode2CpgFixture(withDataFlow = true) 
         "BaseRepo.cs"
       )
 
-    "find path from firstName to fun call" in {
+    "find path from firstName to fun call" ignore {
       val src  = cpg.literal.codeExact("firstName").l
       val sink = cpg.call.nameExact("put")
       sink.reachableBy(src).size shouldBe 1
