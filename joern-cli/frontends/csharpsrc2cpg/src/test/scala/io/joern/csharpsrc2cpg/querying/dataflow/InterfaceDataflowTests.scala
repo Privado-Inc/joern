@@ -73,7 +73,7 @@ class InterfaceDataflowTests extends CSharpCode2CpgFixture(withDataFlow = true) 
           |{
           |    public abstract class BaseRepo : IRepo
           |    {
-          |        public abstract AnyValue fun(string firstName);
+          |        public abstract AnyValue fun(string x);
           |    }
           |}
           |""".stripMargin,
