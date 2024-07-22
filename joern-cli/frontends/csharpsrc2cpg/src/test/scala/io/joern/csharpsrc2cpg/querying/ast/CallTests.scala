@@ -194,4 +194,28 @@ class CallTests extends CSharpCode2CpgFixture {
     }
   }
 
+  "null-coalescing operator" should {
+    val cpg = code("""
+        |namespace Baz
+        |{
+        |    public class Foo
+        |    {
+        |        private readonly IDatabase db;
+        |
+        |        public async AnyValue GetValue(string x)
+        |        {
+        |            var value = await db.get(x) ?? new AnyValue();
+        |            return value;
+        |        }
+        |    }
+        |}
+        |""".stripMargin)
+
+    "resolve methodFullName" ignore {
+      inside(cpg.call.name("get").methodFullName.l) {
+        case x :: Nil => x shouldBe "IDatabase.db.get:AnyValue"
+        case _        => fail("Unexpected call node structure")
+      }
+    }
+  }
 }
