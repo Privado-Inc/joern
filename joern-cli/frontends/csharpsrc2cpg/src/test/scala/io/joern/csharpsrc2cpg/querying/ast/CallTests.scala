@@ -209,11 +209,17 @@ class CallTests extends CSharpCode2CpgFixture {
         |        }
         |    }
         |}
+        |""".stripMargin).moreCode("""
+        |namespace Baz;
+        |
+        |public interface IDatabase {
+        | public AnyValue get(string x) {}
+        |}
         |""".stripMargin)
 
-    "resolve methodFullName" ignore {
+    "resolve methodFullName" in {
       inside(cpg.call.name("get").methodFullName.l) {
-        case x :: Nil => x shouldBe "IDatabase.db.get:AnyValue"
+        case x :: Nil => x shouldBe "Baz.IDatabase.get:AnyValue(System.String)"
         case _        => fail("Unexpected call node structure")
       }
     }
