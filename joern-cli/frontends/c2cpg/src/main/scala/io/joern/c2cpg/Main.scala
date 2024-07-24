@@ -17,7 +17,8 @@ final case class Config(
   includePathsAutoDiscovery: Boolean = false,
   skipFunctionBodies: Boolean = false,
   noImageLocations: Boolean = false,
-  withPreprocessedFiles: Boolean = false
+  withPreprocessedFiles: Boolean = false,
+  skipHeaderFileContext: Boolean = false
 ) extends X2CpgConfig[Config] {
   def withIncludePaths(includePaths: Set[String]): Config = {
     this.copy(includePaths = includePaths).withInheritedFields(this)
@@ -57,6 +58,10 @@ final case class Config(
 
   def withPreprocessedFiles(value: Boolean): Config = {
     this.copy(withPreprocessedFiles = value).withInheritedFields(this)
+  }
+
+  def withSkipHeaderFileContext(value: Boolean): Config = {
+    this.copy(skipHeaderFileContext = value).withInheritedFields(this)
   }
 }
 
@@ -101,6 +106,9 @@ private object Frontend {
       opt[Unit]("with-preprocessed-files")
         .text("includes *.i files and gives them priority over their unprocessed origin source files.")
         .action((_, c) => c.withPreprocessedFiles(true)),
+      opt[Unit]("skip-header-file-context")
+        .text("skips copying header files for each .c or .cpp file being processed")
+        .action((_, c) => c.withSkipHeaderFileContext(true)),
       opt[String]("define")
         .unbounded()
         .text("define a name")
