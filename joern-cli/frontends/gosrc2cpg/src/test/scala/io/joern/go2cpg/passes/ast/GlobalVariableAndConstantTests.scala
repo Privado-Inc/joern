@@ -12,17 +12,17 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
   "Global variable declaration check" should {
     val cpg = code("""
-        |package main
-        |const (
-        |	FooConst = "Test"
-        |)
-        |var (
-        |	BarVar = 100
-        |)
-        |func main() {
-        |  println(FooConst)
-        |}
-        |""".stripMargin)
+                     |package main
+                     |const (
+                     |	FooConst = "Test"
+                     |)
+                     |var (
+                     |	BarVar = 100
+                     |)
+                     |func main() {
+                     |  println(FooConst)
+                     |}
+                     |""".stripMargin)
 
     "Check package Type Decl" in {
       val List(x) = cpg.typeDecl("main").l
@@ -40,9 +40,9 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
     "Be correct for Field Access CALL Node for Global variable access" in {
       val List(a, b, c) = cpg.call(Operators.fieldAccess).l
-      a.lineNumber shouldBe Some(10)
-      b.lineNumber shouldBe Some(4)
-      c.lineNumber shouldBe Some(7)
+      a.lineNumber shouldBe Some(4)
+      b.lineNumber shouldBe Some(7)
+      c.lineNumber shouldBe Some(10)
     }
 
     "Create Constructor method for Package level global variable initialisation" in {
@@ -87,8 +87,8 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
     "Be correct for Field Access CALL Node for Global variable access" in {
       val List(x, y) = cpg.call(Operators.fieldAccess).l
-      x.code shouldBe "lib1.SchemeHTTP"
-      y.code shouldBe "SchemeHTTP"
+      x.code shouldBe "SchemeHTTP"
+      y.code shouldBe "lib1.SchemeHTTP"
     }
 
     "Check methodfullname of variable imported from other package " in {
@@ -127,8 +127,8 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
     "Be correct for Field Access CALL Node for Global variable access" in {
       val List(x, y) = cpg.call(Operators.fieldAccess).l
-      x.code shouldBe "lib1.SchemeHTTP"
-      y.code shouldBe "SchemeHTTP"
+      x.code shouldBe "SchemeHTTP"
+      y.code shouldBe "lib1.SchemeHTTP"
     }
 
     "Check methodfullname of variable imported from other package " in {
@@ -166,8 +166,8 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
     "Be correct for Field Access CALL Node for Global variable access" in {
       val List(x, y) = cpg.call(Operators.fieldAccess).l
-      x.code shouldBe "lib1.SchemeHTTP"
-      y.code shouldBe "SchemeHTTP"
+      x.code shouldBe "SchemeHTTP"
+      y.code shouldBe "lib1.SchemeHTTP"
     }
 
     "Check methodfullname of constant imported from other package " in {
@@ -209,8 +209,11 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
     "Be correct for Field Access CALL Node for Global variable access" in {
       val List(a, b, c) = cpg.call(Operators.fieldAccess).l
       a.typeFullName shouldBe "string"
-      b.typeFullName shouldBe "joern.io/sample/lib2.SchemeHTTP.<FieldAccess>.<unknown>"
-      c.code shouldBe "SchemeHTTP"
+      a.code shouldBe "SchemeHTTP"
+      b.typeFullName shouldBe "string"
+      b.code shouldBe "lib1.SchemeHTTP"
+      c.typeFullName shouldBe "joern.io/sample/lib2.SchemeHTTP.<FieldAccess>.<unknown>"
+      c.code shouldBe "lib2.SchemeHTTP"
     }
 
     "Check methodfullname of constant imported from other package " in {
@@ -222,11 +225,11 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
   "global variable reference" should {
     val cpg = code("""package main
-        |var x = 1
-        |func main(){
-        | y := x
-        |}
-        |""".stripMargin)
+                     |var x = 1
+                     |func main(){
+                     | y := x
+                     |}
+                     |""".stripMargin)
 
     "check Global Member node" in {
       val List(x) = cpg.typeDecl("main").l
@@ -244,24 +247,24 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
   "when constant is used in initializing struct" should {
     val cpg = code("""
-        |package main
-        |
-        |var person = Person()
-        |
-        |type Name struct {
-        |   name string
-        |}
-        |
-        |const (
-        | personName string = "peter"
-        |)
-        |
-        |func Person() Name {
-        |   return Name{
-        |     name: personName,
-        |   }
-        |}
-        |""".stripMargin)
+                     |package main
+                     |
+                     |var person = Person()
+                     |
+                     |type Name struct {
+                     |   name string
+                     |}
+                     |
+                     |const (
+                     | personName string = "peter"
+                     |)
+                     |
+                     |func Person() Name {
+                     |   return Name{
+                     |     name: personName,
+                     |   }
+                     |}
+                     |""".stripMargin)
 
     "test basic ast structure for Person" in {
       val List(method) = cpg.method.name("Person").l
@@ -286,9 +289,10 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
     "Check fieldAccess node for global variable access" in {
       val List(a, b, c) = cpg.call(Operators.fieldAccess).l
-      a.typeFullName shouldBe "string"
-      b.typeFullName shouldBe "main.Name"
-      b.code shouldBe "person"
+      a.typeFullName shouldBe "main.Name"
+      a.code shouldBe "person"
+      b.typeFullName shouldBe "string"
+      b.code shouldBe "personName"
       c.typeFullName shouldBe "string"
       c.code shouldBe "personName"
     }
@@ -365,9 +369,17 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
     "Be correct for Field Access CALL Node for Global variable access" in {
       val List(a, b, c, d) = cpg.call(Operators.fieldAccess).l
       a.typeFullName shouldBe "string"
+      a.code shouldBe "SchemeHTTP"
+      a.method.fullName shouldBe "joern.io/sample/another/lib1<clinit>"
       b.typeFullName shouldBe "string"
-      c.method.fullName shouldBe "joern.io/sample/another/lib1<clinit>"
-      d.method.fullName shouldBe "joern.io/sample/lib1<clinit>"
+      b.code shouldBe "SchemeHTTP"
+      b.method.fullName shouldBe "joern.io/sample/lib1<clinit>"
+      c.typeFullName shouldBe "string"
+      c.code shouldBe "lib1.SchemeHTTP"
+      c.method.fullName shouldBe "main.main"
+      d.typeFullName shouldBe "string"
+      d.code shouldBe "anlib1.SchemeHTTP"
+      d.method.fullName shouldBe "main.main"
     }
 
     "Check methodfullname of constant imported from other package " in {
