@@ -1,9 +1,9 @@
 package io.joern.jssrc2cpg.astcreation
 
 import io.joern.jssrc2cpg.parser.BabelNodeInfo
-import io.joern.jssrc2cpg.passes.Defines
 import io.joern.x2cpg
 import io.joern.x2cpg.{Ast, ValidationMode}
+import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
 import io.joern.x2cpg.utils.NodeBuilders.newMethodReturnNode
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.DispatchTypes
@@ -35,17 +35,6 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
       .columnNumber(switchCase.columnNumber)
   }
 
-  protected def createControlStructureNode(node: BabelNodeInfo, controlStructureType: String): NewControlStructure = {
-    val line   = node.lineNumber
-    val column = node.columnNumber
-    val code   = node.code
-    NewControlStructure()
-      .controlStructureType(controlStructureType)
-      .code(code)
-      .lineNumber(line)
-      .columnNumber(column)
-  }
-
   protected def codeOf(node: NewNode): String = node match {
     case astNodeNew: AstNodeNew => astNodeNew.code
     case _                      => ""
@@ -54,8 +43,8 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
   protected def createIndexAccessCallAst(
     baseNode: NewNode,
     partNode: NewNode,
-    line: Option[Integer],
-    column: Option[Integer]
+    line: Option[Int],
+    column: Option[Int]
   ): Ast = {
     val callNode = createCallNode(
       s"${codeOf(baseNode)}[${codeOf(partNode)}]",
@@ -68,12 +57,7 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
     callAst(callNode, arguments)
   }
 
-  protected def createIndexAccessCallAst(
-    baseAst: Ast,
-    partAst: Ast,
-    line: Option[Integer],
-    column: Option[Integer]
-  ): Ast = {
+  protected def createIndexAccessCallAst(baseAst: Ast, partAst: Ast, line: Option[Int], column: Option[Int]): Ast = {
     val callNode = createCallNode(
       s"${codeOf(baseAst.nodes.head)}[${codeOf(partAst.nodes.head)}]",
       Operators.indexAccess,
@@ -88,8 +72,8 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
   protected def createFieldAccessCallAst(
     baseNode: NewNode,
     partNode: NewNode,
-    line: Option[Integer],
-    column: Option[Integer]
+    line: Option[Int],
+    column: Option[Int]
   ): Ast = {
     val callNode = createCallNode(
       s"${codeOf(baseNode)}.${codeOf(partNode)}",
@@ -105,8 +89,8 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
   protected def createFieldAccessCallAst(
     baseAst: Ast,
     partNode: NewNode,
-    line: Option[Integer],
-    column: Option[Integer]
+    line: Option[Int],
+    column: Option[Int]
   ): Ast = {
     val callNode = createCallNode(
       s"${codeOf(baseAst.nodes.head)}.${codeOf(partNode)}",
@@ -123,8 +107,8 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
     testAst: Ast,
     trueAst: Ast,
     falseAst: Ast,
-    line: Option[Integer],
-    column: Option[Integer]
+    line: Option[Int],
+    column: Option[Int]
   ): Ast = {
     val code      = s"${codeOf(testAst.nodes.head)} ? ${codeOf(trueAst.nodes.head)} : ${codeOf(falseAst.nodes.head)}"
     val callNode  = createCallNode(code, Operators.conditional, DispatchTypes.STATIC_DISPATCH, line, column)
@@ -143,8 +127,8 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
     code: String,
     callName: String,
     dispatchType: String,
-    line: Option[Integer],
-    column: Option[Integer]
+    line: Option[Int],
+    column: Option[Int]
   ): NewCall = NewCall()
     .code(code)
     .name(callName)
@@ -156,14 +140,10 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
     .columnNumber(column)
     .typeFullName(Defines.Any)
 
-  protected def createVoidCallNode(line: Option[Integer], column: Option[Integer]): NewCall =
+  protected def createVoidCallNode(line: Option[Int], column: Option[Int]): NewCall =
     createCallNode("void 0", "<operator>.void", DispatchTypes.STATIC_DISPATCH, line, column)
 
-  protected def createFieldIdentifierNode(
-    name: String,
-    line: Option[Integer],
-    column: Option[Integer]
-  ): NewFieldIdentifier = {
+  protected def createFieldIdentifierNode(name: String, line: Option[Int], column: Option[Int]): NewFieldIdentifier = {
     val cleanedName = stripQuotes(name)
     NewFieldIdentifier()
       .code(cleanedName)
@@ -180,7 +160,7 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
     literalNode(node, code, typeFullName, dynamicTypeOption.toList)
   }
 
-  protected def createEqualsCallAst(dest: Ast, source: Ast, line: Option[Integer], column: Option[Integer]): Ast = {
+  protected def createEqualsCallAst(dest: Ast, source: Ast, line: Option[Int], column: Option[Int]): Ast = {
     val code      = s"${codeOf(dest.nodes.head)} === ${codeOf(source.nodes.head)}"
     val callNode  = createCallNode(code, Operators.equals, DispatchTypes.STATIC_DISPATCH, line, column)
     val arguments = List(dest, source)
@@ -191,8 +171,8 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
     destId: NewNode,
     sourceId: NewNode,
     code: String,
-    line: Option[Integer],
-    column: Option[Integer]
+    line: Option[Int],
+    column: Option[Int]
   ): Ast = {
     val callNode  = createCallNode(code, Operators.assignment, DispatchTypes.STATIC_DISPATCH, line, column)
     val arguments = List(Ast(destId), Ast(sourceId))
@@ -203,8 +183,8 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
     dest: Ast,
     source: Ast,
     code: String,
-    line: Option[Integer],
-    column: Option[Integer]
+    line: Option[Int],
+    column: Option[Int]
   ): Ast = {
     val callNode  = createCallNode(code, Operators.assignment, DispatchTypes.STATIC_DISPATCH, line, column)
     val arguments = List(dest, source)
@@ -229,8 +209,8 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
     code: String,
     callName: String,
     fullName: String,
-    line: Option[Integer],
-    column: Option[Integer]
+    line: Option[Int],
+    column: Option[Int]
   ): NewCall = NewCall()
     .code(code)
     .name(callName)
@@ -244,8 +224,8 @@ trait AstNodeBuilder(implicit withSchemaValidation: ValidationMode) { this: AstC
   protected def createTemplateDomNode(
     name: String,
     code: String,
-    line: Option[Integer],
-    column: Option[Integer]
+    line: Option[Int],
+    column: Option[Int]
   ): NewTemplateDom =
     NewTemplateDom()
       .name(name)

@@ -1,6 +1,6 @@
 package io.joern.x2cpg.passes
 
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated._
 import io.shiftleft.codepropertygraph.generated.nodes.MethodParameterIn
 import io.joern.x2cpg.passes.base.MethodDecoratorPass
@@ -15,12 +15,12 @@ class MethodDecoratorPassTests extends AnyWordSpec with Matchers {
     val parameterIn = graph
       .+(
         NodeTypes.METHOD_PARAMETER_IN,
-        Properties.CODE                -> "p1",
-        Properties.ORDER               -> 1,
-        Properties.NAME                -> "p1",
-        Properties.EVALUATION_STRATEGY -> EvaluationStrategies.BY_REFERENCE,
-        Properties.TYPE_FULL_NAME      -> "some.Type",
-        Properties.LINE_NUMBER         -> 10
+        Properties.Code               -> "p1",
+        Properties.Order              -> 1,
+        Properties.Name               -> "p1",
+        Properties.EvaluationStrategy -> EvaluationStrategies.BY_REFERENCE,
+        Properties.TypeFullName       -> "some.Type",
+        Properties.LineNumber         -> 10
       )
       .asInstanceOf[MethodParameterIn]
 

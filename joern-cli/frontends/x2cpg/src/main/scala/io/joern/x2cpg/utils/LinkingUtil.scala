@@ -1,7 +1,7 @@
 package io.joern.x2cpg.utils
 
 import io.joern.x2cpg.passes.frontend.Dereference
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{Properties, PropertyNames}
 import org.slf4j.{Logger, LoggerFactory}
@@ -15,7 +15,8 @@ import scala.jdk.CollectionConverters.*
 trait LinkingUtil {
 
   import overflowdb.BatchedUpdate.DiffGraphBuilder
-  private val MAX_BATCH_SIZE = 100
+
+  val MAX_BATCH_SIZE: Int = 100
 
   val logger: Logger = LoggerFactory.getLogger(classOf[LinkingUtil])
 
@@ -33,13 +34,6 @@ trait LinkingUtil {
 
   def nodesWithFullName(cpg: Cpg, x: String): mutable.Seq[NodeRef[? <: NodeDb]] =
     cpg.graph.indexManager.lookup(PropertyNames.FULL_NAME, x).asScala
-
-  protected def getBatchSize(totalItems: Int): Int = {
-    val batchSize =
-      if totalItems > MAX_BATCH_SIZE then totalItems / ConcurrentTaskUtil.MAX_POOL_SIZE
-      else MAX_BATCH_SIZE
-    Math.min(batchSize, MAX_BATCH_SIZE)
-  }
 
   /** For all nodes `n` with a label in `srcLabels`, determine the value of `n.\$dstFullNameKey`, use that to lookup the
     * destination node in `dstNodeMap`, and create an edge of type `edgeType` between `n` and the destination node.
@@ -85,7 +79,7 @@ trait LinkingUtil {
             }
           }
       } else {
-        srcNode.out(edgeType).property(Properties.FULL_NAME).nextOption() match {
+        srcNode.out(edgeType).property(Properties.FullName).nextOption() match {
           case Some(dstFullName) =>
             dstGraph.setNodeProperty(
               srcNode.asInstanceOf[StoredNode],
@@ -131,7 +125,7 @@ trait LinkingUtil {
           }
         }
       } else {
-        val dstFullNames = srcNode.out(edgeType).property(Properties.FULL_NAME).l
+        val dstFullNames = srcNode.out(edgeType).property(Properties.FullName).l
         dstGraph.setNodeProperty(srcNode, dstFullNameKey, dstFullNames.map(dereference.dereferenceTypeFullName))
         if (!loggedDeprecationWarning) {
           logger.info(

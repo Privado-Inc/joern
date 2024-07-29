@@ -8,7 +8,7 @@ import io.joern.rubysrc2cpg.deprecated.utils.PackageTable
 import io.joern.rubysrc2cpg.{Config, RubySrc2Cpg}
 import io.joern.x2cpg.testfixtures.*
 import io.joern.x2cpg.{ValidationMode, X2Cpg}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.language.{ICallResolver, NoResolve}
 import org.scalatest.Tag
 
@@ -73,8 +73,8 @@ class RubyCode2CpgFixture(
 
   implicit val resolver: ICallResolver = NoResolve
 
-  protected def flowToResultPairs(path: Path): List[(String, Integer)] =
-    path.resultPairs().collect { case (firstElement: String, secondElement: Option[Integer]) =>
+  protected def flowToResultPairs(path: Path): List[(String, Int)] =
+    path.resultPairs().collect { case (firstElement, secondElement) =>
       (firstElement, secondElement.getOrElse(-1))
     }
 }

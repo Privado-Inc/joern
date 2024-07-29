@@ -12,10 +12,10 @@ package object astgen {
     def node: T
     def json: Value
     def code: String
-    def lineNumber: Option[Integer]
-    def columnNumber: Option[Integer]
-    def lineNumberEnd: Option[Integer]
-    def columnNumberEnd: Option[Integer]
+    def lineNumber: Option[Int]
+    def columnNumber: Option[Int]
+    def lineNumberEnd: Option[Int]
+    def columnNumberEnd: Option[Int]
   }
 
   /** The basic components of the results from parsing the JSON AST.
@@ -38,6 +38,7 @@ package object astgen {
     * @param fileContent
     *   the raw file contents.
     */
-  case class ParserResult(filename: String, fullPath: String, json: Value, fileContent: String) extends BaseParserResult
+  case class ParserResult(filename: String, fullPath: String, json: Value, var fileContent: String)
+      extends BaseParserResult
 
 }
