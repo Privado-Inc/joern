@@ -1,7 +1,6 @@
 package io.joern.gosrc2cpg.utils
 
 import better.files.File
-import com.typesafe.config.ConfigFactory
 import io.joern.gosrc2cpg.Config
 import io.joern.x2cpg.SourceFiles
 import io.joern.x2cpg.astgen.AstGenRunner.{AstGenProgramMetaData, AstGenRunnerResult}
@@ -10,21 +9,24 @@ import io.joern.x2cpg.utils.Environment.ArchitectureType.ArchitectureType
 import io.joern.x2cpg.utils.Environment.OperatingSystemType.OperatingSystemType
 import io.joern.x2cpg.utils.{Environment, ExternalCommand}
 import org.slf4j.LoggerFactory
-import versionsort.VersionHelper
 
 import java.nio.file.Paths
+import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters.*
+import scala.util.matching.Regex
 import scala.util.{Failure, Success, Try}
 
 object AstGenRunner {
   private val logger = LoggerFactory.getLogger(getClass)
   case class GoAstGenRunnerResult(
+    modulePath: String = "",
     parsedModFile: Option[String] = None,
     parsedFiles: List[String] = List.empty,
     skippedFiles: List[String] = List.empty
   ) extends AstGenRunnerResult
 }
 
-class AstGenRunner(config: Config) extends AstGenRunnerBase(config) {
+class AstGenRunner(config: Config, includeFileRegex: String = "") extends AstGenRunnerBase(config) {
   import io.joern.gosrc2cpg.utils.AstGenRunner.*
 
   override val WinX86   = "windows.exe"
@@ -70,18 +72,19 @@ class AstGenRunner(config: Config) extends AstGenRunnerBase(config) {
     }
   }
 
-  override def runAstGenNative(in: String, out: File, exclude: String)(implicit
+  override def runAstGenNative(in: String, out: File, exclude: String, include: String)(implicit
     metaData: AstGenProgramMetaData
   ): Try[Seq[String]] = {
     val excludeCommand = if (exclude.isEmpty) "" else s"-exclude \"$exclude\""
-    ExternalCommand.run(s"$astGenCommand $excludeCommand -out ${out.toString()} $in", ".")
+    val includeCommand = if (include.isEmpty) "" else s"-include-packages \"$include\""
+    ExternalCommand.run(s"$astGenCommand $excludeCommand $includeCommand -out ${out.toString()} $in", ".")
   }
 
-  override def execute(out: File): AstGenRunnerResult = {
+  def executeForGo(out: File): List[GoAstGenRunnerResult] = {
     implicit val metaData: AstGenProgramMetaData = config.astGenMetaData
     val in                                       = File(config.inputPath)
     logger.info(s"Running goastgen in '$config.inputPath' ...")
-    runAstGenNative(config.inputPath, out, config.ignoredFilesRegex.toString()) match {
+    runAstGenNative(config.inputPath, out, config.ignoredFilesRegex.toString(), includeFileRegex.toString()) match {
       case Success(result) =>
         val srcFiles = SourceFiles.determine(
           out.toString(),
@@ -92,11 +95,108 @@ class AstGenRunner(config: Config) extends AstGenRunnerBase(config) {
         val parsedModFile = filterModFile(srcFiles, out)
         val parsed        = filterFiles(srcFiles, out)
         val skipped       = skippedFiles(in, result.toList)
-        GoAstGenRunnerResult(parsedModFile.headOption, parsed, skipped)
+        segregateByModule(config.inputPath, out.toString, parsedModFile, parsed, skipped)
       case Failure(f) =>
         logger.error("\t- running astgen failed!", f)
-        GoAstGenRunnerResult()
+        List()
     }
   }
 
+  /** Segregate all parsed files including go.mod files under separate modules. This will also segregate modules defined
+    * inside another module
+    */
+  private def segregateByModule(
+    inputPath: String,
+    outPath: String,
+    parsedModFiles: List[String],
+    parsedFiles: List[String],
+    skippedFiles: List[String]
+  ): List[GoAstGenRunnerResult] = {
+    val moduleMeta: ModuleMeta =
+      ModuleMeta(inputPath, outPath, None, ListBuffer[String](), ListBuffer[String](), ListBuffer[ModuleMeta]())
+    if (parsedModFiles.size > 0) {
+      parsedModFiles
+        .sortBy(_.split(UtilityConstants.fileSeparateorPattern).length)
+        .foreach(modFile => {
+          moduleMeta.addModFile(modFile, inputPath, outPath)
+        })
+      parsedFiles.foreach(moduleMeta.addParsedFile)
+      skippedFiles.foreach(moduleMeta.addSkippedFile)
+      moduleMeta.getOnlyChilds()
+    } else {
+      parsedFiles.foreach(moduleMeta.addParsedFile)
+      skippedFiles.foreach(moduleMeta.addSkippedFile)
+      moduleMeta.getAllChilds()
+    }
+  }
+
+  private def getParentFolder(path: String): String = {
+    val parent = Paths.get(path).getParent
+    if (parent != null) parent.toString else ""
+  }
+
+  case class ModuleMeta(
+    modulePath: String,
+    outputModulePath: String,
+    modFilePath: Option[String],
+    parsedFiles: ListBuffer[String],
+    skippedFiles: ListBuffer[String],
+    childModules: ListBuffer[ModuleMeta]
+  ) {
+    def addModFile(modFile: String, inputPath: String, outPath: String): Unit = {
+      childModules.collectFirst {
+        case childMod if modFile.startsWith(childMod.outputModulePath) =>
+          childMod.addModFile(modFile, inputPath, outPath)
+      } match {
+        case None =>
+          val outmodpath = getParentFolder(modFile)
+          childModules.addOne(
+            ModuleMeta(
+              outmodpath.replace(outPath, inputPath),
+              outmodpath,
+              Some(modFile),
+              ListBuffer[String](),
+              ListBuffer[String](),
+              ListBuffer[ModuleMeta]()
+            )
+          )
+        case _ =>
+      }
+    }
+
+    def addParsedFile(parsedFile: String): Unit = {
+      childModules.collectFirst {
+        case childMod if parsedFile.startsWith(childMod.outputModulePath) =>
+          childMod.addParsedFile(parsedFile)
+      } match {
+        case None => parsedFiles.addOne(parsedFile)
+        case _    =>
+      }
+    }
+
+    def addSkippedFile(skippedFile: String): Unit = {
+      childModules.collectFirst {
+        case childMod if skippedFile.startsWith(childMod.outputModulePath) =>
+          childMod.addSkippedFile(skippedFile)
+      } match {
+        case None => skippedFiles.addOne(skippedFile)
+        case _    =>
+      }
+    }
+
+    def getOnlyChilds(): List[GoAstGenRunnerResult] = {
+      childModules.flatMap(_.getAllChilds()).toList
+    }
+
+    def getAllChilds(): List[GoAstGenRunnerResult] = {
+      getOnlyChilds() ++ List(
+        GoAstGenRunnerResult(
+          modulePath = modulePath,
+          parsedModFile = modFilePath,
+          parsedFiles = parsedFiles.toList,
+          skippedFiles = skippedFiles.toList
+        )
+      )
+    }
+  }
 }

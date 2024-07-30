@@ -60,7 +60,7 @@ class DotNetAstGenRunner(config: Config) extends AstGenRunnerBase(config) {
     }.toList
   }
 
-  override def runAstGenNative(in: String, out: File, exclude: String)(implicit
+  override def runAstGenNative(in: String, out: File, exclude: String, include: String)(implicit
     metaData: AstGenProgramMetaData
   ): Try[Seq[String]] = {
     val excludeCommand = if (exclude.isEmpty) "" else s"-e \"$exclude\""
