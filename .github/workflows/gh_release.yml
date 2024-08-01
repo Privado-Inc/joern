@@ -1,5 +1,7 @@
 name: gh packages release
 on:
+  push:
+    branches: [ master ]
   workflow_dispatch:    # allow to manually trigger this workflow
 jobs:
   release:
