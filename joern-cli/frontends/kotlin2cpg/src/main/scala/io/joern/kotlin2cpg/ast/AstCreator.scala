@@ -13,11 +13,11 @@ import io.joern.x2cpg.Defines
 import io.joern.x2cpg.ValidationMode
 import io.joern.x2cpg.datastructures.Global
 import io.joern.x2cpg.datastructures.Stack.*
+import io.joern.x2cpg.utils.IntervalKeyPool
 import io.joern.x2cpg.utils.NodeBuilders
 import io.joern.x2cpg.utils.NodeBuilders.newMethodReturnNode
 import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.passes.IntervalKeyPool
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
@@ -28,7 +28,7 @@ import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.psi.*
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -87,7 +87,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, xTypeInfoProvider: TypeInfoProvid
   // TODO: use this everywhere in kotlin2cpg instead of manual .getText calls
   override def code(element: PsiElement): String = shortenCode(element.getText)
 
-  override def line(element: PsiElement): Option[Integer] = {
+  override def line(element: PsiElement): Option[Int] = {
     try {
       Some(
         element.getContainingFile.getViewProvider.getDocument
@@ -98,7 +98,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, xTypeInfoProvider: TypeInfoProvid
     }
   }
 
-  override def column(element: PsiElement): Option[Integer] = {
+  override def column(element: PsiElement): Option[Int] = {
     try {
       val lineNumber =
         element.getContainingFile.getViewProvider.getDocument
@@ -111,7 +111,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, xTypeInfoProvider: TypeInfoProvid
     }
   }
 
-  override def lineEnd(element: PsiElement): Option[Integer] = {
+  override def lineEnd(element: PsiElement): Option[Int] = {
     val lastElement = element match {
       case namedFn: KtNamedFunction =>
         Option(namedFn.getBodyBlockExpression)
@@ -122,7 +122,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, xTypeInfoProvider: TypeInfoProvid
     line(lastElement)
   }
 
-  override def columnEnd(element: PsiElement): Option[Integer] = {
+  override def columnEnd(element: PsiElement): Option[Int] = {
     val lastElement = element match {
       case namedFn: KtNamedFunction =>
         Option(namedFn.getBodyBlockExpression)
@@ -134,7 +134,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, xTypeInfoProvider: TypeInfoProvid
   }
 
   protected def getName(node: NewImport): String = {
-    val isWildcard = node.isWildcard.getOrElse(false: java.lang.Boolean)
+    val isWildcard = node.isWildcard.getOrElse(false)
     if (isWildcard) Constants.wildcardImportName
     else node.importedEntity.getOrElse("")
   }

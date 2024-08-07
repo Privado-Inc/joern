@@ -2,7 +2,7 @@ package io.joern.c2cpg.passes.types
 
 import io.joern.c2cpg.parser.FileDefaults
 import io.joern.c2cpg.testfixtures.C2CpgSuite
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
 class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
@@ -72,11 +72,11 @@ class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
        |""".stripMargin)
       inside(cpg.method.nameNot("<global>").internal.l) { case List(x, y) =>
         x.name shouldBe "x"
-        x.fullName shouldBe "x"
-        x.signature shouldBe "void x<T,U> (T,U)"
+        x.fullName shouldBe "x:void(ANY,ANY)"
+        x.signature shouldBe "void(T,U)"
         y.name shouldBe "y"
-        y.fullName shouldBe "y"
-        y.signature shouldBe "void y<T,U> (T,U)"
+        y.fullName shouldBe "y:void(ANY,ANY)"
+        y.signature shouldBe "void(T,U)"
       }
     }
 

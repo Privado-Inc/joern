@@ -6,19 +6,20 @@ import io.joern.jssrc2cpg.parser.BabelJsonParser
 import io.joern.jssrc2cpg.utils.AstGenRunner.AstGenRunnerResult
 import io.joern.x2cpg.ValidationMode
 import io.joern.x2cpg.datastructures.Global
+import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
 import io.joern.x2cpg.utils.{Report, TimeUtils}
-import io.shiftleft.codepropertygraph.Cpg
-import io.shiftleft.passes.ConcurrentWriterCpgPass
+import io.shiftleft.codepropertygraph.generated.Cpg
+import io.shiftleft.passes.ForkJoinParallelCpgPass
 import io.shiftleft.utils.IOUtils
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.nio.file.Paths
 import scala.util.{Failure, Success, Try}
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 
 class AstCreationPass(cpg: Cpg, astGenRunnerResult: AstGenRunnerResult, config: Config, report: Report = new Report())(
   implicit withSchemaValidation: ValidationMode
-) extends ConcurrentWriterCpgPass[(String, String)](cpg) {
+) extends ForkJoinParallelCpgPass[(String, String)](cpg) {
 
   private val logger: Logger = LoggerFactory.getLogger(classOf[AstCreationPass])
 
@@ -33,7 +34,7 @@ class AstCreationPass(cpg: Cpg, astGenRunnerResult: AstGenRunnerResult, config: 
       val (rootPath, fileName) = skippedFile
       val filePath             = Paths.get(rootPath, fileName)
       val fileLOC = Try(IOUtils.readLinesInFile(filePath)) match {
-        case Success(filecontent) => filecontent.size
+        case Success(fileContent) => fileContent.size
         case Failure(exception) =>
           logger.warn(s"Failed to read file: '$filePath'", exception)
           0
@@ -56,7 +57,7 @@ class AstCreationPass(cpg: Cpg, astGenRunnerResult: AstGenRunnerResult, config: 
           logger.warn(s"Failed to generate a CPG for: '${parseResult.fullPath}'", exception)
           (false, parseResult.filename)
         case Success(_) =>
-          logger.info(s"Generated a CPG for: '${parseResult.fullPath}'")
+          logger.debug(s"Generated a CPG for: '${parseResult.fullPath}'")
           (true, parseResult.filename)
       }
     }

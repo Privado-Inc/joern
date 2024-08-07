@@ -3,10 +3,9 @@ package io.joern.x2cpg
 import better.files.File
 import io.joern.x2cpg.X2Cpg.{applyDefaultOverlays, withErrorsToConsole}
 import io.joern.x2cpg.layers.{Base, CallGraph, ControlFlow, TypeRelations}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext}
 import org.slf4j.LoggerFactory
-import overflowdb.Config
 import scopt.OParser
 
 import java.io.PrintWriter
@@ -117,14 +116,35 @@ abstract class X2CpgMain[T <: X2CpgConfig[T], X <: X2CpgFrontend[?]](val cmdLine
   implicit defaultConfig: T
 ) {
 
+  private val logger = LoggerFactory.getLogger(classOf[X2CpgMain[T, X]])
+
+  private def logVersionAndArgs(args: Array[String]): Unit = {
+    val frontendName = frontend.getClass.getSimpleName.stripSuffix("$")
+    val joernVersion =
+      // We only have a proper version there if joern was build using sbt assembly. Otherwise, it might be null.
+      Option(frontend.getClass.getPackage.getImplementationVersion).map(v => s"v$v").getOrElse("local build")
+    val logText = s"Executing $frontendName ($joernVersion) with arguments: ${args.mkString(" ")}"
+    logger.debug(logText)
+  }
+
+  private def logOutputPath(outputPath: String): Unit = {
+    if (X2CpgConfig.defaultOutputPath == outputPath) {
+      // We only log the output path of no explicit path was given by the user.
+      // Otherwise, the user obviously knows the path.
+      logger.info(s"The resulting CPG will be stored at ${File(outputPath)}")
+    }
+  }
+
   /** method that evaluates frontend with configuration
     */
   def run(config: T, frontend: X): Unit
 
   def main(args: Array[String]): Unit = {
+    logVersionAndArgs(args)
     X2Cpg.parseCommandLine(args, cmdLineParser, defaultConfig) match {
       case Some(config) =>
         try {
+          logOutputPath(config.outputPath)
           run(config, frontend)
         } catch {
           case ex: Throwable =>
@@ -152,15 +172,22 @@ trait X2CpgFrontend[T <: X2CpgConfig[?]] {
   /** Create CPG according to given configuration, printing errors to the console if they occur. The CPG is closed and
     * not returned.
     */
+  @throws[Throwable]("if createCpg throws any Throwable")
   def run(config: T): Unit = {
     withErrorsToConsole(config) { _ =>
       createCpg(config) match {
         case Success(cpg) =>
-          cpg.close()
+          cpg.close() // persists to disk
           Success(cpg)
         case Failure(exception) =>
           Failure(exception)
       }
+    }.recover { exception =>
+      // We explicitly rethrow the exception so that every frontend will
+      // terminate with exit code 1 if there was an exception during createCpg.
+      // Frontend maintainer may want to catch that RuntimeException on their end
+      // to add custom error handling.
+      throw exception
     }
   }
 
@@ -272,19 +299,16 @@ object X2Cpg {
   /** Create an empty CPG, backed by the file at `optionalOutputPath` or in-memory if `optionalOutputPath` is empty.
     */
   def newEmptyCpg(optionalOutputPath: Option[String] = None): Cpg = {
-    val odbConfig = optionalOutputPath
-      .map { outputPath =>
-        val outFile = File(outputPath)
+    optionalOutputPath match {
+      case Some(outputPath) =>
+        lazy val outFile = File(outputPath)
         if (outputPath != "" && outFile.exists) {
           logger.info("Output file exists, removing: " + outputPath)
           outFile.delete()
         }
-        Config.withDefaults.withStorageLocation(outputPath)
-      }
-      .getOrElse {
-        Config.withDefaults()
-      }
-    Cpg.withConfig(odbConfig)
+        Cpg.withStorage(outFile.path)
+      case None => Cpg.empty
+    }
   }
 
   /** Apply function `applyPasses` to a newly created CPG. The CPG is wrapped in a `Try` and returned. On failure, the

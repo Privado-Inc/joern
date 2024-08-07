@@ -5,7 +5,7 @@ import io.joern.dataflowengineoss.layers.dataflows.{OssDataFlow, OssDataFlowOpti
 import io.joern.joerncli.JoernParse.ParserConfig
 import io.joern.x2cpg.X2Cpg
 import io.joern.x2cpg.layers.Base
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.layers.LayerCreatorContext
 
 import scala.language.postfixOps
@@ -122,7 +122,7 @@ object JoernSlice {
           } else {
             config.inputPath.pathAsString
           }
-        Using.resource(CpgBasedTool.loadFromOdb(inputCpgPath)) { cpg =>
+        Using.resource(CpgBasedTool.loadFromFile(inputCpgPath)) { cpg =>
           checkAndApplyOverlays(cpg)
           // Slice the CPG
           (config match {

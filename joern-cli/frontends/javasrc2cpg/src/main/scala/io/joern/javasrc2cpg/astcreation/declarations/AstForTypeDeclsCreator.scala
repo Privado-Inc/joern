@@ -568,36 +568,21 @@ private[declarations] trait AstForTypeDeclsCreator { this: AstCreator =>
     // TODO: Should be able to find expected type here
     val annotations = fieldDeclaration.getAnnotations
 
-    // variable can be declared with generic type, so we need to get rid of the <> part of it to get the package information
-    // and append the <> when forming the typeFullName again
-    // Ex - private Consumer<String, Integer> consumer;
-    // From Consumer<String, Integer> we need to get to Consumer so splitting it by '<' and then combining with '<' to
-    // form typeFullName as Consumer<String, Integer>
+    val rawTypeName =
+      tryWithSafeStackOverflow(v.getTypeAsString).map(Util.stripGenericTypes).getOrElse(NameConstants.Unknown)
 
-    val typeFullNameWithoutGenericSplit = typeInfoCalc
-      .fullName(v.getType)
-      .orElse(scope.lookupType(v.getTypeAsString))
-      .getOrElse(s"${Defines.UnresolvedNamespace}.${v.getTypeAsString}")
-    val typeFullName = {
-      // Check if the typeFullName is unresolved and if it has generic information to resolve the typeFullName
-      if (
-        typeFullNameWithoutGenericSplit
-          .contains(Defines.UnresolvedNamespace) && v.getTypeAsString.contains(Defines.LeftAngularBracket)
-      ) {
-        val splitByLeftAngular = v.getTypeAsString.split(Defines.LeftAngularBracket)
-        scope.lookupType(splitByLeftAngular.head) match {
-          case Some(foundType) =>
-            foundType + splitByLeftAngular
-              .slice(1, splitByLeftAngular.size)
-              .mkString(Defines.LeftAngularBracket, Defines.LeftAngularBracket, "")
-          case None => typeFullNameWithoutGenericSplit
-        }
-      } else typeFullNameWithoutGenericSplit
-    }
-    val name           = v.getName.toString
-    val node           = memberNode(v, name, s"$typeFullName $name", typeFullName)
-    val memberAst      = Ast(node)
-    val annotationAsts = annotations.asScala.map(astForAnnotationExpr)
+    val typeFullName =
+      tryWithSafeStackOverflow(v.getType).toOption
+        .flatMap(typeInfoCalc.fullName)
+        .orElse(scope.lookupType(rawTypeName))
+        .getOrElse(s"${Defines.UnresolvedNamespace}.$rawTypeName")
+
+    val name = v.getName.toString
+    // Use type name without generics stripped in code
+    val variableTypeString = tryWithSafeStackOverflow(v.getTypeAsString).getOrElse("")
+    val node               = memberNode(v, name, s"$variableTypeString $name", typeFullName)
+    val memberAst          = Ast(node)
+    val annotationAsts     = annotations.asScala.map(astForAnnotationExpr)
 
     val fieldDeclModifiers = modifiersForFieldDeclaration(fieldDeclaration)
 

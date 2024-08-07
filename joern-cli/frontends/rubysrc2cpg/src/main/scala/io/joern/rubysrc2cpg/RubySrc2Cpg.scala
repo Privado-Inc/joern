@@ -10,6 +10,7 @@ import io.joern.rubysrc2cpg.passes.{
   AstCreationPass,
   ConfigFileCreationPass,
   DependencyPass,
+  DependencySummarySolverPass,
   ImplicitRequirePass,
   ImportsPass,
   RubyImportResolverPass,
@@ -22,7 +23,7 @@ import io.joern.x2cpg.passes.callgraph.NaiveCallLinker
 import io.joern.x2cpg.passes.frontend.{MetaDataPass, TypeNodePass, XTypeRecoveryConfig}
 import io.joern.x2cpg.utils.{ConcurrentTaskUtil, ExternalCommand}
 import io.joern.x2cpg.{SourceFiles, X2CpgFrontend}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.Languages
 import io.shiftleft.passes.CpgPassBase
 import io.shiftleft.semanticcpg.language.*
@@ -50,7 +51,7 @@ class RubySrc2Cpg extends X2CpgFrontend[Config] {
   }
 
   private def newCreateCpgAction(cpg: Cpg, config: Config): Unit = {
-    Using.resource(new parser.ResourceManagedParser(config.antlrCacheMemLimit)) { parser =>
+    Using.resource(new parser.ResourceManagedParser(config.antlrCacheMemLimit, config.antlrDebug)) { parser =>
       val astCreators = ConcurrentTaskUtil
         .runUsingThreadPool(RubySrc2Cpg.generateParserTasks(parser, config, cpg.metaData.root.headOption))
         .flatMap {
@@ -64,17 +65,22 @@ class RubySrc2Cpg extends X2CpgFrontend[Config] {
           case Failure(exception) => logger.warn(s"Unable to pre-parse Ruby file, skipping - ", exception); None
           case Success(summary)   => Option(summary)
         }
-        .foldLeft(RubyProgramSummary(RubyProgramSummary.BuiltinTypes(config.typeStubMetaData)))(_ ++ _)
+        .foldLeft(RubyProgramSummary(RubyProgramSummary.BuiltinTypes(config.typeStubMetaData)))(_ ++= _)
 
-      val programSummary = if (config.downloadDependencies) {
-        DependencyDownloader(cpg, internalProgramSummary).download()
+      val dependencySummary = if (config.downloadDependencies) {
+        DependencyDownloader(cpg).download()
       } else {
-        internalProgramSummary
+        RubyProgramSummary()
       }
+
+      val programSummary = internalProgramSummary ++= dependencySummary
 
       AstCreationPass(cpg, astCreators.map(_.withSummary(programSummary))).createAndApply()
       if (cpg.dependency.name.contains("zeitwerk")) ImplicitRequirePass(cpg, programSummary).createAndApply()
       ImportsPass(cpg).createAndApply()
+      if config.downloadDependencies then {
+        DependencySummarySolverPass(cpg, dependencySummary).createAndApply()
+      }
       TypeNodePass.withTypesFromCpg(cpg).createAndApply()
     }
   }
@@ -184,7 +190,15 @@ object RubySrc2Cpg {
       .map { fileName => () =>
         resourceManagedParser.parse(File(config.inputPath), fileName) match {
           case Failure(exception) => throw exception
-          case Success(ctx)       => new AstCreator(fileName, ctx, projectRoot)(config.schemaValidation)
+          case Success(ctx) =>
+            val fileContent = (File(config.inputPath) / fileName).contentAsString
+            new AstCreator(
+              fileName,
+              ctx,
+              projectRoot,
+              enableFileContents = !config.disableFileContent,
+              fileContent = fileContent
+            )(config.schemaValidation)
         }
       }
       .iterator

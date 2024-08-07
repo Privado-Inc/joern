@@ -27,10 +27,10 @@ import org.apache.commons.lang3.StringUtils
 
 import scala.util.Try
 trait AstNodeBuilder[Node, NodeProcessor] { this: NodeProcessor =>
-  protected def line(node: Node): Option[Integer]
-  protected def column(node: Node): Option[Integer]
-  protected def lineEnd(node: Node): Option[Integer]
-  protected def columnEnd(element: Node): Option[Integer]
+  protected def line(node: Node): Option[Int]
+  protected def column(node: Node): Option[Int]
+  protected def lineEnd(node: Node): Option[Int]
+  protected def columnEnd(element: Node): Option[Int]
 
   private val MinCodeLength: Int        = 50
   private val DefaultMaxCodeLength: Int = 1000
@@ -234,7 +234,7 @@ trait AstNodeBuilder[Node, NodeProcessor] { this: NodeProcessor =>
   }
 
   protected def blockNode(node: Node): NewBlock = {
-    blockNode(node, BlockDefaults.Code, BlockDefaults.TypeFullName)
+    blockNode(node, BlockDefaults.Code, Defines.Any)
   }
 
   protected def blockNode(node: Node, code: String, typeFullName: String): NewBlock = {

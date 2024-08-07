@@ -1,23 +1,23 @@
 package io.joern.jssrc2cpg.passes
 
+import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
 import io.joern.x2cpg.passes.frontend.TypeNodePass
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.language.*
-import io.shiftleft.passes.KeyPool
 
 import scala.collection.mutable
 
 object JavaScriptTypeNodePass {
 
-  def withRegisteredTypes(registeredTypes: List[String], cpg: Cpg, keyPool: Option[KeyPool] = None): TypeNodePass = {
-    new TypeNodePass(registeredTypes, cpg, keyPool, getTypesFromCpg = false) {
+  def withRegisteredTypes(registeredTypes: List[String], cpg: Cpg): TypeNodePass = {
+    new TypeNodePass(registeredTypes, cpg, getTypesFromCpg = false) {
 
       override def fullToShortName(typeName: String): String = {
         typeName match {
-          case name if name.endsWith(":program") => ":program"
-          case name if name.contains("=>")       => name
-          case name if name.contains(":")        => name.split(':').lastOption.getOrElse(typeName)
-          case _                                 => typeName.split('.').lastOption.getOrElse(typeName)
+          case name if name.endsWith(Defines.Program) => Defines.Program
+          case name if name.contains("=>")            => name
+          case name if name.contains(":")             => name.split(':').lastOption.getOrElse(typeName)
+          case _                                      => typeName.split('.').lastOption.getOrElse(typeName)
         }
       }
 
