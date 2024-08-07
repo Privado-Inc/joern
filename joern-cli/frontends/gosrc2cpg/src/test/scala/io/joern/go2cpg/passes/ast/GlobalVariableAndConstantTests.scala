@@ -12,17 +12,17 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
   "Global variable declaration check" should {
     val cpg = code("""
-        |package main
-        |const (
-        |	FooConst = "Test"
-        |)
-        |var (
-        |	BarVar = 100
-        |)
-        |func main() {
-        |  println(FooConst)
-        |}
-        |""".stripMargin)
+                     |package main
+                     |const (
+                     |	FooConst = "Test"
+                     |)
+                     |var (
+                     |	BarVar = 100
+                     |)
+                     |func main() {
+                     |  println(FooConst)
+                     |}
+                     |""".stripMargin)
 
     "Check package Type Decl" in {
       val List(x) = cpg.typeDecl("main").l
@@ -225,11 +225,11 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
   "global variable reference" should {
     val cpg = code("""package main
-        |var x = 1
-        |func main(){
-        | y := x
-        |}
-        |""".stripMargin)
+                     |var x = 1
+                     |func main(){
+                     | y := x
+                     |}
+                     |""".stripMargin)
 
     "check Global Member node" in {
       val List(x) = cpg.typeDecl("main").l
@@ -247,24 +247,24 @@ class GlobalVariableAndConstantTests extends GoCodeToCpgSuite {
 
   "when constant is used in initializing struct" should {
     val cpg = code("""
-        |package main
-        |
-        |var person = Person()
-        |
-        |type Name struct {
-        |   name string
-        |}
-        |
-        |const (
-        | personName string = "peter"
-        |)
-        |
-        |func Person() Name {
-        |   return Name{
-        |     name: personName,
-        |   }
-        |}
-        |""".stripMargin)
+                     |package main
+                     |
+                     |var person = Person()
+                     |
+                     |type Name struct {
+                     |   name string
+                     |}
+                     |
+                     |const (
+                     | personName string = "peter"
+                     |)
+                     |
+                     |func Person() Name {
+                     |   return Name{
+                     |     name: personName,
+                     |   }
+                     |}
+                     |""".stripMargin)
 
     "test basic ast structure for Person" in {
       val List(method) = cpg.method.name("Person").l

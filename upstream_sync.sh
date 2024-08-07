@@ -27,18 +27,14 @@ if [ -z "$BRANCH" ]; then
   usage
 fi
 
-# Replace 'v' and '.' in the BRANCH variable
-MODIFIED_BRANCH=$(echo "$BRANCH" | sed 's/[v.]//g')
-
 git fetch upstream
 
-git checkout backup_sync
-git checkout -b "$MODIFIED_BRANCH"
-git pull upstream master --no-ff
-git push origin "$MODIFIED_BRANCH" --force
+git checkout -b "$BRANCH"
+git merge upstream/master
+git push origin "$BRANCH"
 
 if [ "$PUBLISH" = true ]; then
   git checkout master
-  git merge "$MODIFIED_BRANCH"
+  git merge "$BRANCH"
   git push origin master
 fi

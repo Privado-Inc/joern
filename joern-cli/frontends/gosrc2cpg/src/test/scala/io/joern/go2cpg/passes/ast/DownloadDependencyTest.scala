@@ -23,12 +23,12 @@ class DownloadDependencyTest extends GoCodeToCpgSuite {
         |""".stripMargin,
       "go.mod"
     ).moreCode("""
-        |package main
-        |import "github.com/google/uuid"
-        |func main()  {
-        |  var uud = uuid.NewString()
-        |}
-        |""".stripMargin)
+                 |package main
+                 |import "github.com/google/uuid"
+                 |func main()  {
+                 |  var uud = uuid.NewString()
+                 |}
+                 |""".stripMargin)
       .withConfig(config)
 
     "Check CALL Node" in {
@@ -39,7 +39,7 @@ class DownloadDependencyTest extends GoCodeToCpgSuite {
 
   // NOTE: With respect to conversation on this PR - https://github.com/joernio/joern/pull/3753
   // ignoring the below uni tests, which tries to download the dependencies.
-  "Download dependency example with different package and namespace name" ignore {
+  "Download dependency example with different package and namespace name" should {
     val config = Config().withFetchDependencies(true).withIgnoredFilesRegex(IGNORE_TEST_FILE_REGEX)
     val cpg = code(
       """
@@ -51,13 +51,13 @@ class DownloadDependencyTest extends GoCodeToCpgSuite {
         |""".stripMargin,
       "go.mod"
     ).moreCode("""
-          |package main
-          |import "github.com/aerospike/aerospike-client-go/v6"
-          |func main()  {
-          |  client, err := aerospike.NewClient("localhost", 3000)
-          |  var test = aerospike.UserAdmin
-          |}
-          |""".stripMargin)
+                 |package main
+                 |import "github.com/aerospike/aerospike-client-go/v6"
+                 |func main()  {
+                 |  client, err := aerospike.NewClient("localhost", 3000)
+                 |  var test = aerospike.UserAdmin
+                 |}
+                 |""".stripMargin)
       .withConfig(config)
 
     "Check CALL Node" in {
@@ -82,16 +82,16 @@ class DownloadDependencyTest extends GoCodeToCpgSuite {
         |""".stripMargin,
       "go.mod"
     ).moreCode("""
-          |package main
-          |import "joern.io/sampletwo"
-          |func main()  {
-          |  var a = sampletwo.Person{Name:"Pandurang"}
-          |  var b = a.Name
-          |  var c = a.FullName()
-          |  var d = a.Process().FullName()
-          |  var e = a.Process().SomeField
-          |}
-          |""".stripMargin)
+                 |package main
+                 |import "joern.io/sampletwo"
+                 |func main()  {
+                 |  var a = sampletwo.Person{Name:"Pandurang"}
+                 |  var b = a.Name
+                 |  var c = a.FullName()
+                 |  var d = a.Process().FullName()
+                 |  var e = a.Process().SomeField
+                 |}
+                 |""".stripMargin)
 
     "Be correct for CALL Node typeFullNames" in {
       val List(a, b, c, d, e, f, g) = cpg.call.nameNot(Operators.assignment).l
@@ -106,17 +106,17 @@ class DownloadDependencyTest extends GoCodeToCpgSuite {
 
   "unresolved dependency tests two" should {
     val cpg = code("""
-        |package main
-        |import (
-        |    "github.com/rs/zerolog"
-        |    "github.com/rs/zerolog/log"
-        |)
-        |func main() {
-        |    zerolog.SetGlobalLevel(zerolog.InfoLevel)
-        |    log.Error().Msg("Error message")
-        |    log.Warn().Msg("Warning message")
-        |}
-        |""".stripMargin)
+                     |package main
+                     |import (
+                     |    "github.com/rs/zerolog"
+                     |    "github.com/rs/zerolog/log"
+                     |)
+                     |func main() {
+                     |    zerolog.SetGlobalLevel(zerolog.InfoLevel)
+                     |    log.Error().Msg("Error message")
+                     |    log.Warn().Msg("Warning message")
+                     |}
+                     |""".stripMargin)
 
     "Be correct for CALL Node typeFullNames" in {
       val List(a, b, c, d, e) = cpg.call.nameNot(Operators.fieldAccess).l
@@ -130,7 +130,7 @@ class DownloadDependencyTest extends GoCodeToCpgSuite {
 
   // NOTE: With respect to conversation on this PR - https://github.com/joernio/joern/pull/3753
   // ignoring the below uni tests, which tries to download the dependencies.
-  "dependency resolution having type struct" ignore {
+  "dependency resolution having type struct" should {
     val config = Config().withFetchDependencies(true).withIgnoredFilesRegex(IGNORE_TEST_FILE_REGEX)
     val cpg = code(
       """
@@ -143,19 +143,19 @@ class DownloadDependencyTest extends GoCodeToCpgSuite {
         |""".stripMargin,
       "go.mod"
     ).moreCode("""
-          |package main
-          |import "github.com/redis/go-redis/v9"
-          |
-          |type Client struct {
-          |	rdb redis.UniversalClient
-          |}
-          |
-          |func (c *Client) setValue() {
-          | key := "key"
-          | value := "value"
-          | err := c.rdb.Close()
-          |}
-          |""".stripMargin)
+                 |package main
+                 |import "github.com/redis/go-redis/v9"
+                 |
+                 |type Client struct {
+                 |	rdb redis.UniversalClient
+                 |}
+                 |
+                 |func (c *Client) setValue() {
+                 | key := "key"
+                 | value := "value"
+                 | err := c.rdb.Close()
+                 |}
+                 |""".stripMargin)
       .withConfig(config)
 
     "Test basic ast structure" in {
@@ -187,10 +187,10 @@ class DownloadDependencyTest extends GoCodeToCpgSuite {
         |""".stripMargin,
       "go.mod"
     ).moreCode("""
-          |package main
-          |func main()  {
-          |}
-          |""".stripMargin)
+                 |package main
+                 |func main()  {
+                 |}
+                 |""".stripMargin)
       .withConfig(config)
       .withGoGlobal(goGlobal)
 
@@ -256,11 +256,11 @@ class DownloadDependencyTest extends GoCodeToCpgSuite {
         |""".stripMargin,
       "go.mod"
     ).moreCode("""
-          |package main
-          |import "github.com/rs/zerolog"
-          |func main()  {
-          |}
-          |""".stripMargin)
+                 |package main
+                 |import "github.com/rs/zerolog"
+                 |func main()  {
+                 |}
+                 |""".stripMargin)
       .withConfig(config)
       .withGoGlobal(goGlobal)
 
@@ -330,19 +330,19 @@ class DownloadDependencyTest extends GoCodeToCpgSuite {
         |""".stripMargin,
       "go.mod"
     ).moreCode("""
-          |package main
-          |import (
-          |    "github.com/rs/zerolog"
-          |    "github.com/rs/zerolog/log"
-          |)
-          |func main() {
-          |    var eventHandler = func(e *zerolog.Event, level zerolog.Level, message string){
-          |    }
-          |    zerolog.SetGlobalLevel(zerolog.InfoLevel)
-          |    log.Error().Msg("Error message")
-          |    log.Warn().Msg("Warning message")
-          |}
-          |""".stripMargin)
+                 |package main
+                 |import (
+                 |    "github.com/rs/zerolog"
+                 |    "github.com/rs/zerolog/log"
+                 |)
+                 |func main() {
+                 |    var eventHandler = func(e *zerolog.Event, level zerolog.Level, message string){
+                 |    }
+                 |    zerolog.SetGlobalLevel(zerolog.InfoLevel)
+                 |    log.Error().Msg("Error message")
+                 |    log.Warn().Msg("Warning message")
+                 |}
+                 |""".stripMargin)
       .withConfig(config)
       .withGoGlobal(goGlobal)
 

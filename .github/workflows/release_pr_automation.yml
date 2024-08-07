@@ -1,0 +1,19 @@
+name: sync to master
+on:
+  push:
+    branches: [backup_sync]
+  workflow_dispatch:    # allow to manually trigger this workflow
+jobs:
+  create_pr:
+    permissions: write-all
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: backup_sync
+
+      - name: Create a PR from backup_sync to master
+        run: gh pr create --repo Privado-Inc/joern -B master -H backup_sync --title 'Release PR' --body 'Created by Github action'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

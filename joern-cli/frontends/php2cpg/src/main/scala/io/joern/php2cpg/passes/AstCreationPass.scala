@@ -16,7 +16,7 @@ class AstCreationPass(config: Config, cpg: Cpg, parser: PhpParser)(implicit with
 
   private val logger = LoggerFactory.getLogger(this.getClass)
 
-  val PhpSourceFileExtensions: Set[String] = Set(".php")
+  var PhpSourceFileExtensions: Set[String] = if config.phpExtensions.nonEmpty then config.phpExtensions else Set(".php")
 
   override def generateParts(): Array[String] = SourceFiles
     .determine(

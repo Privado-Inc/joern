@@ -32,10 +32,10 @@ trait CommonCacheBuilder(implicit withSchemaValidation: ValidationMode) { this: 
                 spec.node match
                   case ValueSpec => astForValueSpec(spec, true)
                   case _         =>
-                  // Only process ValueSpec
+                // Only process ValueSpec
               })
           case _ =>
-          // Only process GenDecl
+        // Only process GenDecl
       })
   }
 

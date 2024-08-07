@@ -6,12 +6,12 @@ import io.joern.gosrc2cpg.model.GoModHelper
 import io.joern.gosrc2cpg.parser.GoAstJsonParser
 import io.joern.gosrc2cpg.passes.*
 import io.joern.gosrc2cpg.utils.AstGenRunner
-import io.joern.gosrc2cpg.utils.AstGenRunner.GoAstGenRunnerResult
 import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
 import io.joern.x2cpg.X2CpgFrontend
 import io.joern.x2cpg.passes.frontend.MetaDataPass
 import io.joern.x2cpg.utils.Report
 import io.shiftleft.codepropertygraph.generated.{Cpg, Languages}
+import io.shiftleft.utils.StatsLogger
 
 import java.nio.file.Paths
 import scala.util.Try
@@ -24,7 +24,9 @@ class GoSrc2Cpg(goGlobalOption: Option[GoGlobal] = Option(GoGlobal())) extends X
     withNewEmptyCpg(config.outputPath, config) { (cpg, config) =>
       File.usingTemporaryDirectory("gosrc2cpgOut") { tmpDir =>
         MetaDataPass(cpg, Languages.GOLANG, config.inputPath).createAndApply()
+        StatsLogger.initiateNewStage("AST Generator")
         val astGenResults = new AstGenRunner(config).executeForGo(tmpDir)
+        StatsLogger.endLastStage()
         astGenResults.foreach(astGenResult => {
           goGlobalOption
             .orElse(Option(GoGlobal()))
