@@ -6,7 +6,6 @@ import io.joern.x2cpg.layers.{Base, CallGraph, ControlFlow, TypeRelations}
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext}
 import org.slf4j.LoggerFactory
-import overflowdb.Config
 import scopt.OParser
 
 import java.io.PrintWriter
@@ -173,15 +172,22 @@ trait X2CpgFrontend[T <: X2CpgConfig[?]] {
   /** Create CPG according to given configuration, printing errors to the console if they occur. The CPG is closed and
     * not returned.
     */
+  @throws[Throwable]("if createCpg throws any Throwable")
   def run(config: T): Unit = {
     withErrorsToConsole(config) { _ =>
       createCpg(config) match {
         case Success(cpg) =>
-          cpg.close()
+          cpg.close() // persists to disk
           Success(cpg)
         case Failure(exception) =>
           Failure(exception)
       }
+    }.recover { exception =>
+      // We explicitly rethrow the exception so that every frontend will
+      // terminate with exit code 1 if there was an exception during createCpg.
+      // Frontend maintainer may want to catch that RuntimeException on their end
+      // to add custom error handling.
+      throw exception
     }
   }
 
@@ -293,19 +299,16 @@ object X2Cpg {
   /** Create an empty CPG, backed by the file at `optionalOutputPath` or in-memory if `optionalOutputPath` is empty.
     */
   def newEmptyCpg(optionalOutputPath: Option[String] = None): Cpg = {
-    val odbConfig = optionalOutputPath
-      .map { outputPath =>
-        val outFile = File(outputPath)
+    optionalOutputPath match {
+      case Some(outputPath) =>
+        lazy val outFile = File(outputPath)
         if (outputPath != "" && outFile.exists) {
           logger.info("Output file exists, removing: " + outputPath)
           outFile.delete()
         }
-        Config.withDefaults.withStorageLocation(outputPath)
-      }
-      .getOrElse {
-        Config.withDefaults()
-      }
-    Cpg.withConfig(odbConfig)
+        Cpg.withStorage(outFile.path)
+      case None => Cpg.empty
+    }
   }
 
   /** Apply function `applyPasses` to a newly created CPG. The CPG is wrapped in a `Try` and returned. On failure, the

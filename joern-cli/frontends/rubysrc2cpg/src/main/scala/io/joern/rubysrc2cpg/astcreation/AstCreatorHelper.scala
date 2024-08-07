@@ -15,16 +15,39 @@ import io.joern.x2cpg.{Ast, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, Operators}
 
+import scala.collection.mutable
+
 trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
-  protected def computeClassFullName(name: String): String  = s"${scope.surroundingScopeFullName.head}.$name"
-  protected def computeMethodFullName(name: String): String = s"${scope.surroundingScopeFullName.head}:$name"
+  private val usedFullNames = mutable.Set.empty[String]
+
+  /** Ensures a unique full name is assigned based on the current scope.
+    * @param name
+    *   the name of the entity.
+    * @param counter
+    *   an optional counter, used to create unique instances in the case of redefinitions.
+    * @return
+    *   a unique full name.
+    */
+  protected def computeFullName(name: String, counter: Option[Int] = None): String = {
+    val candidate = counter match {
+      case Some(cnt) => s"${scope.surroundingScopeFullName.head}.$name$cnt"
+      case None      => s"${scope.surroundingScopeFullName.head}.$name"
+    }
+    if (usedFullNames.contains(candidate)) {
+      computeFullName(name, counter.map(_ + 1).orElse(Option(0)))
+    } else {
+      usedFullNames.add(candidate)
+      candidate
+    }
+  }
 
   override def column(node: RubyNode): Option[Int]    = node.column
   override def columnEnd(node: RubyNode): Option[Int] = node.columnEnd
   override def line(node: RubyNode): Option[Int]      = node.line
   override def lineEnd(node: RubyNode): Option[Int]   = node.lineEnd
-  override def code(node: RubyNode): String           = shortenCode(node.text)
+
+  override def code(node: RubyNode): String = shortenCode(node.text)
 
   protected def isBuiltin(x: String): Boolean            = kernelFunctions.contains(x)
   protected def prefixAsKernelDefined(x: String): String = s"$kernelPrefix$pathSep$x"

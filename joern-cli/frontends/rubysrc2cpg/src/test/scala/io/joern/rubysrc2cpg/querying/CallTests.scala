@@ -1,7 +1,7 @@
 package io.joern.rubysrc2cpg.querying
 
 import io.joern.rubysrc2cpg.passes.{GlobalTypes, Defines as RubyDefines}
-import io.joern.rubysrc2cpg.passes.Defines.RubyOperators
+import io.joern.rubysrc2cpg.passes.Defines.{Main, RubyOperators}
 import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.joern.x2cpg.Defines
@@ -19,7 +19,7 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     val List(puts) = cpg.call.name("puts").l
     puts.lineNumber shouldBe Some(2)
     puts.code shouldBe "puts 'hello'"
-    puts.methodFullName shouldBe s"$kernelPrefix:puts"
+    puts.methodFullName shouldBe s"$kernelPrefix.puts"
     puts.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
 
     val List(selfReceiver: Identifier, hello: Literal) = puts.argument.l: @unchecked
@@ -53,7 +53,7 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     val List(puts) = cpg.call.name("puts").l
     puts.lineNumber shouldBe Some(2)
     puts.code shouldBe "Kernel.puts 'hello'"
-    puts.methodFullName shouldBe s"$kernelPrefix:puts"
+    puts.methodFullName shouldBe s"$kernelPrefix.puts"
     puts.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
 
     val List(kernelRec: Call) = puts.receiver.l: @unchecked
@@ -71,7 +71,7 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     val List(atan2) = cpg.call.name("atan2").l
     atan2.lineNumber shouldBe Some(3)
     atan2.code shouldBe "Math.atan2(1, 1)"
-    atan2.methodFullName shouldBe s"${GlobalTypes.builtinPrefix}.Math:atan2"
+    atan2.methodFullName shouldBe s"${GlobalTypes.builtinPrefix}.Math.atan2"
     atan2.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
 
     val List(mathRec: Call) = atan2.receiver.l: @unchecked
@@ -161,13 +161,13 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
         |""".stripMargin)
 
     "create an assignment from `a` to an <init> invocation block" in {
-      inside(cpg.method(":program").assignment.where(_.target.isIdentifier.name("a")).l) {
+      inside(cpg.method.isModule.assignment.where(_.target.isIdentifier.name("a")).l) {
         case assignment :: Nil =>
           assignment.code shouldBe "a = A.new"
           inside(assignment.argument.l) {
             case (a: Identifier) :: (_: Block) :: Nil =>
               a.name shouldBe "a"
-              a.dynamicTypeHintFullName should contain("Test0.rb:<global>::program.A")
+              a.dynamicTypeHintFullName should contain(s"Test0.rb:$Main.A")
             case xs => fail(s"Expected one identifier and one call argument, got [${xs.code.mkString(",")}]")
           }
         case xs => fail(s"Expected a single assignment, got [${xs.code.mkString(",")}]")
@@ -175,7 +175,7 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     }
 
     "create an assignment from a temp variable to the <init> call" in {
-      inside(cpg.method(":program").assignment.where(_.target.isIdentifier.name("<tmp-0>")).l) {
+      inside(cpg.method.isModule.assignment.where(_.target.isIdentifier.name("<tmp-0>")).l) {
         case assignment :: Nil =>
           inside(assignment.argument.l) {
             case (a: Identifier) :: (alloc: Call) :: Nil =>
@@ -196,7 +196,7 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
           inside(constructor.argument.l) {
             case (a: Identifier) :: Nil =>
               a.name shouldBe "<tmp-0>"
-              a.typeFullName shouldBe "Test0.rb:<global>::program.A"
+              a.typeFullName shouldBe s"Test0.rb:$Main.A"
               a.argumentIndex shouldBe 0
             case xs => fail(s"Expected one identifier and one call argument, got [${xs.code.mkString(",")}]")
           }
@@ -218,7 +218,7 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
       inside(cpg.call("src").l) {
         case src :: Nil =>
           src.name shouldBe "src"
-          src.methodFullName shouldBe "Test0.rb:<global>::program:src"
+          src.methodFullName shouldBe s"Test0.rb:$Main.src"
         case xs => fail(s"Expected exactly one `src` call, instead got [${xs.code.mkString(",")}]")
       }
     }
@@ -260,8 +260,17 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     inArg.argumentName shouldBe Option("in")
   }
 
+  "named parameters in parenthesis-less call with a known keyword as the association key should shadow the keyword" in {
+    val cpg = code("""
+        |foo retry: 3
+        |""".stripMargin)
+    val List(_, retry) = cpg.call.nameExact("foo").argument.l: @unchecked
+    retry.code shouldBe "3"
+    retry.argumentName shouldBe Some("retry")
+  }
+
   "a call with a quoted regex literal should have a literal receiver" in {
-    val cpg          = code("%r{^/}.freeze")
+    val cpg          = code("%r{^/}.freeze()")
     val regexLiteral = cpg.call.nameExact("freeze").receiver.fieldAccess.argument(1).head.asInstanceOf[Literal]
     regexLiteral.typeFullName shouldBe s"$kernelPrefix.Regexp"
     regexLiteral.code shouldBe "%r{^/}"

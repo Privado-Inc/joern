@@ -1,5 +1,6 @@
 package io.joern.rubysrc2cpg.astcreation
 
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.*
 import io.joern.rubysrc2cpg.datastructures.{BlockScope, NamespaceScope, RubyProgramSummary, RubyScope, RubyStubbedType}
 import io.joern.rubysrc2cpg.parser.{RubyNodeCreator, RubyParser}
@@ -10,8 +11,7 @@ import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, Modif
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.BatchedUpdate
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 import java.util.regex.Matcher
 
@@ -19,7 +19,9 @@ class AstCreator(
   val fileName: String,
   protected val programCtx: RubyParser.ProgramContext,
   protected val projectRoot: Option[String] = None,
-  protected val programSummary: RubyProgramSummary = RubyProgramSummary()
+  protected val programSummary: RubyProgramSummary = RubyProgramSummary(),
+  val enableFileContents: Boolean = false,
+  val fileContent: String = ""
 )(implicit withSchemaValidation: ValidationMode)
     extends AstCreatorBase(fileName)
     with AstCreatorHelper
@@ -38,20 +40,22 @@ class AstCreator(
 
   protected var parseLevel: AstParseLevel = AstParseLevel.FULL_AST
 
+  override protected def offset(node: RubyNode): Option[(Int, Int)] = node.offset
+
   protected val relativeFileName: String =
     projectRoot
       .map(fileName.stripPrefix)
       .map(_.stripPrefix(java.io.File.separator))
       .getOrElse(fileName)
 
-  private def internalLineAndColNum: Option[Integer] = Option(1)
+  private def internalLineAndColNum: Option[Int] = Option(1)
 
   /** The relative file name, in a unix path delimited format.
     */
   private def relativeUnixStyleFileName =
     relativeFileName.replaceAll(Matcher.quoteReplacement(java.io.File.separator), "/")
 
-  override def createAst(): BatchedUpdate.DiffGraphBuilder = {
+  override def createAst(): DiffGraphBuilder = {
     val rootNode = new RubyNodeCreator().visit(programCtx).asInstanceOf[StatementList]
     val ast      = astForRubyFile(rootNode)
     Ast.storeInDiffGraph(ast, diffGraph)
@@ -63,7 +67,9 @@ class AstCreator(
    * allowing for a straightforward representation of out-of-method statements.
    */
   protected def astForRubyFile(rootStatements: StatementList): Ast = {
-    val fileNode = NewFile().name(relativeFileName)
+    val fileNode =
+      if enableFileContents then NewFile().name(relativeFileName).content(fileContent)
+      else NewFile().name(relativeFileName)
     val fullName = s"$relativeUnixStyleFileName:${NamespaceTraversal.globalNamespaceName}"
     val namespaceBlock = NewNamespaceBlock()
       .filename(relativeFileName)
@@ -78,9 +84,11 @@ class AstCreator(
   }
 
   private def astInFakeMethod(rootNode: StatementList): Ast = {
-    val name     = Defines.Program
-    val fullName = computeMethodFullName(name)
-    val code     = rootNode.text
+    val name = Defines.Main
+    // From the <main> method onwards, we do not embed the <global> namespace name in the full names
+    val fullName =
+      s"${scope.surroundingScopeFullName.head.stripSuffix(NamespaceTraversal.globalNamespaceName)}$name"
+    val code = rootNode.text
     val methodNode_ = methodNode(
       node = rootNode,
       name = name,

@@ -1,6 +1,6 @@
 package io.joern.rubysrc2cpg.astcreation
 
-import better.files.File
+import flatgraph.DiffGraphApplier
 import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.StatementList
 import io.joern.rubysrc2cpg.datastructures.{RubyField, RubyMethod, RubyProgramSummary, RubyStubbedType, RubyType}
 import io.joern.rubysrc2cpg.parser.RubyNodeCreator
@@ -12,7 +12,6 @@ import io.shiftleft.codepropertygraph.cpgloading.CpgLoader
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.{Local, Member, Method, TypeDecl}
 import io.shiftleft.semanticcpg.language.*
-import overflowdb.{BatchedUpdate, Config}
 
 import java.io.File as JavaFile
 import java.util.regex.Matcher
@@ -28,8 +27,8 @@ trait AstSummaryVisitor(implicit withSchemaValidation: ValidationMode) { this: A
       val rootNode = new RubyNodeCreator().visit(programCtx).asInstanceOf[StatementList]
       val ast      = astForRubyFile(rootNode)
       Ast.storeInDiffGraph(ast, diffGraph)
-      BatchedUpdate.applyDiff(cpg.graph, diffGraph)
-      CpgLoader.createIndexes(cpg)
+      DiffGraphApplier.applyDiff(cpg.graph, diffGraph)
+
       // Link basic AST elements
       AstLinkerPass(cpg).createAndApply()
       // Summarize findings
@@ -38,7 +37,7 @@ trait AstSummaryVisitor(implicit withSchemaValidation: ValidationMode) { this: A
   }
 
   def withSummary(newSummary: RubyProgramSummary): AstCreator = {
-    AstCreator(fileName, programCtx, projectRoot, newSummary)
+    AstCreator(fileName, programCtx, projectRoot, newSummary, enableFileContents, fileContent)
   }
 
   private def summarize(cpg: Cpg, asExternal: Boolean): RubyProgramSummary = {
@@ -116,7 +115,7 @@ trait AstSummaryVisitor(implicit withSchemaValidation: ValidationMode) { this: A
         }.toSet
         // Map module types
         val typeEntries = namespace.method.collectFirst {
-          case m: Method if m.name == Defines.Program =>
+          case m: Method if m.name == Defines.Main =>
             val childrenTypes = m.astChildren.collectAll[TypeDecl].l
             val fullName =
               if childrenTypes.nonEmpty && asExternal then buildFullName(childrenTypes.head) else s"${m.fullName}"

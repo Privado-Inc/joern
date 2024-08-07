@@ -10,7 +10,8 @@ final case class Config(
   antlrCacheMemLimit: Double = 0.6d,
   useDeprecatedFrontend: Boolean = false,
   downloadDependencies: Boolean = false,
-  useTypeStubs: Boolean = true
+  useTypeStubs: Boolean = true,
+  antlrDebug: Boolean = false
 ) extends X2CpgConfig[Config]
     with DependencyDownloadConfig[Config]
     with TypeRecoveryParserConfig[Config]
@@ -26,6 +27,10 @@ final case class Config(
 
   def withUseDeprecatedFrontend(value: Boolean): Config = {
     copy(useDeprecatedFrontend = value).withInheritedFields(this)
+  }
+
+  def withAntlrDebugging(value: Boolean): Config = {
+    copy(antlrDebug = value).withInheritedFields(this)
   }
 
   override def withDownloadDependencies(value: Boolean): Config = {
@@ -61,6 +66,12 @@ private object Frontend {
       opt[Unit]("useDeprecatedFrontend")
         .action((_, c) => c.withUseDeprecatedFrontend(true))
         .text("uses the original (but deprecated) Ruby frontend (default false)"),
+      opt[Unit]("antlrDebug")
+        .hidden()
+        .action((_, c) => c.withAntlrDebugging(true)),
+      opt[Unit]("enable-file-content")
+        .action((_, c) => c.withDisableFileContent(false))
+        .text("Enable file content"),
       DependencyDownloadConfig.parserOptions,
       XTypeRecoveryConfig.parserOptionsForParserConfig,
       TypeStubConfig.parserOptions
