@@ -215,7 +215,7 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
       val defaultContentRootJars  = gatherDefaultContentRootJars(sourceDir, config, filesWithJavaExtension)
       val dirsForSourcesToCompile = gatherDirsForSourcesToCompile(sourceDir)
       val environment = CompilerAPI.makeEnvironment(
-        dirsForSourcesToCompile,
+        Seq(sourceDir),
         filesWithJavaExtension,
         defaultContentRootJars,
         new ErrorLoggingMessageCollector
