@@ -27,8 +27,10 @@ jobs:
         id: initial-message
         uses: slackapi/slack-github-action@v1.27.0
         with:
-          channel-id: ${{ secrets.SLACK_CHANNEL_ID }}
+          channel-id: ${{ env.SLACK_CHANNEL_ID }}
           slack-message : "Comparison workflow started for ${{env.PR_URL}}"
+        env:
+          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
 
       - name: Save output to env
         id: save-output
@@ -90,8 +92,8 @@ jobs:
       - name: Post results to slack
         run: curl -o- https://raw.githubusercontent.com/Privado-Inc/standalone-monitoring-stability/private-fork/slack_upload.sh | bash
         env:
-          SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
-          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          SLACK_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ env.SLACK_CHANNEL_ID }}
           FILE_NAME: "result-${{matrix.language}}-${{ env.PR_NUMBER }}.zip"
           INIT_TS: ${{ needs.start_workflow.outputs.init_message_ts }}
           FILE_PATH: "/home/runner/work/joern/joern/temp/standalone-monitoring-stability/result-${{matrix.language}}-${{ env.PR_NUMBER }}.zip"
