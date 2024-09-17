@@ -68,7 +68,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Clone standalone-monitoring-stability/private-fork
+      - name: Clone standalone-monitoring-stability/custom-joern-build
         uses: actions/checkout@v3
         with:
           repository: Privado-Inc/standalone-monitoring-stability
