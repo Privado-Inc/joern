@@ -176,7 +176,7 @@ jobs:
           ref: private-fork
 
       - name: Collate summary
-        run: cd ./temp/standalone-monitoring-stability && pip install -r requirements.txt && python3 ./collate_summary.py -s /home/runner/work/privado-core-enterprise/privado-core-enterprise/language_summary
+        run: cd ./temp/standalone-monitoring-stability && pip install -r requirements.txt && python3 ./collate_summary.py -s /home/runner/work/joern/joern/language_summary
 
       - name: Set summary variable
         run: |
