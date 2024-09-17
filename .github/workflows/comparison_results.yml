@@ -19,7 +19,7 @@ env:
   SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
   PR_URL: ${{ github.event.pull_request.html_url }}
   AWS_REGION: ${{ secrets.AWS_REGION }}
-  MONITORING_REPO_PATH: "/home/runner/work/privado-core-enterprise/privado-core-enterprise/temp/standalone-monitoring-stability"
+  MONITORING_REPO_PATH: "/home/runner/work/joern/joern/temp/standalone-monitoring-stability"
   AWS_ACCESS_KEY_ID: ${{secrets.AWS_ACCESS_KEY_ID}}
   AWS_SECRET_ACCESS_KEY: ${{secrets.AWS_SECRET_ACCESS_KEY}}
   S3_BUCKET: ${{secrets.S3_BUCKET}}
