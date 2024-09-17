@@ -8,6 +8,7 @@ on:
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  CORE_AT: ${{ secrets.CORE_AT }}
   BASE_REF: ${{  github.base_ref }}
   HEAD_REF: ${{ github.head_ref }}
   BASE_CORE_URL: ${{ github.event.pull_request.base.repo.html_url }}
