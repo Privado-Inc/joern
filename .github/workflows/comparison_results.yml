@@ -8,7 +8,6 @@ on:
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  CORE_AT: ${{ secrets.CORE_AT }}
   BASE_REF: ${{  github.base_ref }}
   HEAD_REF: ${{ github.head_ref }}
   BASE_CORE_URL: ${{ github.event.pull_request.base.repo.html_url }}
@@ -29,8 +28,6 @@ jobs:
         with:
           channel-id: ${{ env.SLACK_CHANNEL_ID }}
           slack-message : "Comparison workflow started for ${{env.PR_URL}}"
-        env:
-          SLACK_BOT_TOKEN: ${{ env.SLACK_BOT_TOKEN }}
 
       - name: Save output to env
         id: save-output
@@ -67,7 +64,7 @@ jobs:
         with:
           repository: Privado-Inc/standalone-monitoring-stability
           path: ./temp/standalone-monitoring-stability
-          ref: custom-joern-build
+          ref: comparison-report-fix
 
       # langauge specific repository file
       - name: Run the script for ${{ env.HEAD_REF  }} and ${{ env.BASE_REF   }}
