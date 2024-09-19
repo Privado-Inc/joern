@@ -163,6 +163,7 @@ object SourceParser {
     }
 
     val (analysisRoot, typesRoot) = Delombok.parseDelombokModeOption(config.delombokMode) match {
+      /*
       case DelombokMode.Default if usesLombok =>
         logger.info(s"Analysing delomboked code as lombok dependency was found.")
         (delombokDir, delombokDir)
@@ -174,6 +175,11 @@ object SourceParser {
       case DelombokMode.TypesOnly => (inputPath, delombokDir)
 
       case DelombokMode.RunDelombok => (delombokDir, delombokDir)
+
+       */
+      // TODO Have disabled above code as we are already taking care of generating delombok code in privado-core
+      //  and don't need joern to take that decision
+      case _ => (inputPath, inputPath)
     }
 
     new SourceParser(fileInfo.map(_.relativePath.toString), analysisRoot, typesRoot, dirToDelete)
