@@ -2,7 +2,7 @@ package io.joern.dataflowengineoss.layers.dataflows
 
 import io.joern.dataflowengineoss.DefaultSemantics
 import io.joern.dataflowengineoss.passes.reachingdef.ReachingDefPass
-import io.joern.dataflowengineoss.semanticsloader.{FlowSemantic, Semantics}
+import io.joern.dataflowengineoss.semanticsloader.{FlowSemantic, FullNameSemantics, Semantics}
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext, LayerCreatorOptions}
 
 object OssDataFlow {
@@ -18,17 +18,13 @@ class OssDataFlowOptions(
 ) extends LayerCreatorOptions {}
 
 class OssDataFlow(opts: OssDataFlowOptions)(implicit
-  s: Semantics = Semantics.fromList(DefaultSemantics().elements ++ opts.extraFlows)
+  s: Semantics = FullNameSemantics.fromList(DefaultSemantics().elements ++ opts.extraFlows)
 ) extends LayerCreator {
 
   override val overlayName: String = OssDataFlow.overlayName
   override val description: String = OssDataFlow.description
 
   override def create(context: LayerCreatorContext): Unit = {
-    val cpg                 = context.cpg
-    val enhancementExecList = Iterator(new ReachingDefPass(cpg, opts.maxNumberOfDefinitions))
-    enhancementExecList.zipWithIndex.foreach { case (pass, index) =>
-      runPass(pass, context, index)
-    }
+    ReachingDefPass(context.cpg, opts.maxNumberOfDefinitions).createAndApply()
   }
 }
