@@ -84,7 +84,7 @@ jobs:
 
       # langauge specific repository file
       - name: Run the script for ${{ env.HEAD_REF  }} and ${{ env.BASE_REF   }}
-        run: cd ./temp/standalone-monitoring-stability && pip install -r requirements.txt && python3 ./run.py -r ./repos/${{matrix.language}}.txt -b main -h main -guf --custom-joern True --custom-joern-base-branch ${{ env.BASE_REF }} --custom-joern-head-branch ${{ env.HEAD_REF }}
+        run: cd ./temp/standalone-monitoring-stability && pip install -r requirements.txt && python3 ./run.py -r ./repos/${{matrix.language}}.txt -b main -h dev -guf --custom-joern True --custom-joern-base-branch ${{ env.BASE_REF }} --custom-joern-head-branch ${{ env.HEAD_REF }}
 
       # Rename result files, and zip them together
       - name: Zip the results
