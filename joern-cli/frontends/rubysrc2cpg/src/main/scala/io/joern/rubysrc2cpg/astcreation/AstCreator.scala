@@ -1,17 +1,16 @@
 package io.joern.rubysrc2cpg.astcreation
 
 import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.*
-import io.joern.rubysrc2cpg.datastructures.{BlockScope, NamespaceScope, RubyProgramSummary, RubyScope, RubyStubbedType}
+import io.joern.rubysrc2cpg.datastructures.{BlockScope, NamespaceScope, RubyProgramSummary, RubyScope}
 import io.joern.rubysrc2cpg.parser.{RubyNodeCreator, RubyParser}
 import io.joern.rubysrc2cpg.passes.Defines
-import io.joern.x2cpg.utils.NodeBuilders.{newBindingNode, newModifierNode}
+import io.joern.rubysrc2cpg.utils.FreshNameGenerator
+import io.joern.x2cpg.utils.NodeBuilders.{newModifierNode, newThisParameterNode}
 import io.joern.x2cpg.{Ast, AstCreatorBase, AstNodeBuilder, ValidationMode}
-import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, ModifierTypes, Operators}
+import io.shiftleft.codepropertygraph.generated.{DiffGraphBuilder, ModifierTypes}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.BatchedUpdate
-import overflowdb.BatchedUpdate.DiffGraphBuilder
 
 import java.util.regex.Matcher
 
@@ -19,16 +18,23 @@ class AstCreator(
   val fileName: String,
   protected val programCtx: RubyParser.ProgramContext,
   protected val projectRoot: Option[String] = None,
-  protected val programSummary: RubyProgramSummary = RubyProgramSummary()
+  protected val programSummary: RubyProgramSummary = RubyProgramSummary(),
+  val enableFileContents: Boolean = false,
+  val fileContent: String = "",
+  val rootNode: Option[RubyExpression] = None
 )(implicit withSchemaValidation: ValidationMode)
     extends AstCreatorBase(fileName)
     with AstCreatorHelper
     with AstForStatementsCreator
     with AstForExpressionsCreator
+    with AstForControlStructuresCreator
     with AstForFunctionsCreator
     with AstForTypesCreator
     with AstSummaryVisitor
-    with AstNodeBuilder[RubyNode, AstCreator] {
+    with AstNodeBuilder[RubyExpression, AstCreator] {
+
+  val tmpGen: FreshNameGenerator[String]                      = FreshNameGenerator(i => s"<tmp-$i>")
+  val procParamGen: FreshNameGenerator[Left[String, Nothing]] = FreshNameGenerator(i => Left(s"<proc-param-$i>"))
 
   /* Used to track variable names and their LOCAL nodes.
    */
@@ -36,7 +42,11 @@ class AstCreator(
 
   protected val logger: Logger = LoggerFactory.getLogger(getClass)
 
+  protected var fileNode: Option[NewFile] = None
+
   protected var parseLevel: AstParseLevel = AstParseLevel.FULL_AST
+
+  override protected def offset(node: RubyExpression): Option[(Int, Int)] = node.offset
 
   protected val relativeFileName: String =
     projectRoot
@@ -44,16 +54,20 @@ class AstCreator(
       .map(_.stripPrefix(java.io.File.separator))
       .getOrElse(fileName)
 
-  private def internalLineAndColNum: Option[Integer] = Option(1)
+  private def internalLineAndColNum: Option[Int] = Option(1)
 
   /** The relative file name, in a unix path delimited format.
     */
   private def relativeUnixStyleFileName =
     relativeFileName.replaceAll(Matcher.quoteReplacement(java.io.File.separator), "/")
 
-  override def createAst(): BatchedUpdate.DiffGraphBuilder = {
-    val rootNode = new RubyNodeCreator().visit(programCtx).asInstanceOf[StatementList]
-    val ast      = astForRubyFile(rootNode)
+  override def createAst(): DiffGraphBuilder = {
+    val astRootNode = rootNode.match {
+      case Some(node) => node.asInstanceOf[StatementList]
+      case None       => new RubyNodeCreator(tmpGen, procParamGen).visit(programCtx).asInstanceOf[StatementList]
+    }
+
+    val ast = astForRubyFile(astRootNode)
     Ast.storeInDiffGraph(ast, diffGraph)
     diffGraph
   }
@@ -63,7 +77,9 @@ class AstCreator(
    * allowing for a straightforward representation of out-of-method statements.
    */
   protected def astForRubyFile(rootStatements: StatementList): Ast = {
-    val fileNode = NewFile().name(relativeFileName)
+    fileNode =
+      if enableFileContents then Option(NewFile().name(relativeFileName).content(fileContent))
+      else Option(NewFile().name(relativeFileName))
     val fullName = s"$relativeUnixStyleFileName:${NamespaceTraversal.globalNamespaceName}"
     val namespaceBlock = NewNamespaceBlock()
       .filename(relativeFileName)
@@ -74,13 +90,15 @@ class AstCreator(
     val rubyFakeMethodAst = astInFakeMethod(rootStatements)
     scope.popScope()
 
-    Ast(fileNode).withChild(Ast(namespaceBlock).withChild(rubyFakeMethodAst))
+    Ast(fileNode.get).withChild(Ast(namespaceBlock).withChild(rubyFakeMethodAst))
   }
 
   private def astInFakeMethod(rootNode: StatementList): Ast = {
-    val name     = Defines.Program
-    val fullName = computeMethodFullName(name)
-    val code     = rootNode.text
+    val name = Defines.Main
+    // From the <main> method onwards, we do not embed the <global> namespace name in the full names
+    val fullName =
+      s"${scope.surroundingScopeFullName.head.stripSuffix(NamespaceTraversal.globalNamespaceName)}$name"
+    val code = rootNode.text
     val methodNode_ = methodNode(
       node = rootNode,
       name = name,
@@ -89,6 +107,15 @@ class AstCreator(
       signature = None,
       fileName = relativeFileName
     )
+    val thisParameterNode = newThisParameterNode(
+      name = Defines.Self,
+      code = Defines.Self,
+      typeFullName = Defines.Any,
+      line = methodNode_.lineNumber,
+      column = methodNode_.columnNumber
+    )
+    val thisParameterAst = Ast(thisParameterNode)
+    scope.addToScope(Defines.Self, thisParameterNode)
     val methodReturn = methodReturnNode(rootNode, Defines.Any)
 
     scope.newProgramScope
@@ -102,7 +129,7 @@ class AstCreator(
         scope.popScope()
         methodAst(
           methodNode_,
-          Seq.empty,
+          thisParameterAst :: Nil,
           bodyAst,
           methodReturn,
           newModifierNode(ModifierTypes.MODULE) :: newModifierNode(ModifierTypes.VIRTUAL) :: Nil
