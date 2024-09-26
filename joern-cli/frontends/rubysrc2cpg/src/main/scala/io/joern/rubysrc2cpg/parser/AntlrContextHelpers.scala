@@ -1,6 +1,6 @@
 package io.joern.rubysrc2cpg.parser
 
-import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.TextSpan
+import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.{ProcedureDeclaration, TextSpan, TypeDeclaration}
 import io.joern.rubysrc2cpg.parser.RubyParser.*
 import org.antlr.v4.runtime.ParserRuleContext
 import org.antlr.v4.runtime.misc.Interval
@@ -18,13 +18,33 @@ object AntlrContextHelpers {
       // We need to make sure this doesn't happen when building the `text` field.
       val startIndex = ctx.getStart.getStartIndex
       val stopIndex  = math.max(startIndex, ctx.getStop.getStopIndex)
+
+      val offset = ctx match {
+        case x: MethodDefinitionContext => Option(ctx.start.getStartIndex, ctx.stop.getStopIndex + 1)
+        case x: ClassDefinitionContext  => Option(ctx.start.getStartIndex, ctx.stop.getStopIndex + 1)
+        case x: ModuleDefinitionContext => Option(ctx.start.getStartIndex, ctx.stop.getStopIndex + 1)
+        case _                          => None
+      }
+
       TextSpan(
         line = Option(ctx.getStart.getLine),
         column = Option(ctx.getStart.getCharPositionInLine),
         lineEnd = Option(ctx.getStop.getLine),
         columnEnd = Option(ctx.getStop.getCharPositionInLine),
+        offset = offset,
         text = ctx.getStart.getInputStream.getText(new Interval(startIndex, stopIndex))
       )
+    }
+
+    /** @return
+      *   true if this token's text is the same as a keyword, false if otherwise.
+      */
+    def isKeyword: Boolean = {
+      // See RubyParser for why the bounds are used
+      val minBound = 19
+      val maxBound = 56
+      val typ      = ctx.start.getType
+      typ >= minBound && typ <= maxBound
     }
   }
 
@@ -123,10 +143,10 @@ object AntlrContextHelpers {
   }
 
   sealed implicit class BlockParameterContextHelper(ctx: BlockParameterContext) {
-    def parameters: List[ParserRuleContext] = Option(ctx.parameterList()).map(_.parameters).getOrElse(List())
+    def parameters: List[ParserRuleContext] = Option(ctx.blockParameterList()).map(_.parameters).getOrElse(List())
   }
 
-  sealed implicit class CommandArgumentContextHelper(ctx: CommandArgumentContext) {
+  sealed implicit class CommandArgumentContextelper(ctx: CommandArgumentContext) {
     def arguments: List[ParserRuleContext] = ctx match {
       case ctx: CommandCommandArgumentListContext         => ctx.command() :: Nil
       case ctx: CommandArgumentCommandArgumentListContext => ctx.commandArgumentList().elements
@@ -142,9 +162,42 @@ object AntlrContextHelpers {
     }
   }
 
+  sealed implicit class SimpleCommandArgumentListContextHelper(ctx: SimpleCommandArgumentListContext) {
+    def arguments: List[ParserRuleContext] = {
+      val primaryValues = Option(ctx.primaryValueList()).map(_.primaryValue().asScala.toList).getOrElse(List())
+      val associations  = Option(ctx.associationList()).map(_.association().asScala.toList).getOrElse(List())
+      val argumentLists = Option(ctx.argumentList()).map(_.elements).getOrElse(List())
+      primaryValues ++ associations ++ argumentLists
+    }
+  }
+
+  sealed implicit class PrimaryValueListWithAssociationContextHelper(ctx: PrimaryValueListWithAssociationContext) {
+    def elements: List[ParserRuleContext] = {
+      ctx.children.asScala.collect {
+        case x: PrimaryValueContext => x
+        case x: AssociationContext  => x
+      }.toList
+    }
+  }
+
   sealed implicit class ModifierStatementContextHelpers(ctx: ModifierStatementContext) {
     def isUnless: Boolean = Option(ctx.statementModifier().UNLESS()).isDefined
     def isIf: Boolean     = Option(ctx.statementModifier().IF()).isDefined
+  }
+
+  sealed implicit class QuotedExpandedArrayElementListContextHelper(ctx: QuotedExpandedArrayElementListContext) {
+    def elements: List[ParserRuleContext] = ctx.quotedExpandedArrayElement.asScala.toList
+  }
+
+  sealed implicit class QuotedExpandedArrayElementContextHelper(ctx: QuotedExpandedArrayElementContext) {
+    def interpolations: List[ParserRuleContext] = ctx
+      .quotedExpandedArrayElementContent()
+      .asScala
+      .filter(x => Option(x.compoundStatement()).isDefined)
+      .map(_.compoundStatement())
+      .toList
+    def hasInterpolation: Boolean =
+      ctx.interpolations.nonEmpty
   }
 
   sealed implicit class QuotedNonExpandedArrayElementListContextHelper(ctx: QuotedNonExpandedArrayElementListContext) {
@@ -163,6 +216,27 @@ object AntlrContextHelpers {
     def parameters: List[ParserRuleContext] = ctx.mandatoryOrOptionalParameter().asScala.toList
   }
 
+  sealed implicit class MandatoryOrOptionalOrGroupedParameterListContextHelper(
+    ctx: MandatoryOrOptionalOrGroupedParameterListContext
+  ) {
+    def parameters: List[ParserRuleContext] =
+      ctx.mandatoryOrOptionalOrGroupedParameter().asScala.toList
+  }
+
+  sealed implicit class MandatoryOrGroupedParameterListContextHelper(ctx: MandatoryOrGroupedParameterListContext) {
+    def parameters: List[ParserRuleContext] =
+      ctx.mandatoryOrGroupedParameter().asScala.toList
+  }
+
+  sealed implicit class GroupedParameterListContextHelper(ctx: GroupedParameterListContext) {
+    def parameters: List[ParserRuleContext] = {
+      val arrayParameter      = Option(ctx.arrayParameter()).toList
+      val mandatoryParameters = ctx.mandatoryParameter.asScala.toList
+
+      mandatoryParameters ++ arrayParameter
+    }
+  }
+
   sealed implicit class MethodParameterPartContextHelper(ctx: MethodParameterPartContext) {
     def parameters: List[ParserRuleContext] = Option(ctx.parameterList()).map(_.parameters).getOrElse(List())
   }
@@ -173,18 +247,57 @@ object AntlrContextHelpers {
       val arrayParameter       = Option(ctx.arrayParameter()).toList
       val hashParameter        = Option(ctx.hashParameter()).toList
       val procParameter        = Option(ctx.procParameter()).toList
-      mandatoryOrOptionals ++ arrayParameter ++ hashParameter ++ procParameter
+      val mandatoryParams      = Option(ctx.mandatoryParameterList()).toList
+      mandatoryOrOptionals ++ arrayParameter ++ hashParameter ++ procParameter ++ mandatoryParams
+    }
+  }
+
+  sealed implicit class BlockParameterListContextHelper(ctx: BlockParameterListContext) {
+    def parameters: List[ParserRuleContext] = {
+      val mandatoryOrOptionalOrGrouped =
+        Option(ctx.mandatoryOrOptionalOrGroupedParameterList()).map(_.parameters).getOrElse(List())
+      val arrayParameter = Option(ctx.arrayParameter()).toList
+      val hashParameter  = Option(ctx.hashParameter()).toList
+      val procParameter  = Option(ctx.procParameter()).toList
+      val mandatoryOrGrouped =
+        Option(ctx.mandatoryOrGroupedParameterList().asScala).map(_.flatten(_.parameters)).getOrElse(List())
+
+      mandatoryOrOptionalOrGrouped ++ arrayParameter ++ hashParameter ++ procParameter ++ mandatoryOrGrouped
+    }
+  }
+
+  sealed implicit class BracketedArrayElementListContextHelper(ctx: BracketedArrayElementListContext) {
+    def elements: List[ParserRuleContext] = {
+      ctx.bracketedArrayElement.asScala.flatMap(_.element).toList
+    }
+  }
+
+  sealed implicit class BracketedArrayElementContextHelper(ctx: BracketedArrayElementContext) {
+    def element: List[ParserRuleContext] = {
+      ctx.children.asScala
+        .collect {
+          case x: OperatorExpressionListContext => x.operatorExpression().asScala
+          case x: CommandContext                => x :: Nil
+          case x: AssociationListContext        => x.associations
+          case x: SplattingArgumentContext      => x :: Nil
+          case x: IndexingArgumentContext       => x :: Nil
+          case x: IndexingArgumentListContext   => x.arguments
+          case x: HashLiteralContext            => x :: Nil
+        }
+        .toList
+        .flatten
     }
   }
 
   sealed implicit class IndexingArgumentListContextHelper(ctx: IndexingArgumentListContext) {
     def arguments: List[ParserRuleContext] = ctx match
-      case ctx: CommandIndexingArgumentListContext => List(ctx.command())
       case ctx: OperatorExpressionListIndexingArgumentListContext =>
         ctx.operatorExpressionList().operatorExpression().asScala.toList
       case ctx: AssociationListIndexingArgumentListContext   => ctx.associationList().associations
-      case ctx: SplattingArgumentIndexingArgumentListContext => ctx.splattingArgument() :: Nil
+      case ctx: SplattingArgumentIndexingArgumentListContext => ctx.splattingArgument().asScala.toList
       case ctx: OperatorExpressionListWithSplattingArgumentIndexingArgumentListContext => ctx.splattingArgument() :: Nil
+      case ctx: IndexingArgumentIndexingArgumentListContext =>
+        ctx.indexingArgument().asScala.toList
       case ctx =>
         logger.warn(s"IndexingArgumentListContextHelper - Unsupported argument type ${ctx.getClass}")
         List()
@@ -197,25 +310,44 @@ object AntlrContextHelpers {
       case ctx =>
         logger.warn(s"ArgumentWithParenthesesContextHelper - Unsupported argument type ${ctx.getClass}")
         List()
+
+    def isArrayArgumentList: Boolean = ctx match {
+      case ctx: ArgumentListArgumentWithParenthesesContext => ctx.argumentList().isArrayArgumentListContext
+      case _                                               => false
+    }
   }
 
   sealed implicit class ArgumentListContextHelper(ctx: ArgumentListContext) {
     def elements: List[ParserRuleContext] = ctx match
-      case ctx: OperatorsArgumentListContext =>
-        val operatorExpressions = ctx.operatorExpressionList().operatorExpression().asScala.toList
-        val associations        = Option(ctx.associationList()).fold(List())(_.association().asScala)
-        val splatting           = Option(ctx.splattingArgument()).toList
-        val block               = Option(ctx.blockArgument()).toList
-        operatorExpressions ++ associations ++ splatting ++ block
-      case ctx: AssociationsArgumentListContext =>
-        Option(ctx.associationList()).map(_.associations).getOrElse(List.empty)
-      case ctx: SplattingArgumentArgumentListContext =>
-        Option(ctx.splattingArgument()).toList
+      case ctx: ArgumentListItemArgumentListContext =>
+        val splattingArgs = Option(
+          ctx.argumentListItem().asScala.flatMap(x => Option(x.splattingArgument()).toList)
+        ).toList.flatten
+        val assocList = Option(
+          ctx.argumentListItem().asScala.flatMap(x => Option(x.associationList()).toList)
+        ).toList.flatten
+        val blockArgList = Option(
+          ctx.argumentListItem().asScala.flatMap(x => Option(x.blockArgument()).toList)
+        ).toList.flatten
+
+        val operatorExpressionArgList = Option(
+          ctx.argumentListItem.asScala
+            .flatMap(x => Option(x.operatorExpressionList()).map(_.operatorExpression.asScala))
+            .flatten
+        ).toList.flatten
+
+        splattingArgs ++ assocList ++ blockArgList ++ operatorExpressionArgList
       case ctx: BlockArgumentArgumentListContext =>
         Option(ctx.blockArgument()).toList
+      case ctx: ArrayArgumentListContext =>
+        Option(ctx.indexingArgumentList()).toList
+      case ctx: SingleCommandArgumentListContext =>
+        Option(ctx.command()).toList
       case ctx =>
         logger.warn(s"ArgumentListContextHelper - Unsupported element type ${ctx.getClass.getSimpleName}")
         List()
+
+    def isArrayArgumentListContext: Boolean = ctx.isInstanceOf[ArrayArgumentListContext]
   }
 
   sealed implicit class CommandWithDoBlockContextHelper(ctx: CommandWithDoBlockContext) {
