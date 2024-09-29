@@ -1,9 +1,6 @@
 package io.shiftleft.semanticcpg.layers
 
-import better.files.File
-import io.shiftleft.SerializedCpg
 import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.passes.CpgPassBase
 import io.shiftleft.semanticcpg.Overlays
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -34,19 +31,6 @@ abstract class LayerCreator {
         Overlays.appendOverlayName(context.cpg, overlayName)
       }
     }
-  }
-
-  protected def initSerializedCpg(outputDir: Option[String], passName: String, index: Int = 0): SerializedCpg = {
-    outputDir match {
-      case Some(dir) => new SerializedCpg((File(dir) / s"${index}_$passName").path.toAbsolutePath.toString)
-      case None      => new SerializedCpg()
-    }
-  }
-
-  protected def runPass(pass: CpgPassBase, context: LayerCreatorContext, index: Int = 0): Unit = {
-    val serializedCpg = initSerializedCpg(context.outputDir, pass.name, index)
-    pass.createApplySerializeAndStore(serializedCpg)
-    serializedCpg.close()
   }
 
   def create(context: LayerCreatorContext): Unit

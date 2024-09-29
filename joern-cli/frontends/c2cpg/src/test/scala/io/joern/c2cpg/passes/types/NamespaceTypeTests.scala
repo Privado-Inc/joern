@@ -6,7 +6,7 @@ import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.codepropertygraph.generated.nodes.Call
 import io.shiftleft.codepropertygraph.generated.nodes.FieldIdentifier
 import io.shiftleft.codepropertygraph.generated.nodes.Identifier
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
 class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
@@ -77,12 +77,10 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
         |              // enclosing namespaces are the global namespace, Q, and Q::V
         |{ return 0; }
         |""".stripMargin)
-      inside(cpg.method.nameNot("<global>").fullName.l) { case List(m1, f1, f2, h, m2) =>
-        m1 shouldBe "Q.V.C.m:int()"
-        f1 shouldBe "Q.V.f:int()"
-        f2 shouldBe "Q.V.f:int()"
+      inside(cpg.method.nameNot("<global>").fullName.l) { case List(f, m, h) =>
+        f shouldBe "Q.V.f:int()"
+        m shouldBe "Q.V.C.m:int()"
         h shouldBe "h:void()"
-        m2 shouldBe "Q.V.C.m:int()"
       }
 
       inside(cpg.namespaceBlock.nameNot("<global>").l) { case List(q, v) =>
@@ -162,10 +160,10 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
         namespaceX.fullName shouldBe "X"
       }
 
-      inside(cpg.method.internal.nameNot("<global>").fullName.l) { case List(f, g, h) =>
+      inside(cpg.method.internal.nameNot("<global>").fullName.l) { case List(h, f, g) =>
+        h shouldBe "h:void()"
         f shouldBe "f:void()"
         g shouldBe "A.g:void()"
-        h shouldBe "h:void()"
       }
 
       inside(cpg.call.filterNot(_.name == Operators.fieldAccess).l) { case List(f, g) =>
@@ -201,7 +199,7 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
         a2.fullName shouldBe "A"
       }
 
-      inside(cpg.method.internal.nameNot("<global>").l) { case List(f1, f2, foo, bar) =>
+      inside(cpg.method.internal.nameNot("<global>").l) { case List(foo, bar, f1, f2) =>
         f1.fullName shouldBe "A.f:void(int)"
         f1.signature shouldBe "void(int)"
         f2.fullName shouldBe "A.f:void(char)"
@@ -377,9 +375,7 @@ class NamespaceTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
         "FinalClasses.C22",
         "FinalClasses.C23",
         "IntermediateClasses.B1",
-        "IntermediateClasses.B1*",
-        "IntermediateClasses.B2",
-        "IntermediateClasses.B2*"
+        "IntermediateClasses.B2"
       )
     }
 
