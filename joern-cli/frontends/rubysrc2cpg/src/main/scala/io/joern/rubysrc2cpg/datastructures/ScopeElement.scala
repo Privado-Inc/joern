@@ -1,6 +1,6 @@
 package io.joern.rubysrc2cpg.datastructures
 
-import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.{RubyFieldIdentifier, RubyNode}
+import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.{RubyFieldIdentifier, RubyExpression}
 import io.joern.rubysrc2cpg.passes.Defines
 import io.joern.x2cpg.datastructures.{NamespaceLikeScope, TypedScopeElement}
 import io.shiftleft.codepropertygraph.generated.nodes.NewBlock
@@ -16,7 +16,7 @@ case class FieldDecl(
   typeFullName: String,
   isStatic: Boolean,
   isInitialized: Boolean,
-  node: RubyNode & RubyFieldIdentifier
+  node: RubyExpression & RubyFieldIdentifier
 ) extends TypedScopeElement
 
 /** A type-like scope with a full name.
@@ -35,7 +35,7 @@ trait TypeLikeScope extends TypedScopeElement {
   *   the relative file name.
   */
 case class ProgramScope(fileName: String) extends TypeLikeScope {
-  override def fullName: String = s"$fileName:${Defines.Program}"
+  override def fullName: String = s"$fileName${Defines.Main}"
 }
 
 /** A Ruby module/abstract class.
