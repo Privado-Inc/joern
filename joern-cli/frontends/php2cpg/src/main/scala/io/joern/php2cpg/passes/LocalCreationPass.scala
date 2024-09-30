@@ -13,7 +13,7 @@ import io.shiftleft.codepropertygraph.generated.nodes.{
   NewNode,
   TypeDecl
 }
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.joern.php2cpg.astcreation.AstCreator
 import io.joern.php2cpg.parser.Domain
 import io.joern.php2cpg.parser.Domain.PhpOperators
@@ -96,7 +96,7 @@ abstract class LocalCreationPass[ScopeType <: AstNode](cpg: Cpg)
   ): Unit = {
     val identifierMap =
       getIdentifiersInScope(bodyNode)
-        .filter(_.refOut.isEmpty)
+        .filter(_._refOut.isEmpty)
         .filterNot(excludeIdentifierFn)
         .groupBy(_.name)
 

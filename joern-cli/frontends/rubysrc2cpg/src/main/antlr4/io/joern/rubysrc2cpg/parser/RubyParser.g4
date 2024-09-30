@@ -83,8 +83,7 @@ multipleLeftHandSideExceptPacking
     ;
 
 packingLeftHandSide
-    :   STAR leftHandSide?
-    |   STAR leftHandSide (COMMA multipleLeftHandSideItem)*
+    :   STAR leftHandSide? (COMMA multipleLeftHandSideItem)*
     ;
 
 groupedLeftHandSide
@@ -97,10 +96,9 @@ multipleLeftHandSideItem
     ;
 
 multipleRightHandSide
-    :   operatorExpressionList (COMMA splattingRightHandSide)?
-    |   splattingRightHandSide
+    :   (operatorExpressionList | splattingRightHandSide) (COMMA (operatorExpressionList | splattingRightHandSide))*
     ;
-     
+
 splattingRightHandSide
     :   splattingArgument
     ;
@@ -130,21 +128,29 @@ methodInvocationWithoutParentheses
         # commandMethodInvocationWithoutParentheses
     |   chainedCommandWithDoBlock ((DOT | COLON2) methodName commandArgumentList)?
         # chainedMethodInvocationWithoutParentheses
-    |   RETURN primaryValueList
+    |   RETURN primaryValueListWithAssociation
         # returnMethodInvocationWithoutParentheses
     |   BREAK primaryValueList
         # breakMethodInvocationWithoutParentheses
     |   NEXT primaryValueList
         # nextMethodInvocationWithoutParentheses
-    |   YIELD primaryValueList
+    |   YIELD primaryValueListWithAssociation
         # yieldMethodInvocationWithoutParentheses
     ;
 
 command
-    :   primary NL? (AMPDOT | DOT | COLON2) methodName commandArgument
+    :   operatorExpression QMARK NL* operatorExpression NL* COLON NL* operatorExpression
+        # commandTernaryOperatorExpression
+    |   primary NL? (AMPDOT | DOT | COLON2) methodName commandArgument
         # memberAccessCommand
-    |   methodIdentifier commandArgument
+    |   methodIdentifier simpleCommandArgumentList
         # simpleCommand
+    ;
+
+simpleCommandArgumentList
+    :   associationList
+    |   primaryValueList (COMMA NL* associationList)?
+    |   argumentList
     ;
 
 commandArgument
@@ -168,17 +174,38 @@ commandWithDoBlock
     |   primary (DOT | COLON2) methodName argumentList doBlock
     ;
 
+bracketedArrayElementList
+    :   bracketedArrayElement (COMMA? NL* bracketedArrayElement)* COMMA?
+    ;
+
+bracketedArrayElement
+    :   indexingArgument
+    |   command
+    |   hashLiteral
+    |   splattingArgument
+    |   indexingArgumentList
+    ;
+
 indexingArgumentList
-    :   command
-        # commandIndexingArgumentList
-    |   operatorExpressionList COMMA?
+    :   operatorExpressionList COMMA?
         # operatorExpressionListIndexingArgumentList
     |   operatorExpressionList COMMA splattingArgument
         # operatorExpressionListWithSplattingArgumentIndexingArgumentList
+    |   indexingArgument (COMMA? NL* indexingArgument)*
+        #indexingArgumentIndexingArgumentList
     |   associationList COMMA?
         # associationListIndexingArgumentList
-    |   splattingArgument
+    |   splattingArgument (COMMA NL* splattingArgument)*
         # splattingArgumentIndexingArgumentList
+    ;
+
+indexingArgument
+    :   symbol
+        #symbolIndexingArgument
+    |   association
+        #associationIndexingArgument
+    |   sign=(PLUS | MINUS)? unsignedNumericLiteral
+        #numericLiteralIndexingArgument
     ;
 
 splattingArgument
@@ -188,10 +215,6 @@ splattingArgument
 
 operatorExpressionList
     :   operatorExpression (COMMA NL* operatorExpression)*
-    ;
-    
-operatorExpressionList2
-    :   operatorExpression (COMMA NL* operatorExpression)+
     ;
 
 argumentWithParentheses
@@ -208,27 +231,37 @@ argumentWithParentheses
 argumentList
     :   blockArgument
         # blockArgumentArgumentList
-    |   splattingArgument (COMMA NL* blockArgument)?
-        # splattingArgumentArgumentList
-    |   operatorExpressionList (COMMA NL* associationList)? (COMMA NL* splattingArgument)? (COMMA NL* blockArgument)?
-        # operatorsArgumentList
-    |   associationList (COMMA NL* splattingArgument)? (COMMA NL* blockArgument)?
-        # associationsArgumentList
+    |   argumentListItem (COMMA NL* argumentListItem)*
+        # argumentListItemArgumentList
+    |   LBRACK indexingArgumentList? RBRACK
+        # arrayArgumentList
     |   command
         # singleCommandArgumentList
     ;
-    
+
+argumentListItem
+    :   splattingArgument
+    |   operatorExpressionList
+    |   associationList
+    |   blockArgument
+    ;
+
 commandArgumentList
     :   associationList
     |   primaryValueList (COMMA NL* associationList)?
-    ;    
+    ;
 
 primaryValueList
     :   primaryValue (COMMA NL* primaryValue)*
     ;
 
+primaryValueListWithAssociation
+    :   (primaryValue | association)? (COMMA NL* (primaryValue | association))*
+    |   methodInvocationWithoutParentheses
+    ;
+
 blockArgument
-    :   AMP operatorExpression
+    :   AMP operatorExpression?
     ;
     
 // --------------------------------------------------------
@@ -268,6 +301,10 @@ primary
         # primaryValuePrimary
     ;
 
+hashLiteral
+    : LCURLY NL* (associationList COMMA?)? NL* RCURLY
+    ;
+
 primaryValue
     :   // Assignment expressions
         lhs=variable assignmentOperator NL* rhs=operatorExpression
@@ -282,7 +319,7 @@ primaryValue
         # assignmentWithRescue
         
         // Definitions
-    |   CLASS classPath (LT commandOrPrimaryValueClass)? (SEMI | NL) bodyStatement END
+    |   CLASS classPath (LT commandOrPrimaryValueClass)? (SEMI | NL)? bodyStatement END
         # classDefinition
     |   CLASS LT2 commandOrPrimaryValueClass (SEMI | NL) bodyStatement END
         # singletonClassDefinition
@@ -294,7 +331,7 @@ primaryValue
         # singletonMethodDefinition
     |   DEF definedMethodName (LPAREN parameterList? RPAREN)? EQ NL* statement
         # endlessMethodDefinition
-    |   MINUSGT (LPAREN parameterList? RPAREN)? block
+    |   MINUSGT lambdaExpressionParameterList? block
         # lambdaExpression
 
         // Control structures
@@ -316,27 +353,12 @@ primaryValue
         # whileExpression
     |   FOR NL* forVariable IN NL* commandOrPrimaryValue doClause END
         # forExpression
-    
-        // Non-nested calls
-    |   SUPER argumentWithParentheses? block?
-        # superWithParentheses
-    |   SUPER argumentList? block?
-        # superWithoutParentheses
-    |   isDefinedKeyword LPAREN expressionOrCommand RPAREN
-        # isDefinedExpression
-    |   isDefinedKeyword primaryValue
-        # isDefinedCommand
-    |   methodOnlyIdentifier
-        # methodCallExpression
-    |   methodIdentifier block
-        # methodCallWithBlockExpression
-    |   methodIdentifier argumentWithParentheses block?
-        # methodCallWithParenthesesExpression
-    |   variableReference
-        # methodCallOrVariableReference
-        
+
+    |   methodCallsWithParentheses
+        # methodCallWithParentheses
+
         // Literals
-    |   LBRACK NL* indexingArgumentList? NL* RBRACK
+    |   LBRACK NL* bracketedArrayElementList? NL* RBRACK
         # bracketedArrayLiteral
     |   QUOTED_NON_EXPANDED_STRING_ARRAY_LITERAL_START quotedNonExpandedArrayElementList? QUOTED_NON_EXPANDED_STRING_ARRAY_LITERAL_END
         # quotedNonExpandedStringArrayLiteral
@@ -346,8 +368,8 @@ primaryValue
         # quotedExpandedStringArrayLiteral
     |   QUOTED_EXPANDED_SYMBOL_ARRAY_LITERAL_START quotedExpandedArrayElementList? QUOTED_EXPANDED_SYMBOL_ARRAY_LITERAL_END
         # quotedExpandedSymbolArrayLiteral
-    |   LCURLY NL* (associationList COMMA?)? NL* RCURLY
-        # hashLiteral
+    |   hashLiteral
+        # primaryValueHashLiteral
     |   sign=(PLUS | MINUS)? unsignedNumericLiteral
         # numericLiteral
     |   singleQuotedString singleOrDoubleQuotedString*
@@ -397,14 +419,43 @@ primaryValue
         # relationalExpression
     |   primaryValue equalityOperator       NL* primaryValue
         # equalityExpression
-    |   primaryValue andOperator=AMP2       NL* primaryValue
+    |   primaryValue andOperator=AMP2       NL* (primaryValue | RETURN)
         # logicalAndExpression
-    |   primaryValue orOperator=BAR2        NL* primaryValue
+    |   primaryValue orOperator=BAR2        NL* (primaryValue | RETURN)
         # logicalOrExpression
-    |   primaryValue rangeOperator          NL* primaryValue
-        # rangeExpression
+    |   primaryValue rangeOperator NL* primaryValue
+        # boundedRangeExpression
+    |   primaryValue rangeOperator
+        # endlessRangeExpression
+    |   rangeOperator primaryValue
+        # beginlessRangeExpression
     |   hereDoc
         # hereDocs
+    ;
+
+lambdaExpressionParameterList
+    :   LPAREN blockParameterList? RPAREN
+    |   blockParameterList
+    ;
+
+// Non-nested calls
+methodCallsWithParentheses
+    :   SUPER argumentWithParentheses? block?
+        # superWithParentheses
+    |   SUPER argumentList? block?
+        # superWithoutParentheses
+    |   isDefinedKeyword LPAREN expressionOrCommand RPAREN
+        # isDefinedExpression
+    |   isDefinedKeyword primaryValue
+        # isDefinedCommand
+    |   methodOnlyIdentifier
+        # methodCallExpression
+    |   methodIdentifier block
+        # methodCallWithBlockExpression
+    |   methodIdentifier argumentWithParentheses block?
+        # methodCallWithParenthesesExpression
+    |   variableReference
+        # methodCallOrVariableReference
     ;
 
 // This is required to make chained calls work. For classes, we cannot move up the `primaryValue` due to the possible
@@ -443,7 +494,38 @@ doBlock
 
 blockParameter
     :   BAR NL* BAR
-    |   BAR NL* parameterList NL* BAR
+    |   BAR NL* blockParameterList NL* BAR
+    ;
+
+blockParameterList
+    :   mandatoryOrOptionalOrGroupedParameterList (COMMA NL* arrayParameter)? (COMMA NL* mandatoryOrGroupedParameterList)* (COMMA NL* hashParameter)? (COMMA NL* procParameter)?
+    |   arrayParameter (COMMA NL* mandatoryOrGroupedParameterList)* (COMMA NL* hashParameter)? (COMMA NL* procParameter)?
+    |   hashParameter (COMMA NL* procParameter)?
+    |   procParameter
+    ;
+
+mandatoryOrOptionalOrGroupedParameterList
+    :   mandatoryOrOptionalOrGroupedParameter (COMMA NL* mandatoryOrOptionalOrGroupedParameter)*
+    ;
+
+mandatoryOrOptionalOrGroupedParameter
+    :   mandatoryParameter
+    |   optionalParameter
+    |   groupedParameterList
+    ;
+
+mandatoryOrGroupedParameterList
+    :   mandatoryOrGroupedParameter (COMMA NL* mandatoryOrGroupedParameter)*
+    ;
+
+mandatoryOrGroupedParameter
+    :   mandatoryParameter
+    |   groupedParameterList
+    ;
+
+groupedParameterList
+    :   LPAREN mandatoryParameter (COMMA NL* arrayParameter)? (COMMA NL* mandatoryParameter)* RPAREN
+    |   LPAREN arrayParameter (COMMA NL* mandatoryParameter)* RPAREN
     ;
 
 thenClause
@@ -515,8 +597,8 @@ methodParameterPart
     ;
 
 parameterList
-    :   mandatoryOrOptionalParameterList (COMMA NL* arrayParameter)? (COMMA NL* hashParameter)? (COMMA NL* procParameter)?
-    |   arrayParameter (COMMA NL* hashParameter)? (COMMA NL* procParameter)?
+    :   mandatoryOrOptionalParameterList (COMMA NL* arrayParameter)? (COMMA NL* mandatoryParameterList)? (COMMA NL* hashParameter)? (COMMA NL* procParameter)?
+    |   arrayParameter (COMMA NL* mandatoryParameterList)? (COMMA NL* hashParameter)? (COMMA NL* procParameter)?
     |   hashParameter (COMMA NL* procParameter)?
     |   procParameter
     ;
@@ -524,7 +606,11 @@ parameterList
 mandatoryOrOptionalParameterList
     :   mandatoryOrOptionalParameter (COMMA NL* mandatoryOrOptionalParameter)*
     ;
-    
+
+mandatoryParameterList
+    :   mandatoryParameter (COMMA NL* mandatoryParameter)*
+    ;
+
 mandatoryOrOptionalParameter
     :   mandatoryParameter
         # mandatoryMandatoryOrOptionalParameter
@@ -553,7 +639,7 @@ hashParameter
     ;
 
 procParameter
-    :   AMP procParameterName
+    :   AMP procParameterName?
     ;
 
 procParameterName
@@ -591,11 +677,18 @@ associationList
     
 association
     :   associationKey (EQGT | COLON) NL* operatorExpression
+        # associationElement
+    |   associationHashArgument
+        # associationHashArg
     ;
     
 associationKey
     :   operatorExpression
     |   keyword
+    ;
+
+associationHashArgument
+    :   STAR2 (LOCAL_VARIABLE_IDENTIFIER | methodCallsWithParentheses | (LPAREN methodInvocationWithoutParentheses RPAREN))?
     ;
 
 regexpLiteralContent
@@ -616,23 +709,9 @@ doubleQuotedString
     :   DOUBLE_QUOTED_STRING_START doubleQuotedStringContent* DOUBLE_QUOTED_STRING_END
     ;
 
-quotedExpandedExternalCommandString
-    :   QUOTED_EXPANDED_EXTERNAL_COMMAND_LITERAL_START 
-        quotedExpandedLiteralStringContent*
-        QUOTED_EXPANDED_EXTERNAL_COMMAND_LITERAL_END
-    ;
-
 doubleQuotedStringContent
     :   DOUBLE_QUOTED_STRING_CHARACTER_SEQUENCE
     |   STRING_INTERPOLATION_BEGIN compoundStatement STRING_INTERPOLATION_END
-    ;
-
-quotedNonExpandedLiteralString
-    :   QUOTED_NON_EXPANDED_STRING_LITERAL_START NON_EXPANDED_LITERAL_CHARACTER_SEQUENCE? QUOTED_NON_EXPANDED_STRING_LITERAL_END
-    ;
-
-quotedExpandedLiteralString
-    :   QUOTED_EXPANDED_STRING_LITERAL_START quotedExpandedLiteralStringContent* QUOTED_EXPANDED_STRING_LITERAL_END
     ;
 
 quotedExpandedLiteralStringContent
