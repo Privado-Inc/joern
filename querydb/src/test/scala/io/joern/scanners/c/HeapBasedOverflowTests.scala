@@ -2,7 +2,8 @@ package io.joern.scanners.c
 
 import io.joern.suites.CQueryTestSuite
 import io.shiftleft.codepropertygraph.generated.nodes
-import io.joern.console.scan._
+import io.joern.console.scan.*
+import io.shiftleft.semanticcpg.language.*
 
 class HeapBasedOverflowTests extends CQueryTestSuite(HeapBasedOverflow) {
 
