@@ -48,7 +48,7 @@ class PySrcTestCpg extends DefaultTestCpg with PythonFrontend with SemanticTestC
     new PythonTypeHintCallLinker(this).createAndApply()
     new NaiveCallLinker(this).createAndApply()
 
-    // Some of passes above create new methods, so, we
+    // Some of the passes above create new methods, so, we
     // need to run the ASTLinkerPass one more time
     new AstLinkerPass(this).createAndApply()
     applyOssDataFlow()
@@ -58,20 +58,20 @@ class PySrcTestCpg extends DefaultTestCpg with PythonFrontend with SemanticTestC
 
 class PySrc2CpgFixture(
   withOssDataflow: Boolean = false,
-  extraFlows: List[FlowSemantic] = List.empty,
+  semantics: Semantics = DefaultSemantics(),
   withPostProcessing: Boolean = true
 ) extends Code2CpgFixture(() =>
       new PySrcTestCpg()
         .withOssDataflow(withOssDataflow)
-        .withExtraFlows(extraFlows)
+        .withSemantics(semantics)
         .withPostProcessingPasses(withPostProcessing)
     )
-    with SemanticCpgTestFixture(extraFlows) {
+    with SemanticCpgTestFixture(semantics) {
 
   implicit val resolver: ICallResolver = NoResolve
 
   protected def flowToResultPairs(path: Path): List[(String, Integer)] =
-    path.resultPairs().collect { case (firstElement: String, secondElement: Option[Integer]) =>
+    path.resultPairs().collect { case (firstElement: String, secondElement) =>
       (firstElement, secondElement.getOrElse(-1))
     }
 }
