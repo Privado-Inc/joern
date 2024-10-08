@@ -5,7 +5,7 @@ import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.{
   InstanceFieldIdentifier,
   MemberAccess,
   RubyFieldIdentifier,
-  RubyNode
+  RubyExpression
 }
 import io.joern.rubysrc2cpg.datastructures.{BlockScope, FieldDecl}
 import io.joern.rubysrc2cpg.passes.Defines
@@ -15,16 +15,39 @@ import io.joern.x2cpg.{Ast, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, Operators}
 
+import scala.collection.mutable
+
 trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
-  protected def computeClassFullName(name: String): String  = s"${scope.surroundingScopeFullName.head}.$name"
-  protected def computeMethodFullName(name: String): String = s"${scope.surroundingScopeFullName.head}:$name"
+  private val usedFullNames = mutable.Set.empty[String]
 
-  override def column(node: RubyNode): Option[Int]    = node.column
-  override def columnEnd(node: RubyNode): Option[Int] = node.columnEnd
-  override def line(node: RubyNode): Option[Int]      = node.line
-  override def lineEnd(node: RubyNode): Option[Int]   = node.lineEnd
-  override def code(node: RubyNode): String           = shortenCode(node.text)
+  /** Ensures a unique full name is assigned based on the current scope.
+    * @param name
+    *   the name of the entity.
+    * @param counter
+    *   an optional counter, used to create unique instances in the case of redefinitions.
+    * @return
+    *   a unique full name.
+    */
+  protected def computeFullName(name: String, counter: Option[Int] = None): String = {
+    val candidate = counter match {
+      case Some(cnt) => s"${scope.surroundingScopeFullName.head}.$name$cnt"
+      case None      => s"${scope.surroundingScopeFullName.head}.$name"
+    }
+    if (usedFullNames.contains(candidate)) {
+      computeFullName(name, counter.map(_ + 1).orElse(Option(0)))
+    } else {
+      usedFullNames.add(candidate)
+      candidate
+    }
+  }
+
+  override def column(node: RubyExpression): Option[Int]    = node.column
+  override def columnEnd(node: RubyExpression): Option[Int] = node.columnEnd
+  override def line(node: RubyExpression): Option[Int]      = node.line
+  override def lineEnd(node: RubyExpression): Option[Int]   = node.lineEnd
+
+  override def code(node: RubyExpression): String = shortenCode(node.text)
 
   protected def isBuiltin(x: String): Boolean            = kernelFunctions.contains(x)
   protected def prefixAsKernelDefined(x: String): String = s"$kernelPrefix$pathSep$x"
@@ -32,7 +55,7 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
   protected def isBundledClass(x: String): Boolean       = GlobalTypes.bundledClasses.contains(x)
   protected def pathSep                                  = "."
 
-  private def astForFieldInstance(name: String, node: RubyNode & RubyFieldIdentifier): Ast = {
+  private def astForFieldInstance(name: String, node: RubyExpression & RubyFieldIdentifier): Ast = {
     val identName = node match {
       case _: InstanceFieldIdentifier => Defines.Self
       case _: ClassFieldIdentifier    => scope.surroundingTypeFullName.map(_.split("[.]").last).getOrElse(Defines.Any)
@@ -47,7 +70,7 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
     )
   }
 
-  protected def handleVariableOccurrence(node: RubyNode): Ast = {
+  protected def handleVariableOccurrence(node: RubyExpression): Ast = {
     val name       = code(node)
     val identifier = identifierNode(node, name, name, Defines.Any)
     val typeRef    = scope.tryResolveTypeReference(name)
@@ -92,12 +115,19 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
     astForAssignment(Ast(lhs), Ast(rhs), lineNumber, columnNumber)
   }
 
-  protected def astForAssignment(lhs: Ast, rhs: Ast, lineNumber: Option[Int], columnNumber: Option[Int]): Ast = {
-    val code = Seq(lhs, rhs).flatMap(_.root).collect { case x: ExpressionNew => x.code }.mkString(" = ")
+  protected def astForAssignment(
+    lhs: Ast,
+    rhs: Ast,
+    lineNumber: Option[Int],
+    columnNumber: Option[Int],
+    code: Option[String] = None
+  ): Ast = {
+    val _code =
+      code.getOrElse(Seq(lhs, rhs).flatMap(_.root).collect { case x: ExpressionNew => x.code }.mkString(" = "))
     val assignment = NewCall()
       .name(Operators.assignment)
       .methodFullName(Operators.assignment)
-      .code(code)
+      .code(_code)
       .dispatchType(DispatchTypes.STATIC_DISPATCH)
       .lineNumber(lineNumber)
       .columnNumber(columnNumber)
@@ -147,8 +177,8 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
       "&"   -> Operators.and,
       "|"   -> Operators.or,
       "^"   -> Operators.xor,
-      "<<"  -> Operators.shiftLeft,
-      ">>"  -> Operators.logicalShiftRight
+//      "<<"  -> Operators.shiftLeft,  Note: Generally Ruby abstracts this as an append operator based on the LHS
+      ">>" -> Operators.logicalShiftRight
     )
 
   protected val AssignmentOperatorNames: Map[String, String] = Map(
