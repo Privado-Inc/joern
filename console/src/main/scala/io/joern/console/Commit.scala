@@ -3,7 +3,7 @@ package io.joern.console
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.passes.CpgPass
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext, LayerCreatorOptions}
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 object Commit {
   val overlayName: String = "commit"
@@ -26,7 +26,7 @@ class Commit(opts: CommitOptions) extends LayerCreator {
         builder.absorb(opts.diffGraphBuilder)
       }
     }
-    runPass(pass, context)
+    pass.createAndApply()
     opts.diffGraphBuilder = Cpg.newDiffGraphBuilder
   }
 

@@ -24,11 +24,9 @@ object Defines {
   val Initialize: String   = "initialize"
   val TypeDeclBody: String = "<body>"
 
-  val Program: String = ":program"
+  val Main: String = "<main>"
 
   val Resolver: String = "<dependency-resolver>"
-
-  val AnonymousProcParameter = "<anonymous-proc-param>"
 
   def getBuiltInType(typeInString: String) = s"${GlobalTypes.kernelPrefix}.$typeInString"
 
@@ -192,7 +190,8 @@ object GlobalTypes {
 
   /* Source: https://ruby-doc.org/3.2.2/Kernel.html
    *
-   * We comment-out methods that require an explicit "receiver" (target of member access.)
+   * We comment-out methods that require an explicit "receiver" (target of member access) and those that may be commonly
+   * shadowed.
    */
   val kernelFunctions: Set[String] = Set(
     "Array",
@@ -252,7 +251,7 @@ object GlobalTypes {
     "require",
     "require_all",
     "require_relative",
-    "select",
+//    "select",
     "set_trace_func",
     "sleep",
     "spawn",
