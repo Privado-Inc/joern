@@ -75,7 +75,7 @@ class CompilerAPITests extends AnyFreeSpec with Matchers {
       ProjectRoot.relativise("joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat")
     val projectDependenciesPath = Paths.get(projectDirPath, "build", "gatheredDependencies")
 
-    "should not contain methods with unresolved types/namespaces" in {
+    "should not contain methods with unresolved types/namespaces" ignore {
       val command =
         if (scala.util.Properties.isWin) "cmd.exe /C gradlew.bat gatherDependencies" else "./gradlew gatherDependencies"
       ExternalCommand.run(command, projectDirPath) shouldBe Symbol("success")

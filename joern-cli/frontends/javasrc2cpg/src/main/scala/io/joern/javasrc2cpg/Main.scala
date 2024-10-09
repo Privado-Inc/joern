@@ -14,7 +14,7 @@ final case class Config(
   fetchDependencies: Boolean = false,
   javaFeatureSetVersion: Option[String] = None,
   delombokJavaHome: Option[String] = None,
-  delombokMode: Option[String] = None,
+  delombokMode: Option[String] = Some("no-delombok"),
   enableTypeRecovery: Boolean = false,
   jdkPath: Option[String] = None,
   showEnv: Boolean = false,
