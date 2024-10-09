@@ -1,17 +1,10 @@
 package io.joern.dataflowengineoss.passes.reachingdef
 
-import io.joern.dataflowengineoss.language.*
+import io.joern.dataflowengineoss.language._
 import io.joern.dataflowengineoss.queryengine.Engine.isOutputArgOfInternalMethod
-import io.joern.dataflowengineoss.semanticsloader.{
-  FlowMapping,
-  FlowPath,
-  FlowSemantic,
-  ParameterNode,
-  PassThroughMapping,
-  Semantics
-}
+import io.joern.dataflowengineoss.semanticsloader.{FlowMapping, ParameterNode, PassThroughMapping, Semantics}
 import io.shiftleft.codepropertygraph.generated.nodes.{Call, CfgNode, Expression, StoredNode}
-import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.language._
 
 object EdgeValidator {
 
@@ -41,20 +34,17 @@ object EdgeValidator {
         curNode.isUsed
     }
 
-  /** Is it a CALL for which semantics exist but don't taint its return value?
-    */
   private def isCallRetval(parentNode: StoredNode)(implicit semantics: Semantics): Boolean =
     parentNode match {
-      case call: Call => semantics.forMethod(call.methodFullName).exists(!explicitlyFlowsToReturnValue(_))
-      case _          => false
+      case call: Call =>
+        val sem = semantics.forMethod(call.methodFullName)
+        sem.isDefined && !sem.get.mappings.exists {
+          case FlowMapping(_, ParameterNode(dst, _)) => dst == -1
+          case PassThroughMapping                    => true
+          case _                                     => false
+        }
+      case _ =>
+        false
     }
 
-  private def explicitlyFlowsToReturnValue(flowSemantic: FlowSemantic): Boolean =
-    flowSemantic.mappings.exists(explicitlyFlowsToReturnValue)
-
-  private def explicitlyFlowsToReturnValue(flowPath: FlowPath): Boolean = flowPath match {
-    case FlowMapping(_, ParameterNode(dst, _)) => dst == -1
-    case PassThroughMapping                    => true
-    case _                                     => false
-  }
 }
