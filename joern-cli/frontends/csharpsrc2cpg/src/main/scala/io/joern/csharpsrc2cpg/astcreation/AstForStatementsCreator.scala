@@ -300,10 +300,12 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
       .code(code(usingStmt))
       .lineNumber(line(usingStmt))
       .columnNumber(column(usingStmt))
+    val declAst = Try(createDotNetNodeInfo(usingStmt.json(ParserKeys.Declaration))).toOption match
+      case Some(declNodevalue) => astForNode(declNodevalue)
+      case _ => Seq.empty[Ast]
+
     val tryNodeInfo = createDotNetNodeInfo(usingStmt.json(ParserKeys.Statement))
     val tryAst      = astForBlock(tryNodeInfo, Option("try"))
-    val declNode    = createDotNetNodeInfo(usingStmt.json(ParserKeys.Declaration))
-    val declAst     = astForNode(declNode)
 
     val finallyAst = declAst.flatMap(_.nodes).collectFirst { case x: NewIdentifier => x.copy }.map { id =>
       val callCode = s"${id.name}.Dispose()"
