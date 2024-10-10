@@ -1,6 +1,6 @@
 package io.joern.rubysrc2cpg.parser
 
-import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.TextSpan
+import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.{ProcedureDeclaration, TextSpan, TypeDeclaration}
 import io.joern.rubysrc2cpg.parser.RubyParser.*
 import org.antlr.v4.runtime.ParserRuleContext
 import org.antlr.v4.runtime.misc.Interval
@@ -18,13 +18,33 @@ object AntlrContextHelpers {
       // We need to make sure this doesn't happen when building the `text` field.
       val startIndex = ctx.getStart.getStartIndex
       val stopIndex  = math.max(startIndex, ctx.getStop.getStopIndex)
+
+      val offset = ctx match {
+        case x: MethodDefinitionContext => Option(ctx.start.getStartIndex, ctx.stop.getStopIndex + 1)
+        case x: ClassDefinitionContext  => Option(ctx.start.getStartIndex, ctx.stop.getStopIndex + 1)
+        case x: ModuleDefinitionContext => Option(ctx.start.getStartIndex, ctx.stop.getStopIndex + 1)
+        case _                          => None
+      }
+
       TextSpan(
         line = Option(ctx.getStart.getLine),
         column = Option(ctx.getStart.getCharPositionInLine),
         lineEnd = Option(ctx.getStop.getLine),
         columnEnd = Option(ctx.getStop.getCharPositionInLine),
+        offset = offset,
         text = ctx.getStart.getInputStream.getText(new Interval(startIndex, stopIndex))
       )
+    }
+
+    /** @return
+      *   true if this token's text is the same as a keyword, false if otherwise.
+      */
+    def isKeyword: Boolean = {
+      // See RubyParser for why the bounds are used
+      val minBound = 19
+      val maxBound = 56
+      val typ      = ctx.start.getType
+      typ >= minBound && typ <= maxBound
     }
   }
 
@@ -147,6 +167,21 @@ object AntlrContextHelpers {
     def isIf: Boolean     = Option(ctx.statementModifier().IF()).isDefined
   }
 
+  sealed implicit class QuotedExpandedArrayElementListContextHelper(ctx: QuotedExpandedArrayElementListContext) {
+    def elements: List[ParserRuleContext] = ctx.quotedExpandedArrayElement.asScala.toList
+  }
+
+  sealed implicit class QuotedExpandedArrayElementContextHelper(ctx: QuotedExpandedArrayElementContext) {
+    def interpolations: List[ParserRuleContext] = ctx
+      .quotedExpandedArrayElementContent()
+      .asScala
+      .filter(x => Option(x.compoundStatement()).isDefined)
+      .map(_.compoundStatement())
+      .toList
+    def hasInterpolation: Boolean =
+      ctx.interpolations.nonEmpty
+  }
+
   sealed implicit class QuotedNonExpandedArrayElementListContextHelper(ctx: QuotedNonExpandedArrayElementListContext) {
     def elements: List[ParserRuleContext] = ctx.quotedNonExpandedArrayElementContent().asScala.toList
   }
@@ -210,7 +245,9 @@ object AntlrContextHelpers {
       case ctx: AssociationsArgumentListContext =>
         Option(ctx.associationList()).map(_.associations).getOrElse(List.empty)
       case ctx: SplattingArgumentArgumentListContext =>
-        Option(ctx.splattingArgument()).toList
+        Option(ctx.splattingArgument()).toList ++ Option(ctx.blockArgument()).toList ++ Option(
+          ctx.operatorExpressionList()
+        ).toList
       case ctx: BlockArgumentArgumentListContext =>
         Option(ctx.blockArgument()).toList
       case ctx =>

@@ -13,10 +13,9 @@ import io.shiftleft.codepropertygraph.generated.nodes.{
   Local,
   Return
 }
-import io.shiftleft.semanticcpg.language._
-import overflowdb.traversal.toNodeTraversal
+import io.shiftleft.semanticcpg.language.*
 
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 
 class NewControlStructureTests extends JavaSrcCode2CpgFixture {
 

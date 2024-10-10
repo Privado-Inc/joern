@@ -1,26 +1,22 @@
 package io.joern.x2cpg.passes.frontend
 
 import io.joern.x2cpg.passes.frontend.TypeNodePass.fullToShortName
-import io.shiftleft.codepropertygraph.Cpg
+import io.joern.x2cpg.Defines
+import io.shiftleft.codepropertygraph.generated.{Cpg, Properties}
 import io.shiftleft.codepropertygraph.generated.nodes.NewType
-import io.shiftleft.passes.{KeyPool, CpgPass}
-import io.shiftleft.semanticcpg.language._
-import io.shiftleft.codepropertygraph.generated.PropertyNames
+import io.shiftleft.passes.CpgPass
+import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
 import scala.collection.mutable
-import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
 /** Creates a `TYPE` node for each type in `usedTypes` as well as all inheritsFrom type names in the CPG
   *
   * Alternatively, set `getTypesFromCpg = true`. If this is set, the `registeredTypes` argument will be ignored.
   * Instead, type nodes will be created for every unique `TYPE_FULL_NAME` value in the CPG.
   */
-class TypeNodePass protected (
-  registeredTypes: List[String],
-  cpg: Cpg,
-  keyPool: Option[KeyPool],
-  getTypesFromCpg: Boolean
-) extends CpgPass(cpg, "types", keyPool) {
+class TypeNodePass protected (registeredTypes: List[String], cpg: Cpg, getTypesFromCpg: Boolean)
+    extends CpgPass(cpg, "types") {
 
   protected def typeDeclTypes: mutable.Set[String] = {
     val typeDeclTypes = mutable.Set[String]()
@@ -33,9 +29,8 @@ class TypeNodePass protected (
 
   protected def typeFullNamesFromCpg: Set[String] = {
     cpg.all
-      .map(_.property(PropertyNames.TYPE_FULL_NAME))
+      .map(_.property(Properties.TypeFullName))
       .filter(_ != null)
-      .map(_.toString)
       .toSet
   }
 
@@ -51,7 +46,9 @@ class TypeNodePass protected (
     val usedTypesSet = typeDeclTypes ++ typeFullNameValues
     usedTypesSet.remove("<empty>")
     val usedTypes =
-      (usedTypesSet.filterInPlace(!_.endsWith(NamespaceTraversal.globalNamespaceName)).toArray :+ "ANY").toSet.sorted
+      (usedTypesSet
+        .filterInPlace(!_.endsWith(NamespaceTraversal.globalNamespaceName))
+        .toArray :+ Defines.Any).toSet.sorted
 
     usedTypes.foreach { typeName =>
       val shortName = fullToShortName(typeName)
@@ -65,15 +62,20 @@ class TypeNodePass protected (
 }
 
 object TypeNodePass {
-  def withTypesFromCpg(cpg: Cpg, keyPool: Option[KeyPool] = None): TypeNodePass = {
-    new TypeNodePass(Nil, cpg, keyPool, getTypesFromCpg = true)
+  def withTypesFromCpg(cpg: Cpg): TypeNodePass = {
+    new TypeNodePass(Nil, cpg, getTypesFromCpg = true)
   }
 
-  def withRegisteredTypes(registeredTypes: List[String], cpg: Cpg, keyPool: Option[KeyPool] = None): TypeNodePass = {
-    new TypeNodePass(registeredTypes, cpg, keyPool, getTypesFromCpg = false)
+  def withRegisteredTypes(registeredTypes: List[String], cpg: Cpg): TypeNodePass = {
+    new TypeNodePass(registeredTypes, cpg, getTypesFromCpg = false)
   }
 
   def fullToShortName(typeName: String): String = {
-    typeName.takeWhile(_ != ':').split('.').lastOption.getOrElse(typeName)
+    if (typeName.endsWith(">")) {
+      // special case for typeFullName with generics as suffix
+      typeName.takeWhile(c => c != ':' && c != '<').split('.').lastOption.getOrElse(typeName)
+    } else {
+      typeName.takeWhile(_ != ':').split('.').lastOption.getOrElse(typeName)
+    }
   }
 }

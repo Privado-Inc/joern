@@ -20,7 +20,7 @@ import io.joern.javasrc2cpg.astcreation.expressions.AstForCallExpressionsCreator
 import io.joern.javasrc2cpg.astcreation.{AstCreator, ExpectedType}
 import io.joern.javasrc2cpg.scope.Scope.typeFullName
 import io.joern.javasrc2cpg.typesolvers.TypeInfoCalculator.TypeConstants
-import io.joern.javasrc2cpg.util.NameConstants
+import io.joern.javasrc2cpg.util.{NameConstants, Util}
 import io.joern.javasrc2cpg.util.Util.{composeMethodFullName, composeMethodLikeSignature, composeUnresolvedSignature}
 import io.joern.x2cpg.utils.AstPropertiesUtil.*
 import io.joern.x2cpg.utils.NodeBuilders.{newIdentifierNode, newOperatorCallNode}
@@ -192,9 +192,14 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
 
     val anonymousClassBody = expr.getAnonymousClassBody.toScala.map(_.asScala.toList)
     val nameSuffix         = if (anonymousClassBody.isEmpty) "" else s"$$${scope.getNextAnonymousClassIndex()}"
-    val typeName           = s"${expr.getTypeAsString}$nameSuffix"
+    val rawType =
+      tryWithSafeStackOverflow(expr.getTypeAsString)
+        .map(Util.stripGenericTypes)
+        .toOption
+        .getOrElse(NameConstants.Unknown)
+    val typeName = s"$rawType$nameSuffix"
 
-    val baseTypeFromScope = scope.lookupScopeType(expr.getTypeAsString)
+    val baseTypeFromScope = scope.lookupScopeType(rawType)
     // These will be the same for non-anonymous type decls, but in that case only the typeFullName will be used.
     val baseTypeFullName =
       baseTypeFromScope
@@ -313,9 +318,9 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
         val paramCount = methodDecl.getNumberOfParams
 
         val resolvedType = if (idx < paramCount) {
-          Some(methodDecl.getParam(idx).getType)
+          tryWithSafeStackOverflow(methodDecl.getParam(idx).getType).toOption
         } else if (paramCount > 0 && methodDecl.getParam(paramCount - 1).isVariadic) {
-          Some(methodDecl.getParam(paramCount - 1).getType)
+          tryWithSafeStackOverflow(methodDecl.getParam(paramCount - 1).getType).toOption
         } else {
           None
         }
@@ -331,8 +336,8 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
     argumentTypes: Option[List[String]],
     argsSize: Int,
     code: String,
-    lineNumber: Option[Integer] = None,
-    columnNumber: Option[Integer] = None
+    lineNumber: Option[Int] = None,
+    columnNumber: Option[Int] = None
   ): NewCall = {
     val initSignature = argumentTypes match {
       case Some(tpe)          => composeMethodLikeSignature(TypeConstants.Void, tpe)
@@ -356,7 +361,7 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
     args.asScala
       .map {
         case _: LambdaExpr => "<lambda>"
-        case other         => other.toString
+        case other         => code(other)
       }
       .mkString(", ")
   }
@@ -455,7 +460,8 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
         }
 
       case objectCreationExpr: ObjectCreationExpr =>
-        val typeName        = objectCreationExpr.getTypeAsString
+        // Use type name with generics for code
+        val typeName = tryWithSafeStackOverflow(objectCreationExpr.getTypeAsString).getOrElse(NameConstants.Unknown)
         val argumentsString = getArgumentCodeString(objectCreationExpr.getArguments)
         someWithDotSuffix(s"new $typeName($argumentsString)")
 

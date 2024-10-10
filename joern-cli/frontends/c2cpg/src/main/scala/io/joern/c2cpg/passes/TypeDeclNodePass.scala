@@ -1,7 +1,7 @@
 package io.joern.c2cpg.passes
 
 import io.joern.c2cpg.astcreation.Defines
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.passes.CpgPass
@@ -34,8 +34,8 @@ class TypeDeclNodePass(cpg: Cpg)(implicit withSchemaValidation: ValidationMode) 
         .lineNumber(1)
         .astParentType(NodeTypes.NAMESPACE_BLOCK)
         .astParentFullName(fullName)
-    val blockNode    = NewBlock().typeFullName(Defines.anyTypeName)
-    val methodReturn = newMethodReturnNode(Defines.anyTypeName, line = None, column = None)
+    val blockNode    = NewBlock().typeFullName(Defines.Any)
+    val methodReturn = newMethodReturnNode(Defines.Any, line = None, column = None)
     Ast(includesFile).withChild(
       Ast(namespaceBlock)
         .withChild(Ast(fakeGlobalIncludesMethod).withChild(Ast(blockNode)).withChild(Ast(methodReturn)))

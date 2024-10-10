@@ -1,9 +1,9 @@
 package io.joern.ghidra2cpg.passes.mips
 
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, PropertyNames}
 import io.shiftleft.passes.CpgPass
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import org.slf4j.{Logger, LoggerFactory}
 
 class MipsReturnEdgesPass(cpg: Cpg) extends CpgPass(cpg) {
@@ -17,7 +17,10 @@ class MipsReturnEdgesPass(cpg: Cpg) extends CpgPass(cpg) {
       //        the first .cfgNext is skipping a _nop instruction after the call
       val to = from.cfgNext.cfgNext.isCall.argument.code("v(0|1)").headOption
       if (to.nonEmpty) {
-        diffGraph.addEdge(from, to.get, EdgeTypes.REACHING_DEF, PropertyNames.VARIABLE, from.code)
+        // in flatgraph an edge may have zero or one properties and they're not named...
+        // in this case we know that we're dealing with ReachingDef edges which has the `variable` property
+        val variableProperty = from.code
+        diffGraph.addEdge(from, to.get, EdgeTypes.REACHING_DEF, variableProperty)
       }
     }
   }
