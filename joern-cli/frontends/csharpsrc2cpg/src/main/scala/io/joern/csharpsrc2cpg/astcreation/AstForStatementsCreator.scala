@@ -302,7 +302,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
       .columnNumber(column(usingStmt))
     val declAst = Try(createDotNetNodeInfo(usingStmt.json(ParserKeys.Declaration))).toOption match
       case Some(declNodevalue) => astForNode(declNodevalue)
-      case _ => Seq.empty[Ast]
+      case _                   => Seq.empty[Ast]
 
     val tryNodeInfo = createDotNetNodeInfo(usingStmt.json(ParserKeys.Statement))
     val tryAst      = astForBlock(tryNodeInfo, Option("try"))

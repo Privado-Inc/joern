@@ -174,8 +174,7 @@ class ControlStructureTests extends CSharpCode2CpgFixture {
   }
 
   "having using statement" should {
-    val cpg = code(
-      """
+    val cpg = code("""
         |namespace other
         |{
         |    public class General
@@ -202,7 +201,7 @@ class ControlStructureTests extends CSharpCode2CpgFixture {
     "resolve methodFullName" in {
       inside(cpg.call.name("Open").methodFullName.l) {
         case x :: Nil => x shouldBe "SqlConnection.Open:<unresolvedSignature>"
-        case _ => fail("Unexpected call node structure")
+        case _        => fail("Unexpected call node structure")
       }
     }
   }
