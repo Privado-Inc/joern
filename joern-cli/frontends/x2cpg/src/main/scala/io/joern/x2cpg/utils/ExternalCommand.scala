@@ -1,5 +1,8 @@
 package io.joern.x2cpg.utils
 
+import java.io.File
+import java.net.URL
+import java.nio.file.{Path, Paths}
 import java.util.concurrent.ConcurrentLinkedQueue
 import scala.sys.process.{Process, ProcessLogger}
 import scala.util.{Failure, Success, Try}
@@ -34,6 +37,48 @@ trait ExternalCommand {
     handleRunResult(Try(process.!(processLogger)), stdOutOutput.asScala.toSeq, stdErrOutput.asScala.toSeq)
   }
 
+  // We use the java ProcessBuilder API instead of the Scala version because it
+  // offers the possibility to merge stdout and stderr into one stream of output.
+  // Maybe the Scala version also offers this but since there is no documentation
+  // I was not able to figure it out.
+  def runWithMergeStdoutAndStderr(command: String, cwd: String): (Int, String) = {
+    val builder = new ProcessBuilder()
+    builder.command(command.split(' ')*)
+    builder.directory(new File(cwd))
+    builder.redirectErrorStream(true)
+
+    val process     = builder.start()
+    val outputBytes = process.getInputStream.readAllBytes()
+    val returnValue = process.waitFor()
+
+    (returnValue, new String(outputBytes))
+  }
 }
 
-object ExternalCommand extends ExternalCommand
+object ExternalCommand extends ExternalCommand {
+
+  /** Finds the absolute path to the executable directory (e.g. `/path/to/javasrc2cpg/bin`). Based on the package path
+    * of a loaded classfile based on some (potentially flakey?) filename heuristics. Context: we want to be able to
+    * invoke the x2cpg frontends from any directory, not just their install directory, and then invoke other
+    * executables, like astgen, php-parser et al.
+    */
+  def executableDir(packagePath: Path): Path = {
+    val packagePathAbsolute = packagePath.toAbsolutePath
+    val fixedDir =
+      if (packagePathAbsolute.toString.contains("lib")) {
+        var dir = packagePathAbsolute
+        while (dir.toString.contains("lib"))
+          dir = dir.getParent
+        dir
+      } else if (packagePathAbsolute.toString.contains("target")) {
+        var dir = packagePathAbsolute
+        while (dir.toString.contains("target"))
+          dir = dir.getParent
+        dir
+      } else {
+        Paths.get(".")
+      }
+
+    fixedDir.resolve("bin/").toAbsolutePath
+  }
+}
