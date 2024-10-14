@@ -4,8 +4,8 @@ import ghidra.program.model.listing.{Function, Program}
 import io.joern.ghidra2cpg.utils.Decompiler
 import io.joern.ghidra2cpg.passes.FunctionPass
 import io.joern.ghidra2cpg.processors.X86Processor
-import io.joern.ghidra2cpg.utils.Utils._
-import io.shiftleft.codepropertygraph.Cpg
+import io.joern.ghidra2cpg.utils.Utils.*
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, nodes}
 import io.shiftleft.codepropertygraph.generated.nodes.{NewBlock, NewMethod}
 
@@ -51,7 +51,7 @@ class X86FunctionPass(
     val blockNode: NewBlock = nodes.NewBlock().code("").order(0)
     val methodNode =
       createMethodNode(decompiler, function, filename, checkIfExternal(currentProgram, function.getName))
-    val localGraphBuilder = new DiffGraphBuilder()
+    val localGraphBuilder = Cpg.newDiffGraphBuilder
     val methodReturn      = createReturnNode()
     localGraphBuilder.addNode(methodNode)
     localGraphBuilder.addNode(blockNode)

@@ -1,17 +1,17 @@
 package io.joern.c2cpg.passes.ast
 
+import io.joern.c2cpg.astcreation.Defines
 import io.joern.c2cpg.testfixtures.AstC2CpgSuite
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.ControlStructureTypes
 import io.shiftleft.codepropertygraph.generated.DispatchTypes
 import io.shiftleft.codepropertygraph.generated.EdgeTypes
 import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.codepropertygraph.generated.Operators
-import io.shiftleft.codepropertygraph.generated.nodes._
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.operatorextension.OpNodes
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
-import overflowdb.traversal.toNodeTraversal
 
 class AstCreationPassTests extends AstC2CpgSuite {
 
@@ -23,11 +23,10 @@ class AstCreationPassTests extends AstC2CpgSuite {
        |char *hello();
        |""".stripMargin)
       inside(cpg.method("foo").l) { case List(foo) =>
-        foo.signature shouldBe "char* foo ()"
+        foo.signature shouldBe "char*()"
       }
       inside(cpg.method("hello").l) { case List(hello) =>
-        hello.signature shouldBe "char* hello ()"
-
+        hello.signature shouldBe "char*()"
       }
     }
 
@@ -39,7 +38,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         "test.cpp"
       )
       inside(cpg.method("foo").l) { case List(m) =>
-        m.signature shouldBe "void foo (int,int*)"
+        m.signature shouldBe "void(int,int*)"
         inside(m.parameter.l) { case List(x, args) =>
           x.name shouldBe "x"
           x.code shouldBe "int x"
@@ -112,8 +111,8 @@ class AstCreationPassTests extends AstC2CpgSuite {
       val lambda1FullName = "<lambda>0"
       val lambda2FullName = "<lambda>1"
 
-      cpg.local.name("x").order.l shouldBe List(1)
-      cpg.local.name("y").order.l shouldBe List(3)
+      cpg.local.nameExact("x").order.l shouldBe List(1)
+      cpg.local.nameExact("y").order.l shouldBe List(3)
 
       inside(cpg.assignment.l) { case List(assignment1, assignment2) =>
         assignment1.order shouldBe 2
@@ -129,32 +128,32 @@ class AstCreationPassTests extends AstC2CpgSuite {
       inside(cpg.method.fullNameExact(lambda1FullName).isLambda.l) { case List(l1) =>
         l1.name shouldBe lambda1FullName
         l1.code should startWith("[] (int a, int b) -> int")
-        l1.signature shouldBe s"int $lambda1FullName (int,int)"
+        l1.signature shouldBe s"int(int,int)"
         l1.body.code shouldBe "{ return a + b; }"
       }
 
       inside(cpg.method.fullNameExact(lambda2FullName).isLambda.l) { case List(l2) =>
         l2.name shouldBe lambda2FullName
         l2.code should startWith("[] (string a, string b) -> string")
-        l2.signature shouldBe s"string $lambda2FullName (string,string)"
+        l2.signature shouldBe s"string(string,string)"
         l2.body.code shouldBe "{ return a + b; }"
       }
 
       inside(cpg.typeDecl(NamespaceTraversal.globalNamespaceName).head.bindsOut.l) {
         case List(bX: Binding, bY: Binding) =>
           bX.name shouldBe lambda1FullName
-          bX.signature shouldBe s"int $lambda1FullName (int,int)"
+          bX.signature shouldBe s"int(int,int)"
           inside(bX.refOut.l) { case List(method: Method) =>
             method.name shouldBe lambda1FullName
             method.fullName shouldBe lambda1FullName
-            method.signature shouldBe s"int $lambda1FullName (int,int)"
+            method.signature shouldBe s"int(int,int)"
           }
           bY.name shouldBe lambda2FullName
-          bY.signature shouldBe s"string $lambda2FullName (string,string)"
+          bY.signature shouldBe s"string(string,string)"
           inside(bY.refOut.l) { case List(method: Method) =>
             method.name shouldBe lambda2FullName
             method.fullName shouldBe lambda2FullName
-            method.signature shouldBe s"string $lambda2FullName (string,string)"
+            method.signature shouldBe s"string(string,string)"
           }
       }
     }
@@ -174,9 +173,9 @@ class AstCreationPassTests extends AstC2CpgSuite {
       )
       val lambdaName     = "<lambda>0"
       val lambdaFullName = s"Foo.$lambdaName"
-      val signature      = s"int $lambdaFullName (int,int)"
+      val signature      = s"int(int,int)"
 
-      cpg.member.name("x").order.l shouldBe List(1)
+      cpg.member.nameExact("x").order.l shouldBe List(1)
 
       inside(cpg.assignment.l) { case List(assignment1) =>
         inside(assignment1.astMinusRoot.isMethodRef.l) { case List(ref) =>
@@ -217,9 +216,9 @@ class AstCreationPassTests extends AstC2CpgSuite {
       )
       val lambdaName     = "<lambda>0"
       val lambdaFullName = s"A.B.Foo.$lambdaName"
-      val signature      = s"int $lambdaFullName (int,int)"
+      val signature      = s"int(int,int)"
 
-      cpg.member.name("x").order.l shouldBe List(1)
+      cpg.member.nameExact("x").order.l shouldBe List(1)
 
       inside(cpg.assignment.l) { case List(assignment1) =>
         inside(assignment1.astMinusRoot.isMethodRef.l) { case List(ref) =>
@@ -261,13 +260,13 @@ class AstCreationPassTests extends AstC2CpgSuite {
         "test.cpp"
       )
       val lambda1Name = "<lambda>0"
-      val signature1  = s"int $lambda1Name (int)"
+      val signature1  = s"int(int)"
       val lambda2Name = "<lambda>1"
-      val signature2  = s"int $lambda2Name (int)"
+      val signature2  = s"int(int)"
 
-      cpg.local.name("x").order.l shouldBe List(1)
-      cpg.local.name("foo1").order.l shouldBe List(3)
-      cpg.local.name("foo2").order.l shouldBe List(5)
+      cpg.local.nameExact("x").order.l shouldBe List(1)
+      cpg.local.nameExact("foo1").order.l shouldBe List(3)
+      cpg.local.nameExact("foo2").order.l shouldBe List(5)
 
       inside(cpg.assignment.l) { case List(assignment1, assignment2, assignment3) =>
         assignment1.order shouldBe 2
@@ -302,40 +301,43 @@ class AstCreationPassTests extends AstC2CpgSuite {
           }
       }
 
-      inside(cpg.call("x").l) { case List(lambda1call) =>
-        lambda1call.name shouldBe "x"
-        lambda1call.methodFullName shouldBe "x"
-        lambda1call.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
-        inside(lambda1call.astChildren.l) { case List(lit: Literal) =>
+      inside(cpg.call.nameExact("<operator>()").l) { case List(lambda1call, lambda2call) =>
+        lambda1call.name shouldBe "<operator>()"
+        lambda1call.methodFullName shouldBe "<operator>():int(int)"
+        lambda1call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
+        inside(lambda1call.astChildren.l) { case List(id: Identifier, lit: Literal) =>
+          id.code shouldBe "x"
           lit.code shouldBe "10"
         }
         inside(lambda1call.argument.l) { case List(lit: Literal) =>
           lit.code shouldBe "10"
         }
-        lambda1call.receiver.l shouldBe empty
-      }
+        inside(lambda1call.receiver.l) { case List(receiver: Identifier) =>
+          receiver.code shouldBe "x"
+        }
 
-      inside(cpg.call(lambda2Name).l) { case List(lambda2call) =>
-        lambda2call.name shouldBe lambda2Name
-        lambda2call.methodFullName shouldBe lambda2Name
-        // TODO: lambda2call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
+        lambda2call.name shouldBe "<operator>()"
+        lambda2call.methodFullName shouldBe "<operator>():int(int)"
+        lambda2call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
         inside(lambda2call.astChildren.l) { case List(ref: MethodRef, lit: Literal) =>
           ref.methodFullName shouldBe lambda2Name
           ref.code should startWith("[](int n) -> int")
           lit.code shouldBe "10"
         }
 
-        inside(lambda2call.argument.l) { case List(ref: MethodRef, lit: Literal) =>
+        inside(lambda2call.argument.l) { case List(lit: Literal) =>
+          lit.code shouldBe "10"
+        }
+        inside(lambda2call.receiver.l) { case List(ref: MethodRef) =>
           ref.methodFullName shouldBe lambda2Name
           ref.code should startWith("[](int n) -> int")
-          lit.code shouldBe "10"
         }
       }
     }
 
     "be correct for empty method" in {
       val cpg = code("void method(int x) { }")
-      inside(cpg.method.name("method").astChildren.l) {
+      inside(cpg.method.nameExact("method").astChildren.l) {
         case List(param: MethodParameterIn, _: Block, ret: MethodReturn) =>
           ret.typeFullName shouldBe "void"
           param.typeFullName shouldBe "int"
@@ -351,7 +353,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  free(x);
         |}
         |""".stripMargin)
-      inside(cpg.method.name("method").parameter.l) { case List(param: MethodParameterIn) =>
+      inside(cpg.method.nameExact("method").parameter.l) { case List(param: MethodParameterIn) =>
         param.typeFullName shouldBe "a_struct_type*"
         param.name shouldBe "a_struct"
         param.code shouldBe "a_struct_type *a_struct"
@@ -366,7 +368,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
        |  free(x);
        |}
        |""".stripMargin)
-      inside(cpg.method.name("method").parameter.l) { case List(param: MethodParameterIn) =>
+      inside(cpg.method.nameExact("method").parameter.l) { case List(param: MethodParameterIn) =>
         param.code shouldBe "struct date *date"
         param.typeFullName shouldBe "date*"
         param.name shouldBe "date"
@@ -381,7 +383,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
        |  free(x);
        |}
        |""".stripMargin)
-      inside(cpg.method.name("method").parameter.l) { case List(param: MethodParameterIn) =>
+      inside(cpg.method.nameExact("method").parameter.l) { case List(param: MethodParameterIn) =>
         param.typeFullName shouldBe "int[]"
         param.name shouldBe "x"
       }
@@ -395,7 +397,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
        |  free(x);
        |}
        |""".stripMargin)
-      inside(cpg.method.name("method").parameter.l) { case List(param: MethodParameterIn) =>
+      inside(cpg.method.nameExact("method").parameter.l) { case List(param: MethodParameterIn) =>
         param.typeFullName shouldBe "int[]"
         param.name shouldBe ""
       }
@@ -409,7 +411,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
        |  free(x);
        |}
        |""".stripMargin)
-      inside(cpg.method.name("method").parameter.l) { case List(param: MethodParameterIn) =>
+      inside(cpg.method.nameExact("method").parameter.l) { case List(param: MethodParameterIn) =>
         param.typeFullName shouldBe "a_struct_type[]"
         param.name shouldBe "a_struct"
       }
@@ -423,7 +425,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
       |  free(x);
       |}
       |""".stripMargin)
-      inside(cpg.method.name("method").parameter.l) { case List(param: MethodParameterIn) =>
+      inside(cpg.method.nameExact("method").parameter.l) { case List(param: MethodParameterIn) =>
         param.typeFullName shouldBe "a_struct_type[]*"
         param.name shouldBe "a_struct"
       }
@@ -435,7 +437,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  int local = 1;
         |}
         |""".stripMargin)
-      inside(cpg.method.name("method").block.astChildren.l) { case List(local: Local, call: Call) =>
+      inside(cpg.method.nameExact("method").block.astChildren.l) { case List(local: Local, call: Call) =>
         local.name shouldBe "local"
         local.typeFullName shouldBe "int"
         local.order shouldBe 1
@@ -464,7 +466,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
        |""".stripMargin,
         "test.cpp"
       )
-      inside(cpg.method.name("method").block.astChildren.l) { case List(_, call1: Call, _, call2: Call) =>
+      inside(cpg.method.nameExact("method").block.astChildren.l) { case List(_, call1: Call, _, call2: Call) =>
         call1.name shouldBe Operators.assignment
         inside(call2.astChildren.l) { case List(identifier: Identifier, call: Call) =>
           identifier.name shouldBe "is_std_array_v"
@@ -489,7 +491,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
           |void method(int x) {
           |  int local = x;
           |}""".stripMargin)
-      cpg.local.name("local").order.l shouldBe List(1)
+      cpg.local.nameExact("local").order.l shouldBe List(1)
       inside(cpg.method("method").block.astChildren.assignment.source.l) { case List(identifier: Identifier) =>
         identifier.code shouldBe "x"
         identifier.typeFullName shouldBe "int"
@@ -541,7 +543,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
       val localZ = cpg.local.order(3)
       localZ.name.l shouldBe List("z")
 
-      inside(cpg.method.name("method").ast.isCall.name(Operators.assignment).cast[OpNodes.Assignment].l) {
+      inside(cpg.method.nameExact("method").ast.isCall.nameExact(Operators.assignment).cast[OpNodes.Assignment].l) {
         case List(assignment) =>
           assignment.target.code shouldBe "x"
           assignment.source.start.isCall.name.l shouldBe List(Operators.addition)
@@ -563,7 +565,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  }
         |}
       """.stripMargin)
-      inside(cpg.method.name("method").block.astChildren.l) { case List(local: Local, innerBlock: Block) =>
+      inside(cpg.method.nameExact("method").block.astChildren.l) { case List(local: Local, innerBlock: Block) =>
         local.name shouldBe "x"
         local.order shouldBe 1
         inside(innerBlock.astChildren.l) { case List(localInBlock: Local) =>
@@ -581,7 +583,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  }
         |}
       """.stripMargin)
-      inside(cpg.method.name("method").block.astChildren.isControlStructure.l) {
+      inside(cpg.method.nameExact("method").block.astChildren.isControlStructure.l) {
         case List(controlStruct: ControlStructure) =>
           controlStruct.code shouldBe "while (x < 1)"
           controlStruct.controlStructureType shouldBe ControlStructureTypes.WHILE
@@ -603,7 +605,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  }
         |}
       """.stripMargin)
-      inside(cpg.method.name("method").controlStructure.l) { case List(controlStruct: ControlStructure) =>
+      inside(cpg.method.nameExact("method").controlStructure.l) { case List(controlStruct: ControlStructure) =>
         controlStruct.code shouldBe "if (x > 0)"
         controlStruct.controlStructureType shouldBe ControlStructureTypes.IF
         inside(controlStruct.condition.l) { case List(cndNode) =>
@@ -625,7 +627,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  }
         |}
       """.stripMargin)
-      inside(cpg.method.name("method").controlStructure.l) { case List(ifStmt, elseStmt) =>
+      inside(cpg.method.nameExact("method").controlStructure.l) { case List(ifStmt, elseStmt) =>
         ifStmt.controlStructureType shouldBe ControlStructureTypes.IF
         ifStmt.code shouldBe "if (x > 0)"
         elseStmt.controlStructureType shouldBe ControlStructureTypes.ELSE
@@ -650,7 +652,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
          |   int x = (true ? vlc_dccp_CreateFD : vlc_datagram_CreateFD)(fd);
          | }
       """.stripMargin)
-      inside(cpg.method.name("method").ast.isCall.name(Operators.conditional).l) { case List(call) =>
+      inside(cpg.method.nameExact("method").ast.isCall.nameExact(Operators.conditional).l) { case List(call) =>
         call.code shouldBe "true ? vlc_dccp_CreateFD : vlc_datagram_CreateFD"
       }
     }
@@ -665,7 +667,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
       // `cpg.method.call` will not work at this stage
       // either because there are no CONTAINS edges
 
-      inside(cpg.method.name("method").ast.isCall.name(Operators.conditional).l) { case List(call) =>
+      inside(cpg.method.nameExact("method").ast.isCall.nameExact(Operators.conditional).l) { case List(call) =>
         call.code shouldBe "(foo == 1) ? bar : 0"
         inside(call.argument.l) { case List(condition, trueBranch, falseBranch) =>
           condition.argumentIndex shouldBe 1
@@ -688,7 +690,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
        |}""".stripMargin,
         "file.cpp"
       )
-      inside(cpg.method.name("method").controlStructure.l) { case List(forStmt) =>
+      inside(cpg.method.nameExact("method").controlStructure.l) { case List(forStmt) =>
         forStmt.controlStructureType shouldBe ControlStructureTypes.FOR
         inside(forStmt.astChildren.order(1).l) { case List(ident: Identifier) =>
           ident.code shouldBe "list"
@@ -714,7 +716,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin,
         "test.cpp"
       )
-      inside(cpg.method.name("method").controlStructure.l) { case List(forStmt) =>
+      inside(cpg.method.nameExact("method").controlStructure.l) { case List(forStmt) =>
         forStmt.controlStructureType shouldBe ControlStructureTypes.FOR
         inside(forStmt.astChildren.order(1).l) { case List(ident) =>
           ident.code shouldBe "foo"
@@ -738,7 +740,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  }
         |}
       """.stripMargin)
-      inside(cpg.method.name("method").controlStructure.l) { case List(forStmt) =>
+      inside(cpg.method.nameExact("method").controlStructure.l) { case List(forStmt) =>
         forStmt.controlStructureType shouldBe ControlStructureTypes.FOR
         childContainsAssignments(forStmt, 1, List("x = 0", "y = 0"))
 
@@ -765,10 +767,10 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |}
       """.stripMargin)
       cpg.method
-        .name("method")
+        .nameExact("method")
         .ast
         .isCall
-        .name(Operators.preIncrement)
+        .nameExact(Operators.preIncrement)
         .argument(1)
         .code
         .l shouldBe List("x")
@@ -816,10 +818,10 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |}
       """.stripMargin)
       cpg.method
-        .name("method")
+        .nameExact("method")
         .ast
         .isCall
-        .name("foo")
+        .nameExact("foo")
         .argument(1)
         .code
         .l shouldBe List("x")
@@ -832,7 +834,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  foo(x);
         |}
       """.stripMargin)
-      inside(cpg.method.name("method").ast.isCall.l) { case List(call: Call) =>
+      inside(cpg.method.nameExact("method").ast.isCall.l) { case List(call: Call) =>
         call.code shouldBe "foo(x)"
         call.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
         val rec = call.receiver.l
@@ -847,7 +849,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  x.a;
         |}
       """.stripMargin)
-      inside(cpg.method.name("method").ast.isCall.name(Operators.fieldAccess).l) { case List(call) =>
+      inside(cpg.method.nameExact("method").ast.isCall.nameExact(Operators.fieldAccess).l) { case List(call) =>
         val arg1 = call.argument(1)
         val arg2 = call.argument(2)
         arg1.isIdentifier shouldBe true
@@ -866,7 +868,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  x->a;
         |}
       """.stripMargin)
-      inside(cpg.method.name("method").ast.isCall.name(Operators.indirectFieldAccess).l) { case List(call) =>
+      inside(cpg.method.nameExact("method").ast.isCall.nameExact(Operators.indirectFieldAccess).l) { case List(call) =>
         val arg1 = call.argument(1)
         val arg2 = call.argument(2)
         arg1.isIdentifier shouldBe true
@@ -885,7 +887,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
           |  return (x->a)(1, 2);
           |}
       """.stripMargin)
-      inside(cpg.method.name("method").ast.isCall.name(Operators.indirectFieldAccess).l) { case List(call) =>
+      inside(cpg.method.nameExact("method").ast.isCall.nameExact(Operators.indirectFieldAccess).l) { case List(call) =>
         val arg1 = call.argument(1)
         val arg2 = call.argument(2)
         arg1.isIdentifier shouldBe true
@@ -906,9 +908,9 @@ class AstCreationPassTests extends AstC2CpgSuite {
        |  return (*strLenFunc)("123");
        |}
       """.stripMargin)
-      inside(cpg.method.name("main").ast.isCall.codeExact("(*strLenFunc)(\"123\")").l) { case List(call) =>
-        call.name shouldBe "*strLenFunc"
-        call.methodFullName shouldBe "*strLenFunc"
+      inside(cpg.method.nameExact("main").ast.isCall.codeExact("(*strLenFunc)(\"123\")").l) { case List(call) =>
+        call.name shouldBe Defines.OperatorPointerCall
+        call.methodFullName shouldBe Defines.OperatorPointerCall
       }
     }
 
@@ -920,13 +922,13 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |}
       """.stripMargin)
       cpg.method
-        .name("method")
+        .nameExact("method")
         .ast
         .isCall
-        .name(Operators.sizeOf)
+        .nameExact(Operators.sizeOf)
         .argument(1)
         .isIdentifier
-        .name("a")
+        .nameExact("a")
         .argumentIndex(1)
         .size shouldBe 1
     }
@@ -939,13 +941,13 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |}
       """.stripMargin)
       cpg.method
-        .name("method")
+        .nameExact("method")
         .ast
         .isCall
-        .name(Operators.sizeOf)
+        .nameExact(Operators.sizeOf)
         .argument(1)
         .isIdentifier
-        .name("a")
+        .nameExact("a")
         .argumentIndex(1)
         .size shouldBe 1
     }
@@ -959,13 +961,13 @@ class AstCreationPassTests extends AstC2CpgSuite {
         "file.cpp"
       )
       cpg.method
-        .name("method")
+        .nameExact("method")
         .ast
         .isCall
-        .name(Operators.sizeOf)
+        .nameExact(Operators.sizeOf)
         .argument(1)
         .isIdentifier
-        .name("int")
+        .nameExact("int")
         .argumentIndex(1)
         .size shouldBe 1
     }
@@ -978,7 +980,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
        | void method() {
        | };
       """.stripMargin)
-      cpg.method.name("method").size shouldBe 1
+      cpg.method.nameExact("method").size shouldBe 1
     }
 
     "be correct for empty named struct" in {
@@ -986,14 +988,14 @@ class AstCreationPassTests extends AstC2CpgSuite {
        | struct foo {
        | };
       """.stripMargin)
-      cpg.typeDecl.name("foo").size shouldBe 1
+      cpg.typeDecl.nameExact("foo").size shouldBe 1
     }
 
     "be correct for struct decl" in {
       val cpg = code("""
        | struct foo;
       """.stripMargin)
-      cpg.typeDecl.name("foo").size shouldBe 1
+      cpg.typeDecl.nameExact("foo").size shouldBe 1
     }
 
     "be correct for named struct with single field" in {
@@ -1003,10 +1005,10 @@ class AstCreationPassTests extends AstC2CpgSuite {
        | };
       """.stripMargin)
       cpg.typeDecl
-        .name("foo")
+        .nameExact("foo")
         .member
         .code("x")
-        .name("x")
+        .nameExact("x")
         .typeFullName("int")
         .size shouldBe 1
     }
@@ -1019,7 +1021,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |   int z;
         | };
       """.stripMargin)
-      cpg.typeDecl.name("foo").member.code.toSetMutable shouldBe Set("x", "y", "z")
+      cpg.typeDecl.nameExact("foo").member.code.toSetMutable shouldBe Set("x", "y", "z")
     }
 
     "be correct for named struct with nested struct" in {
@@ -1034,12 +1036,12 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |   };
         | };
       """.stripMargin)
-      inside(cpg.typeDecl.name("foo").l) { case List(fooStruct: TypeDecl) =>
-        fooStruct.member.name("x").size shouldBe 1
+      inside(cpg.typeDecl.nameExact("foo").l) { case List(fooStruct: TypeDecl) =>
+        fooStruct.member.nameExact("x").size shouldBe 1
         inside(fooStruct.astChildren.isTypeDecl.l) { case List(barStruct: TypeDecl) =>
-          barStruct.member.name("y").size shouldBe 1
+          barStruct.member.nameExact("y").size shouldBe 1
           inside(barStruct.astChildren.isTypeDecl.l) { case List(foo2Struct: TypeDecl) =>
-            foo2Struct.member.name("z").size shouldBe 1
+            foo2Struct.member.nameExact("z").size shouldBe 1
           }
         }
       }
@@ -1050,7 +1052,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |typedef struct foo {
         |} abc;
       """.stripMargin)
-      cpg.typeDecl.name("foo").aliasTypeFullName("abc").size shouldBe 1
+      cpg.typeDecl.nameExact("foo").aliasTypeFullName("abc").size shouldBe 1
     }
 
     "be correct for struct with local" in {
@@ -1064,7 +1066,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         x.name shouldBe "x"
         x.typeFullName shouldBe "int"
       }
-      cpg.typeDecl.name("B").size shouldBe 1
+      cpg.typeDecl.nameExact("B").size shouldBe 1
       inside(cpg.local.l) { case List(localA, localB) =>
         localA.name shouldBe "a"
         localA.typeFullName shouldBe "A"
@@ -1101,10 +1103,10 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |	i = 0;
         |}
       """.stripMargin)
-      val List(localMyOtherFs) = cpg.method("main").local.name("my_other_fs").l
+      val List(localMyOtherFs) = cpg.method("main").local.nameExact("my_other_fs").l
       localMyOtherFs.order shouldBe 2
       localMyOtherFs.referencingIdentifiers.name.l shouldBe List("my_other_fs")
-      val List(localMyFs) = cpg.local.name("my_fs").l
+      val List(localMyFs) = cpg.local.nameExact("my_fs").l
       localMyFs.order shouldBe 4
       localMyFs.referencingIdentifiers.name.l shouldBe List("my_fs")
       cpg.typeDecl.nameNot(NamespaceTraversal.globalNamespaceName).fullName.l.distinct shouldBe List("filesystem")
@@ -1115,7 +1117,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |typedef enum foo {
         |} abc;
       """.stripMargin)
-      cpg.typeDecl.name("foo").aliasTypeFullName("abc").size shouldBe 1
+      cpg.typeDecl.nameExact("foo").aliasTypeFullName("abc").size shouldBe 1
     }
 
     "be correct for classes with friends" in {
@@ -1147,34 +1149,8 @@ class AstCreationPassTests extends AstC2CpgSuite {
         "file.cpp"
       )
       cpg.typeDecl
-        .name("Derived")
+        .nameExact("Derived")
         .count(_.inheritsFromTypeFullName == List("Base")) shouldBe 1
-    }
-
-    "be correct for field access" in {
-      val cpg = code(
-        """
-        |class Foo {
-        |public:
-        | char x;
-        | int method(){return i;};
-        |};
-        |
-        |Foo f;
-        |int x = f.method();
-      """.stripMargin,
-        "file.cpp"
-      )
-      cpg.typeDecl
-        .name("Foo")
-        .l
-        .size shouldBe 1
-
-      inside(cpg.call.code("f.method()").l) { case List(call: Call) =>
-        call.methodFullName shouldBe Operators.fieldAccess
-        call.argument(1).code shouldBe "f"
-        call.argument(2).code shouldBe "method"
-      }
     }
 
     "be correct for type initializer expression" in {
@@ -1184,7 +1160,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
       """.stripMargin,
         "file.cpp"
       )
-      inside(cpg.call.name(Operators.cast).l) { case List(call: Call) =>
+      inside(cpg.call.nameExact(Operators.cast).l) { case List(call: Call) =>
         call.argument(2).code shouldBe "{ 1 }"
         call.argument(1).code shouldBe "int"
       }
@@ -1323,7 +1299,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         "file.cpp"
       )
       cpg.typeDecl
-        .name("Y")
+        .nameExact("Y")
         .l
         .size shouldBe 1
     }
@@ -1342,7 +1318,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         "file.cpp"
       )
       cpg.method
-        .name("f")
+        .nameExact("f")
         .l
         .size shouldBe 1
     }
@@ -1375,10 +1351,10 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |}
         |""".stripMargin)
       cpg.method
-        .name("foo")
+        .nameExact("foo")
         .ast
         .isCall
-        .name("bar")
+        .nameExact("bar")
         .argument
         .code("x")
         .size shouldBe 1
@@ -1391,16 +1367,14 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |}
         |""".stripMargin)
       // TODO no step class defined for `Return` nodes
-      cpg.method.name("d").ast.isReturn.astChildren.order(1).isCall.code.l shouldBe List("x * 2")
+      cpg.method.nameExact("d").ast.isReturn.astChildren.order(1).isCall.code.l shouldBe List("x * 2")
       cpg.method
-        .name("d")
+        .nameExact("d")
         .ast
         .isReturn
-        .outE(EdgeTypes.ARGUMENT)
+        .out(EdgeTypes.ARGUMENT)
         .head
-        .inNode()
-        .get
-        .asInstanceOf[CallDb]
+        .asInstanceOf[Call]
         .code shouldBe "x * 2"
     }
 
@@ -1410,7 +1384,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  return x * 2;
         |}
         |""".stripMargin)
-      cpg.call.name(Operators.multiplication).code.l shouldBe List("x * 2")
+      cpg.call.nameExact(Operators.multiplication).code.l shouldBe List("x * 2")
     }
 
     "be correct for unary method calls" in {
@@ -1419,7 +1393,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  return !b;
         |}
         |""".stripMargin)
-      cpg.call.name(Operators.logicalNot).argument(1).code.l shouldBe List("b")
+      cpg.call.nameExact(Operators.logicalNot).argument(1).code.l shouldBe List("b")
     }
 
     "be correct for unary expr" in {
@@ -1430,7 +1404,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |      return end ? (int)(end - str) : max;
         |    }
         |""".stripMargin)
-      inside(cpg.call.name(Operators.cast).astChildren.l) { case List(tpe: Unknown, call: Call) =>
+      inside(cpg.call.nameExact(Operators.cast).astChildren.l) { case List(tpe: Unknown, call: Call) =>
         call.code shouldBe "end - str"
         call.argumentIndex shouldBe 2
         tpe.code shouldBe "int"
@@ -1446,8 +1420,8 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  return pos;
         |}
         |""".stripMargin)
-      cpg.call.name(Operators.postIncrement).argument(1).code("x").size shouldBe 1
-      cpg.call.name(Operators.postDecrement).argument(1).code("x").size shouldBe 1
+      cpg.call.nameExact(Operators.postIncrement).argument(1).code("x").size shouldBe 1
+      cpg.call.nameExact(Operators.postDecrement).argument(1).code("x").size shouldBe 1
     }
 
     "be correct for conditional expressions containing calls" in {
@@ -1456,7 +1430,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  return x > 0 ? x : -x;
         |}
         |""".stripMargin)
-      cpg.call.name(Operators.conditional).argument.code.l shouldBe List("x > 0", "x", "-x")
+      cpg.call.nameExact(Operators.conditional).argument.code.l shouldBe List("x > 0", "x", "-x")
     }
 
     "be correct for sizeof expressions" in {
@@ -1465,7 +1439,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  return sizeof(int);
         |}
         |""".stripMargin)
-      inside(cpg.call.name(Operators.sizeOf).argument(1).l) { case List(i: Identifier) =>
+      inside(cpg.call.nameExact(Operators.sizeOf).argument(1).l) { case List(i: Identifier) =>
         i.code shouldBe "int"
         i.name shouldBe "int"
       }
@@ -1482,7 +1456,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  return x[0];
         |}
         |""".stripMargin)
-      cpg.call.name(Operators.indirectIndexAccess).argument.code.l shouldBe List("x", "0")
+      cpg.call.nameExact(Operators.indirectIndexAccess).argument.code.l shouldBe List("x", "0")
     }
 
     "be correct for type casts" in {
@@ -1491,7 +1465,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  return (int) x;
         |}
         |""".stripMargin)
-      cpg.call.name(Operators.cast).argument.code.l shouldBe List("int", "x")
+      cpg.call.nameExact(Operators.cast).argument.code.l shouldBe List("int", "x")
     }
 
     "be correct for 'new' array" in {
@@ -1505,7 +1479,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         "file.cpp"
       )
       // TODO: "<operator>.new" is not part of Operators
-      cpg.call.name("<operator>.new").code("new int\\[n\\]").argument.code("int").size shouldBe 1
+      cpg.call.nameExact("<operator>.new").code("new int\\[n\\]").argument.code("int").size shouldBe 1
     }
 
     "be correct for 'new' with explicit identifier" in {
@@ -1519,7 +1493,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         "file.cpp"
       )
       // TODO: "<operator>.new" is not part of Operators
-      val List(newCall)         = cpg.call.name("<operator>.new").l
+      val List(newCall)         = cpg.call.nameExact("<operator>.new").l
       val List(string, hi, buf) = newCall.argument.l
       string.argumentIndex shouldBe 1
       string.code shouldBe "string"
@@ -1533,15 +1507,59 @@ class AstCreationPassTests extends AstC2CpgSuite {
     "be correct for array size" in {
       val cpg = code("""
         |int main() {
-        |  char buf[256];
-        |  printf("%s", buf);
+        |  char bufA[256];
+        |  char bufB[1+2];
         |}
         |""".stripMargin)
-      inside(cpg.local.l) { case List(buf: Local) =>
-        buf.typeFullName shouldBe "char[256]"
-        buf.name shouldBe "buf"
-        buf.code shouldBe "char[256] buf"
+      inside(cpg.call.nameExact(Operators.assignment).l) { case List(bufCallAAssign: Call, bufCallBAssign: Call) =>
+        val List(bufAId, bufCallA) = bufCallAAssign.argument.l
+        bufAId.code shouldBe "bufA"
+        val List(bufBId, bufCallB) = bufCallBAssign.argument.l
+        bufBId.code shouldBe "bufB"
+
+        inside(cpg.call.nameExact(Operators.alloc).l) { case List(bufCallAAlloc: Call, bufCallBAlloc: Call) =>
+          bufCallAAlloc shouldBe bufCallA
+          bufCallBAlloc shouldBe bufCallB
+
+          bufCallAAlloc.code shouldBe "bufA[256]"
+          bufCallAAlloc.typeFullName shouldBe "char[256]"
+          val List(argA) = bufCallAAlloc.argument.isLiteral.l
+          argA.code shouldBe "256"
+
+          bufCallBAlloc.code shouldBe "bufB[1+2]"
+          bufCallBAlloc.typeFullName shouldBe "char[1+2]"
+          val List(argB) = bufCallBAlloc.argument.isCall.l
+          argB.name shouldBe Operators.addition
+          argB.code shouldBe "1+2"
+          val List(one, two) = argB.argument.isLiteral.l
+          one.code shouldBe "1"
+          two.code shouldBe "2"
+        }
       }
+
+      inside(cpg.local.l) { case List(bufA: Local, bufB: Local) =>
+        bufA.typeFullName shouldBe "char[256]"
+        bufA.name shouldBe "bufA"
+        bufA.code shouldBe "char[256] bufA"
+
+        bufB.typeFullName shouldBe "char[1+2]"
+        bufB.name shouldBe "bufB"
+        bufB.code shouldBe "char[1+2] bufB"
+      }
+    }
+
+    "be correct for empty array init" in {
+      val cpg = code("""
+        |void other(void) {
+        |  int i = 0;
+        |  char str[] = "abc";
+        |  printf("%d %s", i, str);
+        |}
+        |""".stripMargin)
+      val List(str1, str2) = cpg.identifier.nameExact("str").l
+      str1.typeFullName shouldBe "char[]"
+      str2.typeFullName shouldBe "char[]"
+      cpg.call.nameExact(Operators.alloc) shouldBe empty
     }
 
     "be correct for array init" in {
@@ -1681,6 +1699,27 @@ class AstCreationPassTests extends AstC2CpgSuite {
       }
     }
 
+    "be correct for method refs from function pointers" in {
+      val cpg = code("""
+          |uid_t getuid(void);
+          |void someFunction() {}
+          |void checkFunctionPointerComparison() {
+          |  if (getuid == 0 || someFunction == 0) {}
+          |}
+          |""".stripMargin)
+      val List(methodA) = cpg.method.fullNameExact("getuid").l
+      val List(methodB) = cpg.method.fullNameExact("someFunction").l
+      val List(methodC) = cpg.method.fullNameExact("checkFunctionPointerComparison").l
+      inside(cpg.call.nameExact(Operators.equals).l) { case List(callA: Call, callB: Call) =>
+        val getuidRef = callA.argument(1).asInstanceOf[MethodRef]
+        getuidRef.methodFullName shouldBe methodA.fullName
+        getuidRef.typeFullName shouldBe methodA.methodReturn.typeFullName
+        val someFunctionRef = callB.argument(1).asInstanceOf[MethodRef]
+        someFunctionRef.methodFullName shouldBe methodB.fullName
+        someFunctionRef.typeFullName shouldBe methodB.methodReturn.typeFullName
+      }
+    }
+
     "be correct for locals for array init" in {
       val cpg = code("""
         |bool x[2] = { TRUE, FALSE };
@@ -1761,7 +1800,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.name("<operator>.new").codeExact("new Foo(n, 42)").argument.code("Foo").size shouldBe 1
+      cpg.call.nameExact("<operator>.new").codeExact("new Foo(n, 42)").argument.code("Foo").size shouldBe 1
     }
 
     "be correct for simple 'delete'" in {
@@ -1773,7 +1812,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.name(Operators.delete).code("delete n").argument.code("n").size shouldBe 1
+      cpg.call.nameExact(Operators.delete).code("delete n").argument.code("n").size shouldBe 1
     }
 
     "be correct for array 'delete'" in {
@@ -1785,7 +1824,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.name(Operators.delete).codeExact("delete[] n").argument.code("n").size shouldBe 1
+      cpg.call.nameExact(Operators.delete).codeExact("delete[] n").argument.code("n").size shouldBe 1
     }
 
     "be correct for const_cast" in {
@@ -1798,7 +1837,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.name(Operators.cast).codeExact("const_cast<int>(n)").argument.code.l shouldBe List("int", "n")
+      cpg.call.nameExact(Operators.cast).codeExact("const_cast<int>(n)").argument.code.l shouldBe List("int", "n")
     }
 
     "be correct for static_cast" in {
@@ -1811,7 +1850,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.name(Operators.cast).codeExact("static_cast<int>(n)").argument.code.l shouldBe List("int", "n")
+      cpg.call.nameExact(Operators.cast).codeExact("static_cast<int>(n)").argument.code.l shouldBe List("int", "n")
     }
 
     "be correct for dynamic_cast" in {
@@ -1824,7 +1863,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.name(Operators.cast).codeExact("dynamic_cast<int>(n)").argument.code.l shouldBe List("int", "n")
+      cpg.call.nameExact(Operators.cast).codeExact("dynamic_cast<int>(n)").argument.code.l shouldBe List("int", "n")
     }
 
     "be correct for reinterpret_cast" in {
@@ -1837,7 +1876,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.name(Operators.cast).codeExact("reinterpret_cast<int>(n)").argument.code.l shouldBe List("int", "n")
+      cpg.call.nameExact(Operators.cast).codeExact("reinterpret_cast<int>(n)").argument.code.l shouldBe List("int", "n")
     }
 
     "be correct for designated initializers in plain C" in {
@@ -1846,14 +1885,14 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  int a[3] = { [1] = 5, [2] = 10, [3 ... 9] = 15 };
         |};
       """.stripMargin)
-      inside(cpg.assignment.head.astChildren.l) { case List(ident: Identifier, call: Call) =>
+      inside(cpg.assignment.l(1).astChildren.l) { case List(ident: Identifier, call: Call) =>
         ident.typeFullName shouldBe "int[3]"
         ident.order shouldBe 1
         call.code shouldBe "{ [1] = 5, [2] = 10, [3 ... 9] = 15 }"
         call.order shouldBe 2
         call.name shouldBe Operators.arrayInitializer
         call.methodFullName shouldBe Operators.arrayInitializer
-        val children = call.astMinusRoot.isCall.name(Operators.assignment).l
+        val children = call.astMinusRoot.isCall.nameExact(Operators.assignment).l
         val args     = call.argument.astChildren.l
         inside(children) { case List(call1, call2, call3) =>
           call1.code shouldBe "[1] = 5"
@@ -1886,14 +1925,14 @@ class AstCreationPassTests extends AstC2CpgSuite {
       """.stripMargin,
         "test.cpp"
       )
-      inside(cpg.assignment.head.astChildren.l) { case List(ident: Identifier, call: Call) =>
+      inside(cpg.assignment.l(1).astChildren.l) { case List(ident: Identifier, call: Call) =>
         ident.typeFullName shouldBe "int[3]"
         ident.order shouldBe 1
         call.code shouldBe "{ [1] = 5, [2] = 10, [3 ... 9] = 15 }"
         call.order shouldBe 2
         call.name shouldBe Operators.arrayInitializer
         call.methodFullName shouldBe Operators.arrayInitializer
-        val children = call.astMinusRoot.isCall.name(Operators.assignment).l
+        val children = call.astMinusRoot.isCall.nameExact(Operators.assignment).l
         val args     = call.argument.astChildren.l
         inside(children) { case List(call1, call2, call3) =>
           call1.code shouldBe "[1] = 5"
@@ -2070,8 +2109,8 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |   x = 1;
         | }
       """.stripMargin)
-      cpg.method.name("method").lineNumber.l shouldBe List(6)
-      cpg.method.name("method").block.assignment.lineNumber.l shouldBe List(8)
+      cpg.method.nameExact("method").lineNumber.l shouldBe List(6)
+      cpg.method.nameExact("method").block.assignment.lineNumber.l shouldBe List(8)
     }
 
     // for https://github.com/ShiftLeftSecurity/codepropertygraph/issues/1321
@@ -2146,9 +2185,9 @@ class AstCreationPassTests extends AstC2CpgSuite {
       val cpg          = code("class Foo { char (*(*x())[5])() }", "test.cpp")
       val List(method) = cpg.method.nameNot("<global>").l
       method.name shouldBe "x"
-      method.fullName shouldBe "Foo.x"
+      method.fullName shouldBe "Foo.x:char(*(*)[5])()()"
       method.code shouldBe "char (*(*x())[5])()"
-      method.signature shouldBe "char Foo.x ()"
+      method.signature shouldBe "char()"
     }
 
     "be consistent with pointer types" in {
@@ -2158,10 +2197,10 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  char *x;
         |}
         |""".stripMargin)
-      cpg.member.name("z").typeFullName.head shouldBe "char*"
-      cpg.parameter.name("y").typeFullName.head shouldBe "char*"
-      cpg.local.name("x").typeFullName.head shouldBe "char*"
-      cpg.method.name("a").methodReturn.typeFullName.head shouldBe "char*"
+      cpg.member.nameExact("z").typeFullName.head shouldBe "char*"
+      cpg.parameter.nameExact("y").typeFullName.head shouldBe "char*"
+      cpg.local.nameExact("x").typeFullName.head shouldBe "char*"
+      cpg.method.nameExact("a").methodReturn.typeFullName.head shouldBe "char*"
     }
 
     "be consistent with array types" in {
@@ -2171,9 +2210,9 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  char x[1];
         |}
         |""".stripMargin)
-      cpg.member.name("z").typeFullName.head shouldBe "char[1]"
-      cpg.parameter.name("y").typeFullName.head shouldBe "char[1]"
-      cpg.local.name("x").typeFullName.head shouldBe "char[1]"
+      cpg.member.nameExact("z").typeFullName.head shouldBe "char[1]"
+      cpg.parameter.nameExact("y").typeFullName.head shouldBe "char[1]"
+      cpg.local.nameExact("x").typeFullName.head shouldBe "char[1]"
     }
 
     "be consistent with long number types" in {
@@ -2187,7 +2226,9 @@ class AstCreationPassTests extends AstC2CpgSuite {
       val List(bufLocal) = cpg.local.nameExact("buf").l
       bufLocal.typeFullName shouldBe "char[0x111111111111111]"
       bufLocal.code shouldBe "char[0x111111111111111] buf"
-      cpg.literal.code.l shouldBe List("0x111111111111111")
+      val List(bufAllocCall) = cpg.call.nameExact(Operators.alloc).l
+      bufAllocCall.code shouldBe "buf[BUFSIZE]"
+      bufAllocCall.argument.ast.isLiteral.code.l shouldBe List("0x111111111111111")
     }
   }
 }

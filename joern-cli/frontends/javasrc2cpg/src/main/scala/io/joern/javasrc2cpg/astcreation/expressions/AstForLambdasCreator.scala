@@ -17,13 +17,12 @@ import io.joern.javasrc2cpg.util.BindingTable.createBindingTable
 import io.joern.javasrc2cpg.util.Util.{composeMethodFullName, composeMethodLikeSignature, composeUnresolvedSignature}
 import io.joern.javasrc2cpg.util.{BindingTable, BindingTableAdapterForLambdas, LambdaBindingInfo, NameConstants}
 import io.joern.x2cpg.utils.AstPropertiesUtil.*
-import io.joern.x2cpg.utils.NodeBuilders
+import io.joern.x2cpg.utils.{IntervalKeyPool, NodeBuilders}
 import io.joern.x2cpg.utils.NodeBuilders.*
 import io.joern.x2cpg.{Ast, Defines}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.nodes.MethodParameterIn.PropertyDefaults as ParameterDefaults
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, EvaluationStrategies, ModifierTypes}
-import io.shiftleft.passes.IntervalKeyPool
 import org.slf4j.LoggerFactory
 
 import scala.jdk.CollectionConverters.*
@@ -352,8 +351,7 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
         // this will yield the erased types which is why the actual lambda
         // expression parameters are only used as a fallback.
         lambdaParameters
-          .map(_.getType)
-          .map(typeInfoCalc.fullName)
+          .flatMap(param => tryWithSafeStackOverflow(typeInfoCalc.fullName(param.getType)).toOption)
     }
 
     if (paramTypesList.sizeIs != lambdaParameters.size) {
@@ -368,7 +366,8 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
         val typeFullName = maybeType.getOrElse(TypeConstants.Any)
         val code         = s"$typeFullName $name"
         val evalStrat =
-          if (param.getType.isPrimitiveType) EvaluationStrategies.BY_VALUE else EvaluationStrategies.BY_SHARING
+          if (tryWithSafeStackOverflow(param.getType).toOption.exists(_.isPrimitiveType)) EvaluationStrategies.BY_VALUE
+          else EvaluationStrategies.BY_SHARING
         val paramNode = NewMethodParameterIn()
           .name(name)
           .index(idx + 1)
