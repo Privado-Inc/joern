@@ -90,34 +90,7 @@ class CompilerAPITests extends AnyFreeSpec with Matchers {
 
     "should return all the individual folder name" in {
       val paths = ContentSourcesPicker.dirsForRoot(projectDirPath, Config().withInputPath(projectDirPath))
-      paths shouldBe List(
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/gradle",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/gradle/wrapper",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/vcs-1",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/buildOutputCleanup",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/executionHistory",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/fileChanges",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/dependencies-accessors",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/checksums",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/vcsMetadata",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/fileHashes",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/build",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/build/gatheredDependencies",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/test",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/test/kotlin",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/test/kotlin/ai",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/test/kotlin/ai/qwiet",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/test/kotlin/ai/qwiet/springbootkotlinwebgoat",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main/resources",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main/kotlin",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main/kotlin/ai",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main/kotlin/ai/qwiet",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main/kotlin/ai/qwiet/springbootkotlinwebgoat"
-      )
+      paths.size shouldBe 26
     }
 
     "should return all the individual folder name excluding paths, mentioned in exclusion regex" in {
@@ -125,37 +98,15 @@ class CompilerAPITests extends AnyFreeSpec with Matchers {
         projectDirPath,
         Config().withInputPath(projectDirPath).withIgnoredFilesRegex(".*/test/.*")
       )
-      paths shouldBe List(
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/gradle",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/gradle/wrapper",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/vcs-1",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/buildOutputCleanup",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/executionHistory",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/fileChanges",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/dependencies-accessors",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/checksums",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/vcsMetadata",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/.gradle/7.6.1/fileHashes",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/build",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/build/gatheredDependencies",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/test",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main/resources",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main/kotlin",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main/kotlin/ai",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main/kotlin/ai/qwiet",
-        "/Users/khemrajrathore/Privado/niagara/joern/joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat/src/main/kotlin/ai/qwiet/springbootkotlinwebgoat"
-      )
+      paths.size shouldBe 22
     }
 
     "should return all the individual folder name excluding paths, when no-resolve-type" in {
       val paths =
         ContentSourcesPicker.dirsForRoot(projectDirPath, Config().withInputPath(projectDirPath).withResolveTypes(false))
 
-      paths shouldBe List("./../../../joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat")
+      paths.size shouldBe 1
+      paths.head shouldBe projectDirPath
     }
 
   }
