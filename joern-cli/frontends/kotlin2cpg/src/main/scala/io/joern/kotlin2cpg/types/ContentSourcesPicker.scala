@@ -1,7 +1,9 @@
 package io.joern.kotlin2cpg.types
 
-import better.files.{File => BFile}
+import better.files.File as BFile
+import io.joern.kotlin2cpg.Config
 import io.joern.kotlin2cpg.DefaultContentRootJarPath
+import io.joern.x2cpg.SourceFiles.toRelativePath
 
 object ContentSourcesPicker {
 
@@ -18,13 +20,13 @@ object ContentSourcesPicker {
   //  The list of paths which are acceptable for the current version of the Kotlin compiler API is:
   //  `Seq("dir1/dir2/dir3")` and nothing else.
 
-  def dirsForRoot(rootDir: String): Seq[String] = {
+  def dirsForRoot(rootDir: String, config: Config): Seq[String] = {
     val dir        = BFile(rootDir)
     val hasSubDirs = dir.list.exists(_.isDirectory)
-    if (!hasSubDirs) {
+    if (!hasSubDirs || !config.resolveTypes) {
       return Seq(rootDir)
     }
-    dir.listRecursively
+    val dirPaths = dir.listRecursively
       .filter(_.isDirectory)
       .flatMap { f =>
         val hasKtsFile = f.listRecursively.exists { f => f.hasExtension && f.pathAsString.endsWith(".kts") }
@@ -36,5 +38,9 @@ object ContentSourcesPicker {
       }
       .flatten
       .toSeq
+    dirPaths.filterNot(path =>
+      val t = toRelativePath(path, config.inputPath)
+      config.ignoredFilesRegex.matches(toRelativePath(path, config.inputPath))
+    )
   }
 }

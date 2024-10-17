@@ -160,8 +160,8 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
     defaultContentRootJars
   }
 
-  private def gatherDirsForSourcesToCompile(sourceDir: String): Seq[String] = {
-    val dirsForSourcesToCompile = ContentSourcesPicker.dirsForRoot(sourceDir)
+  private def gatherDirsForSourcesToCompile(sourceDir: String, config: Config): Seq[String] = {
+    val dirsForSourcesToCompile = ContentSourcesPicker.dirsForRoot(sourceDir, config)
     if (dirsForSourcesToCompile.isEmpty) {
       logger.warn("The list of directories to analyze is empty.")
     }
@@ -213,9 +213,9 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
       val filesWithJavaExtension  = gatherFilesWithJavaExtension(sourceDir, config)
       val mavenCoordinates        = gatherMavenCoordinates(sourceDir, config)
       val defaultContentRootJars  = gatherDefaultContentRootJars(sourceDir, config, filesWithJavaExtension)
-      val dirsForSourcesToCompile = gatherDirsForSourcesToCompile(sourceDir)
+      val dirsForSourcesToCompile = gatherDirsForSourcesToCompile(sourceDir, config)
       val environment = CompilerAPI.makeEnvironment(
-        Seq(sourceDir),
+        dirsForSourcesToCompile,
         filesWithJavaExtension,
         defaultContentRootJars,
         new ErrorLoggingMessageCollector
