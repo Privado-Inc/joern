@@ -97,9 +97,9 @@ class CompilerAPITests extends AnyFreeSpec with Matchers {
       import java.io.File
       val paths = ContentSourcesPicker.dirsForRoot(
         projectDirPath,
-        Config().withInputPath(projectDirPath).withIgnoredFilesRegex(s".*${File.separator}test${File.separator}.*")
+        Config().withInputPath(projectDirPath).withIgnoredFilesRegex(s".*test.*")
       )
-      paths.size shouldBe 22
+      paths.size shouldBe 21
     }
 
     "should return all the individual folder name excluding paths, when no-resolve-type" in {
