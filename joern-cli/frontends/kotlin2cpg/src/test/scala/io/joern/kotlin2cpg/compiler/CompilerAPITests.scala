@@ -4,6 +4,7 @@ import better.files.File
 import io.joern.kotlin2cpg.Config
 import io.joern.kotlin2cpg.DefaultContentRootJarPath
 import io.joern.kotlin2cpg.Kotlin2Cpg
+import io.joern.kotlin2cpg.types.ContentSourcesPicker
 import io.joern.x2cpg.utils.ExternalCommand
 import io.joern.x2cpg.Defines
 import io.shiftleft.semanticcpg.language.*
@@ -75,7 +76,7 @@ class CompilerAPITests extends AnyFreeSpec with Matchers {
       ProjectRoot.relativise("joern-cli/frontends/kotlin2cpg/src/test/resources/code/springboot-kotlin-webgoat")
     val projectDependenciesPath = Paths.get(projectDirPath, "build", "gatheredDependencies")
 
-    "should not contain methods with unresolved types/namespaces" ignore {
+    "should not contain methods with unresolved types/namespaces" in {
       val command =
         if (scala.util.Properties.isWin) "cmd.exe /C gradlew.bat gatherDependencies" else "./gradlew gatherDependencies"
       ExternalCommand.run(command, projectDirPath) shouldBe Symbol("success")
@@ -85,6 +86,28 @@ class CompilerAPITests extends AnyFreeSpec with Matchers {
       }
       cpg.method.fullName(s".*${Defines.UnresolvedNamespace}.*") shouldBe empty
       cpg.method.signature(s".*${Defines.UnresolvedNamespace}.*") shouldBe empty
+    }
+
+    "should return all the individual folder name" in {
+      val paths = ContentSourcesPicker.dirsForRoot(projectDirPath, Config().withInputPath(projectDirPath))
+      paths.size shouldBe 26
+    }
+
+    "should return all the individual folder name excluding paths, mentioned in exclusion regex" in {
+      import java.io.File
+      val paths = ContentSourcesPicker.dirsForRoot(
+        projectDirPath,
+        Config().withInputPath(projectDirPath).withIgnoredFilesRegex(s".*test.*")
+      )
+      paths.size shouldBe 21
+    }
+
+    "should return all the individual folder name excluding paths, when no-resolve-type" in {
+      val paths =
+        ContentSourcesPicker.dirsForRoot(projectDirPath, Config().withInputPath(projectDirPath).withResolveTypes(false))
+
+      paths.size shouldBe 1
+      paths.head shouldBe projectDirPath
     }
 
   }

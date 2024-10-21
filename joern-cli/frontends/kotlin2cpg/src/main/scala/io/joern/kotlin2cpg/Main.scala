@@ -15,7 +15,8 @@ final case class Config(
   includeJavaSourceFiles: Boolean = false,
   generateNodesForDependencies: Boolean = false,
   downloadDependencies: Boolean = false,
-  keepTypeArguments: Boolean = false
+  keepTypeArguments: Boolean = false,
+  resolveTypes: Boolean = true
 ) extends X2CpgConfig[Config]
     with DependencyDownloadConfig[Config] {
 
@@ -54,6 +55,10 @@ final case class Config(
   def withKeepTypeArguments(value: Boolean): Config = {
     copy(keepTypeArguments = value).withInheritedFields(this)
   }
+
+  def withResolveTypes(value: Boolean): Config = {
+    copy(resolveTypes = value).withInheritedFields(this)
+  }
 }
 
 private object Frontend {
@@ -91,7 +96,10 @@ private object Frontend {
       opt[Unit]("keep-type-arguments")
         .hidden()
         .action((_, c) => c.withKeepTypeArguments(true))
-        .text("Type full names of variables keep their type arguments.")
+        .text("Type full names of variables keep their type arguments."),
+      opt[Unit]("no-resolve-types")
+        .action((_, c) => c.withResolveTypes(false))
+        .text("Skip generating types")
     )
   }
 }
