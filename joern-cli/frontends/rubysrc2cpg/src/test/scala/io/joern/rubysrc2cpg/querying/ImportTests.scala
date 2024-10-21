@@ -1,10 +1,13 @@
 package io.joern.rubysrc2cpg.querying
 
+import io.joern.rubysrc2cpg.passes.Defines
+import io.joern.rubysrc2cpg.passes.Defines.{Initialize, Main}
+import io.joern.rubysrc2cpg.passes.GlobalTypes.{builtinPrefix, kernelPrefix}
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
+import io.joern.x2cpg.frontendspecific.rubysrc2cpg.{ImplicitRequirePass, ImportsPass, TypeImportInfo}
+import io.shiftleft.codepropertygraph.generated.DispatchTypes
+import io.shiftleft.codepropertygraph.generated.nodes.Literal
 import io.shiftleft.semanticcpg.language.*
-import io.joern.rubysrc2cpg.RubySrc2Cpg
-import io.joern.rubysrc2cpg.Config
-import scala.util.{Success, Failure}
 import org.scalatest.Inspectors
 
 class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with Inspectors {
@@ -18,6 +21,42 @@ class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with In
     importNode.importedAs shouldBe Some("test")
     val List(call) = importNode.call.l
     call.callee.name.l shouldBe List("require")
+    call.argument.where(_.argumentIndexGt(0)).code.l shouldBe List("'test'")
+  }
+
+  "`require_relative 'test'` is a CALL node with an IMPORT node pointing to it" in {
+    val cpg = code("""
+        |require_relative 'test'
+        |""".stripMargin)
+    val List(importNode) = cpg.imports.l
+    importNode.importedEntity shouldBe Some("test")
+    importNode.importedAs shouldBe Some("test")
+    val List(call) = importNode.call.l
+    call.callee.name.l shouldBe List("require_relative")
+    call.argument.where(_.argumentIndexGt(0)).code.l shouldBe List("'test'")
+  }
+
+  "`load 'test'` is a CALL node with an IMPORT node pointing to it" in {
+    val cpg = code("""
+        |load 'test'
+        |""".stripMargin)
+    val List(importNode) = cpg.imports.l
+    importNode.importedEntity shouldBe Some("test")
+    importNode.importedAs shouldBe Some("test")
+    val List(call) = importNode.call.l
+    call.callee.name.l shouldBe List("load")
+    call.argument.where(_.argumentIndexGt(0)).code.l shouldBe List("'test'")
+  }
+
+  "`require_all 'test'` is a CALL node with an IMPORT node pointing to it" in {
+    val cpg = code("""
+        |require_all 'test'
+        |""".stripMargin)
+    val List(importNode) = cpg.imports.l
+    importNode.importedEntity shouldBe Some("test")
+    importNode.importedAs shouldBe Some("test")
+    val List(call) = importNode.call.l
+    call.callee.name.l shouldBe List("require_all")
     call.argument.where(_.argumentIndexGt(0)).code.l shouldBe List("'test'")
   }
 
@@ -59,8 +98,15 @@ class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with In
       )
 
       val List(newCall) =
-        cpg.method.name(":program").filename("t1.rb").ast.isCall.methodFullName(".*:initialize").methodFullName.l
-      newCall should startWith(s"${path}.rb:")
+        cpg.method.isModule
+          .filename("t1.rb")
+          .ast
+          .isCall
+          .dynamicTypeHintFullName
+          .filter(x => x.startsWith(path) && x.endsWith(Initialize))
+          .l
+
+      newCall should startWith(s"$path.rb:")
     }
   }
 
@@ -86,8 +132,180 @@ class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with In
       |""".stripMargin)
 
       val List(methodName) =
-        cpg.method.name("bar").ast.isCall.methodFullName(".*::program\\.(A|B):foo").methodFullName.l
+        cpg.method.name("bar").ast.isCall.methodFullName(s".*\\.$Main\\.(A|B).foo").methodFullName.l
       methodName should endWith(s"${moduleName}:foo")
+    }
+  }
+
+  "implicitly imported types in base class" should {
+    val cpg = code(
+      """
+        |class MyController < ApplicationController
+        |end
+        |""".stripMargin,
+      "app/controllers/my_controller.rb"
+    )
+      .moreCode(
+        """
+          |class ApplicationController
+          |end
+          |""".stripMargin,
+        "app/controllers/application_controller.rb"
+      )
+      .moreCode(
+        """
+          |GEM
+          |  remote: https://rubygems.org/
+          |  specs:
+          |    zeitwerk (2.2.1)
+          |""".stripMargin,
+        "Gemfile.lock"
+      )
+
+    "result in require statement of the file containing the symbol" in {
+      inside(cpg.imports.where(_.call.file.name(".*my_controller.rb")).toList) { case List(i) =>
+        i.importedAs shouldBe Some("app/controllers/application_controller")
+        i.importedEntity shouldBe Some("app/controllers/application_controller")
+      }
+    }
+  }
+
+  "implicitly imported types in base class that are qualified names" should {
+    val cpg = code(
+      """
+        |class MyController < Controllers::ApplicationController
+        |end
+        |""".stripMargin,
+      "app/controllers/my_controller.rb"
+    )
+      .moreCode(
+        """
+          |module Controllers
+          | class ApplicationController
+          | end
+          |end
+          |""".stripMargin,
+        "app/controllers/controllers.rb"
+      )
+      .moreCode(
+        """
+          |GEM
+          |  remote: https://rubygems.org/
+          |  specs:
+          |    zeitwerk (2.2.1)
+          |""".stripMargin,
+        "Gemfile.lock"
+      )
+
+    "result in require statement of the file containing the symbol" in {
+      inside(cpg.imports.where(_.call.file.name(".*my_controller.rb")).toList) { case List(i) =>
+        i.importedAs shouldBe Some("app/controllers/controllers")
+        i.importedEntity shouldBe Some("app/controllers/controllers")
+      }
+    }
+  }
+
+  "implicitly imported types that are qualified names in an include statement" should {
+    val cpg = code(
+      """
+        |module MyController
+        | include Controllers::ApplicationController
+        |end
+        |""".stripMargin,
+      "app/controllers/my_controller.rb"
+    )
+      .moreCode(
+        """
+          |module Controllers
+          | class ApplicationController
+          | end
+          |end
+          |""".stripMargin,
+        "app/controllers/controllers.rb"
+      )
+      .moreCode(
+        """
+          |GEM
+          |  remote: https://rubygems.org/
+          |  specs:
+          |    zeitwerk (2.2.1)
+          |""".stripMargin,
+        "Gemfile.lock"
+      )
+
+    "result in require statement of the file containing the symbol" in {
+      inside(cpg.imports.where(_.call.file.name(".*my_controller.rb")).toList) { case List(i) =>
+        i.importedAs shouldBe Some("app/controllers/controllers")
+        i.importedEntity shouldBe Some("app/controllers/controllers")
+      }
+    }
+  }
+
+  "implicitly imported types in include statement" should {
+    val cpg = code(
+      """
+        |class MyController
+        |  include ApplicationController
+        |end
+        |""".stripMargin,
+      "app/controllers/my_controller.rb"
+    )
+      .moreCode(
+        """
+          |class ApplicationController
+          |end
+          |""".stripMargin,
+        "app/controllers/application_controller.rb"
+      )
+      .moreCode(
+        """
+          |GEM
+          |  remote: https://rubygems.org/
+          |  specs:
+          |    zeitwerk (2.2.1)
+          |""".stripMargin,
+        "Gemfile.lock"
+      )
+
+    "result in require statement of the file containing the symbol" in {
+      inside(cpg.imports.where(_.call.file.name(".*my_controller.rb")).toList) { case List(i) =>
+        i.importedAs shouldBe Some("app/controllers/application_controller")
+        i.importedEntity shouldBe Some("app/controllers/application_controller")
+      }
+    }
+  }
+
+  "implicitly imported types in extend statement" should {
+    val cpg = code(
+      """
+        |class MyController
+        |  extend ApplicationController
+        |end
+        |""".stripMargin,
+      "app/controllers/my_controller.rb"
+    )
+      .moreCode(
+        """
+          |class ApplicationController
+          |end
+          |""".stripMargin,
+        "app/controllers/application_controller.rb"
+      )
+      .moreCode(
+        """
+          |GEM
+          |  remote: https://rubygems.org/
+          |  specs:
+          |    zeitwerk (2.2.1)
+          |""".stripMargin,
+        "Gemfile.lock"
+      )
+
+    "result in require statement of the file containing the symbol" in {
+      inside(cpg.imports.where(_.call.file.name(".*my_controller.rb")).toList) { case List(i) =>
+        i.importedAs shouldBe Some("app/controllers/application_controller")
+        i.importedEntity shouldBe Some("app/controllers/application_controller")
+      }
     }
   }
 
@@ -107,7 +325,7 @@ class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with In
           | end
           |end
           |
-          |B::bar
+          |B::bar()
           |""".stripMargin,
         "bar/B.rb"
       )
@@ -119,7 +337,9 @@ class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with In
       )
       .moreCode(
         """
-          |B.bar
+          |def func()
+          |  B.bar()
+          |end
           |""".stripMargin,
         "Bar.rb"
       )
@@ -157,6 +377,15 @@ class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with In
       cpg.imports.where(_.call.file.name(".*B.rb")).size shouldBe 0
     }
 
+    "create a `require` call following the simplified format" in {
+      val require = cpg.call("require").head
+      require.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
+      require.methodFullName shouldBe s"$kernelPrefix.require"
+
+      val strLit = require.argument(1).asInstanceOf[Literal]
+      strLit.typeFullName shouldBe s"$kernelPrefix.String"
+    }
+
   }
 
   "Builtin Types type-map" should {
@@ -170,20 +399,23 @@ class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with In
 
     "resolve calls to builtin functions" in {
       inside(cpg.call.methodFullName("(pp|csv).*").l) {
-        case csvParseCall :: csvTableInitCall :: ppCall :: Nil =>
-          csvParseCall.methodFullName shouldBe "csv.CSV:parse"
-          ppCall.methodFullName shouldBe "pp.PP:pp"
-          csvTableInitCall.methodFullName shouldBe "csv.CSV.Table:initialize"
-        case xs => fail(s"Expected three calls, got [${xs.code.mkString(",")}] instead")
+        case csvParseCall :: csvTableCall :: ppCall :: Nil =>
+          csvParseCall.methodFullName shouldBe "csv.CSV.parse"
+          csvTableCall.methodFullName shouldBe "csv.CSV.Table.initialize"
+          ppCall.methodFullName shouldBe "pp.PP.pp"
+        case xs => fail(s"Expected calls, got [${xs.code.mkString(",")}] instead")
       }
+
+      // TODO: fixme - set is empty
+//      cpg.call(Initialize).dynamicTypeHintFullName.toSet should contain("csv.CSV.Table.initialize")
     }
   }
 
   "`require_all` on a directory" should {
     val cpg = code("""
         |require_all './dir'
-        |Module1.foo
-        |Module2.foo
+        |Module1.foo()
+        |Module2.foo()
         |""".stripMargin)
       .moreCode(
         """
@@ -206,8 +438,8 @@ class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with In
 
     "allow the resolution for all modules in that directory" in {
       cpg.call("foo").methodFullName.l shouldBe List(
-        "dir/module1.rb:<global>::program.Module1:foo",
-        "dir/module2.rb:<global>::program.Module2:foo"
+        s"dir/module1.rb:$Main.Module1.foo",
+        s"dir/module2.rb:$Main.Module2.foo"
       )
     }
   }
@@ -245,9 +477,9 @@ class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with In
         |require 'file2'
         |require 'file3'
         |
-        |File1::foo # lib/file1.rb::program:foo
-        |File2::foo # lib/file2.rb::program:foo
-        |File3::foo # src/file3.rb::program:foo
+        |File1::foo # lib/file1.rb.<main>.foo
+        |File2::foo # lib/file2.rb.<main>.foo
+        |File3::foo # src/file3.rb.<main>.foo
         |""".stripMargin,
       "main.rb"
     ).moreCode(
@@ -279,11 +511,40 @@ class ImportTests extends RubyCode2CpgFixture(withPostProcessing = true) with In
     "resolve the calls directly" in {
       inside(cpg.call.name("foo.*").l) {
         case foo1 :: foo2 :: foo3 :: Nil =>
-          foo1.methodFullName shouldBe "lib/file1.rb:<global>::program.File1:foo"
-          foo2.methodFullName shouldBe "lib/file2.rb:<global>::program.File2:foo"
-          foo3.methodFullName shouldBe "src/file3.rb:<global>::program.File3:foo"
+          foo1.methodFullName shouldBe s"lib/file1.rb:$Main.File1.foo"
+          foo2.methodFullName shouldBe s"lib/file2.rb:$Main.File2.foo"
+          foo3.methodFullName shouldBe s"src/file3.rb:$Main.File3.foo"
         case xs => fail(s"Expected 3 calls, got [${xs.code.mkString(",")}] instead")
       }
     }
   }
+}
+
+class ImportWithAutoloadedExternalGemsTests extends RubyCode2CpgFixture(withPostProcessing = false) {
+
+  "use of a type specified as external" should {
+
+    val cpg = code(
+      """
+        |x = Base64.encode("Hello, world!")
+        |Bar::Foo.new
+        |""".stripMargin,
+      "encoder.rb"
+    )
+
+    ImplicitRequirePass(cpg, TypeImportInfo("Base64", "base64") :: TypeImportInfo("Bar", "foobar") :: Nil)
+      .createAndApply()
+    ImportsPass(cpg).createAndApply()
+
+    "result in require statement of the file containing the symbol" in {
+      inside(cpg.imports.where(_.call.file.name(".*encoder.rb")).toList) { case List(i1, i2) =>
+        i1.importedAs shouldBe Some("base64")
+        i1.importedEntity shouldBe Some("base64")
+
+        i2.importedAs shouldBe Some("foobar")
+        i2.importedEntity shouldBe Some("foobar")
+      }
+    }
+  }
+
 }
