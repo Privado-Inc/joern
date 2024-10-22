@@ -4,10 +4,10 @@ import better.files.File
 import io.joern.rubysrc2cpg.passes.GlobalTypes
 import io.joern.rubysrc2cpg.passes.GlobalTypes.builtinPrefix
 import io.joern.x2cpg.Defines
-import io.joern.rubysrc2cpg.passes.Defines as RDefines
-import io.joern.x2cpg.datastructures.*
+import io.joern.x2cpg.datastructures.{TypedScopeElement, *}
 import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{DeclarationNew, NewLocal, NewMethodParameterIn}
+import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
 import java.io.File as JFile
 import scala.collection.mutable
@@ -47,7 +47,8 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
   /** @return
     *   using the stack, will initialize a new module scope object.
     */
-  def newProgramScope: Option[ProgramScope] = surroundingScopeFullName.map(ProgramScope.apply)
+  def newProgramScope: Option[ProgramScope] =
+    surroundingScopeFullName.map(_.stripSuffix(NamespaceTraversal.globalNamespaceName)).map(ProgramScope.apply)
 
   /** @return
     *   true if the top of the stack is the program/module.
@@ -121,6 +122,13 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
             prefix.lastOption.map(_.scopeNode).getOrElse(newTarget.scopeNode)
           case None => super.addToScope(identifier, variable)
         }
+    }
+  }
+
+  def lookupVariableInOuterScope(identifier: String): List[DeclarationNew] = {
+    stack.drop(1).collect {
+      case scopeElement if scopeElement.variables.contains(identifier) =>
+        scopeElement.variables(identifier)
     }
   }
 
@@ -224,15 +232,26 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
       (ScopeElement(MethodScope(fullName, param, true), variables), param.fold(x => x, x => x))
   }
 
-  /** Get the name of the implicit or explict proc param */
+  /** Get the name of the implicit or explicit proc param */
   def anonProcParam: Option[String] = stack.collectFirst { case ScopeElement(MethodScope(_, Left(param), true), _) =>
     param
   }
 
-  /** Set the name of explict proc param */
-  def setProcParam(param: String): Unit = updateSurrounding {
+  /** Set the name of explicit proc param */
+  def setProcParam(param: String, paramNode: NewMethodParameterIn): Unit = updateSurrounding {
     case ScopeElement(MethodScope(fullName, _, _), variables) =>
-      (ScopeElement(MethodScope(fullName, Right(param)), variables), ())
+      (ScopeElement(MethodScope(fullName, Right(param), true), variables ++ Map(paramNode.name -> paramNode)), ())
+  }
+
+  /** If a proc param is used, provides the node to add to the AST.
+    */
+  def procParamName: Option[NewMethodParameterIn] = {
+    stack
+      .collectFirst {
+        case ScopeElement(MethodScope(_, Left(param), true), _)  => param
+        case ScopeElement(MethodScope(_, Right(param), true), _) => param
+      }
+      .flatMap(lookupVariable(_).collect { case p: NewMethodParameterIn => p })
   }
 
   def surroundingTypeFullName: Option[String] = stack.collectFirst { case ScopeElement(x: TypeLikeScope, _) =>
@@ -332,11 +351,29 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
           case None if GlobalTypes.kernelFunctions.contains(normalizedTypeName) =>
             Option(RubyType(s"${GlobalTypes.kernelPrefix}.$normalizedTypeName", List.empty, List.empty))
           case None if GlobalTypes.bundledClasses.contains(normalizedTypeName) =>
-            Option(RubyType(s"<${GlobalTypes.builtinPrefix}.$normalizedTypeName>", List.empty, List.empty))
+            Option(RubyType(s"${GlobalTypes.builtinPrefix}.$normalizedTypeName", List.empty, List.empty))
           case None =>
             None
           case x => x
         }
+      }
+  }
+
+  /** @param identifier
+    *   the name of the variable.
+    * @return
+    *   the full name of the variable's scope, if available.
+    */
+  def variableScopeFullName(identifier: String): Option[String] = {
+    stack
+      .collectFirst {
+        case scopeElement if scopeElement.variables.contains(identifier) =>
+          scopeElement
+      }
+      .map {
+        case ScopeElement(x: NamespaceLikeScope, _) => x.fullName
+        case ScopeElement(x: TypeLikeScope, _)      => x.fullName
+        case ScopeElement(x: MethodLikeScope, _)    => x.fullName
       }
   }
 
