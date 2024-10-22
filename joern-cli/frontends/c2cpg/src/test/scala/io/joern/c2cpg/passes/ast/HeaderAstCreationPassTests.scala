@@ -1,7 +1,7 @@
 package io.joern.c2cpg.passes.ast
 
 import io.joern.c2cpg.testfixtures.C2CpgSuite
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
 class HeaderAstCreationPassTests extends C2CpgSuite {
@@ -37,20 +37,17 @@ class HeaderAstCreationPassTests extends C2CpgSuite {
 
     "de-duplicate content correctly" in {
       inside(cpg.method.nameNot(NamespaceTraversal.globalNamespaceName).sortBy(_.fullName)) {
-        case Seq(bar, foo, m1, m2, printf) =>
+        case Seq(bar, foo, m, printf) =>
           // note that we don't see bar twice even so it is contained
           // in main.h and included in main.c and we do scan both
           bar.fullName shouldBe "bar"
           bar.filename shouldBe "main.h"
           foo.fullName shouldBe "foo"
           foo.filename shouldBe "other.h"
-          // main is include twice. First time for the header file,
-          // second time for the actual implementation in the source file
-          // We do not de-duplicate this as line/column numbers differ
-          m1.fullName shouldBe "main"
-          m1.filename shouldBe "main.c"
-          m2.fullName shouldBe "main"
-          m2.filename shouldBe "main.h"
+          // main is also deduplicated. It is defined within the header file,
+          // and has an actual implementation in the source file
+          m.fullName shouldBe "main"
+          m.filename shouldBe "main.c"
           printf.fullName shouldBe "printf"
       }
     }
