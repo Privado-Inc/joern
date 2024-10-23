@@ -1,6 +1,6 @@
 package io.joern.dataflowengineoss
 
-import io.joern.dataflowengineoss.semanticsloader.{FlowSemantic, PassThroughMapping, Semantics}
+import io.joern.dataflowengineoss.semanticsloader.{FlowSemantic, PassThroughMapping, FullNameSemantics}
 import io.shiftleft.codepropertygraph.generated.Operators
 
 import scala.annotation.unused
@@ -10,9 +10,9 @@ object DefaultSemantics {
   /** @return
     *   a default set of common external procedure calls for all languages.
     */
-  def apply(): Semantics = {
+  def apply(): FullNameSemantics = {
     val list = operatorFlows ++ cFlows ++ javaFlows
-    Semantics.fromList(list)
+    FullNameSemantics.fromList(list)
   }
 
   private def F = (x: String, y: List[(Int, Int)]) => FlowSemantic.from(x, y)
@@ -59,18 +59,6 @@ object DefaultSemantics {
     F(Operators.preDecrement, List((1, 1), (1, -1))),
     F(Operators.preIncrement, List((1, 1), (1, -1))),
     F(Operators.sizeOf, List.empty[(Int, Int)]),
-
-    //  some of those operators have duplicate mappings due to a typo
-    //  - see https://github.com/ShiftLeftSecurity/codepropertygraph/pull/1630
-
-    F("<operators>.assignmentExponentiation", List((2, 1), (1, 1))),
-    F("<operators>.assignmentModulo", List((2, 1), (1, 1))),
-    F("<operators>.assignmentShiftLeft", List((2, 1), (1, 1))),
-    F("<operators>.assignmentLogicalShiftRight", List((2, 1), (1, 1))),
-    F("<operators>.assignmentArithmeticShiftRight", List((2, 1), (1, 1))),
-    F("<operators>.assignmentAnd", List((2, 1), (1, 1))),
-    F("<operators>.assignmentOr", List((2, 1), (1, 1))),
-    F("<operators>.assignmentXor", List((2, 1), (1, 1))),
 
     // Language specific operators
     PTF("<operator>.tupleLiteral"),
@@ -157,6 +145,6 @@ object DefaultSemantics {
     *   procedure semantics for operators and common external Java calls only.
     */
   @unused
-  def javaSemantics(): Semantics = Semantics.fromList(operatorFlows ++ javaFlows)
+  def javaSemantics(): FullNameSemantics = FullNameSemantics.fromList(operatorFlows ++ javaFlows)
 
 }
