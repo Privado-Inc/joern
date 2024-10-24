@@ -1,23 +1,21 @@
 package io.joern.x2cpg.passes.frontend
 
 import io.joern.x2cpg.{Defines, X2CpgConfig}
-import io.shiftleft.codepropertygraph.generated.{Cpg, DispatchTypes, EdgeTypes, NodeTypes, Operators, PropertyNames}
 import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.passes.{CpgPass, CpgPassBase, ForkJoinParallelCpgPass}
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.importresolver.*
 import io.shiftleft.semanticcpg.language.operatorextension.OpNodes
 import io.shiftleft.semanticcpg.language.operatorextension.OpNodes.{Assignment, FieldAccess}
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.BatchedUpdate
-import overflowdb.BatchedUpdate.DiffGraphBuilder
-import scopt.OParser
+import scopt.{DefaultOParserSetup, OParser}
 
 import java.util.regex.Pattern
 import scala.annotation.tailrec
 import scala.collection.mutable
-import scala.util.{Failure, Success, Try}
 import scala.util.matching.Regex
+import scala.util.{Failure, Success, Try}
 
 /** @param iterations
   *   the number of iterations to run.
@@ -31,7 +29,14 @@ object XTypeRecoveryConfig {
 
   def parse(cmdLineArgs: Seq[String]): XTypeRecoveryConfig = {
     OParser
-      .parse(parserOptions, cmdLineArgs, XTypeRecoveryConfig())
+      .parse(
+        parserOptions,
+        cmdLineArgs,
+        XTypeRecoveryConfig(),
+        new DefaultOParserSetup {
+          override def errorOnUnknownArgument = false
+        }
+      )
       .getOrElse(
         throw new RuntimeException(
           s"unable to parse XTypeRecoveryConfig from commandline arguments ${cmdLineArgs.mkString(" ")}"
@@ -96,8 +101,7 @@ class XTypeRecoveryState(val config: XTypeRecoveryConfig = XTypeRecoveryConfig()
 
 object XTypeRecoveryPassGenerator {
   private def linkMembersToTheirRefs(cpg: Cpg, builder: DiffGraphBuilder): Unit = {
-    import io.joern.x2cpg.passes.frontend.XTypeRecovery.AllNodeTypesFromIteratorExt
-    import io.joern.x2cpg.passes.frontend.XTypeRecovery.AllNodeTypesFromNodeExt
+    import io.joern.x2cpg.passes.frontend.XTypeRecovery.{AllNodeTypesFromIteratorExt, AllNodeTypesFromNodeExt}
 
     def getFieldBaseTypes(fieldAccess: FieldAccess): Iterator[TypeDecl] = {
       fieldAccess
@@ -151,7 +155,7 @@ abstract class XTypeRecoveryPassGenerator[CompilationUnitType <: AstNode](
     if (postTypeRecoveryAndPropagation)
       res.append(
         new CpgPass(cpg):
-          override def run(builder: BatchedUpdate.DiffGraphBuilder): Unit = {
+          override def run(builder: DiffGraphBuilder): Unit = {
             XTypeRecoveryPassGenerator.linkMembersToTheirRefs(cpg, builder)
           }
       )
@@ -257,17 +261,13 @@ object XTypeRecovery {
     */
   def isDummyType(typ: String): Boolean = DummyTokens.exists(typ.contains)
 
-  @deprecated("please use XTypeRecoveryConfig.parserOptionsForParserConfig", since = "2.0.415")
-  def parserOptions[R <: X2CpgConfig[R] & TypeRecoveryParserConfig[R]]: OParser[?, R] =
-    XTypeRecoveryConfig.parserOptionsForParserConfig
-
   // The below are convenience calls for accessing type properties, one day when this pass uses `Tag` nodes instead of
   // the symbol table then perhaps this would work out better
   implicit class AllNodeTypesFromNodeExt(x: StoredNode) {
     def allTypes: Iterator[String] =
-      (x.property(PropertyNames.TYPE_FULL_NAME, "ANY") +:
-        (x.property(PropertyNames.DYNAMIC_TYPE_HINT_FULL_NAME, Seq.empty)
-          ++ x.property(PropertyNames.POSSIBLE_TYPES, Seq.empty))).iterator
+      (x.propertyOption(Properties.TypeFullName).getOrElse("ANY") +:
+        (x.property(Properties.DynamicTypeHintFullName) ++
+          x.property(Properties.PossibleTypes))).iterator
 
     def getKnownTypes: Set[String] = {
       x.allTypes.toSet.filterNot(XTypeRecovery.unknownTypePattern.matches)
@@ -301,8 +301,7 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
   state: XTypeRecoveryState
 ) extends Runnable {
 
-  import io.joern.x2cpg.passes.frontend.XTypeRecovery.AllNodeTypesFromNodeExt
-  import io.joern.x2cpg.passes.frontend.XTypeRecovery.AllNodeTypesFromIteratorExt
+  import io.joern.x2cpg.passes.frontend.XTypeRecovery.{AllNodeTypesFromIteratorExt, AllNodeTypesFromNodeExt}
 
   protected val logger: Logger = LoggerFactory.getLogger(getClass)
 
@@ -436,7 +435,8 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
     * @param a
     *   assignment call pointer.
     */
-  protected def visitAssignments(a: Assignment): Set[String] = visitAssignmentArguments(a.argumentOut.l)
+  protected def visitAssignments(a: Assignment): Set[String] =
+    visitAssignmentArguments(a.argumentOut.cast[CfgNode].l)
 
   protected def visitAssignmentArguments(args: List[AstNode]): Set[String] = args match {
     case List(i: Identifier, b: Block)                             => visitIdentifierAssignedToBlock(i, b)
@@ -555,7 +555,7 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
     isFieldCache.getOrElseUpdate(i, isFieldUncached(i))
 
   protected def isFieldUncached(i: Identifier): Boolean =
-    i.method.typeDecl.member.nameExact(i.name).nonEmpty
+    Try(i.method.typeDecl.member.nameExact(i.name).nonEmpty).getOrElse(false)
 
   /** Associates the types with the identifier. This may sometimes be an identifier that should be considered a field
     * which this method uses [[isField]] to determine.
@@ -569,7 +569,9 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
     val fieldName = getFieldName(fa).split(Pattern.quote(pathSep)).last
     Try(cpg.member.nameExact(fieldName).typeDecl.fullName.filterNot(_.contains("ANY")).toSet) match
       case Failure(exception) =>
-        logger.warn("Unable to obtain name of member's parent type declaration", exception)
+        logger.warn(
+          s"Unable to obtain name of member's parent type declaration: ${cpg.member.nameExact(fieldName).propertiesMap.mkString(",")}"
+        )
         Set.empty
       case Success(typeDeclNames) => typeDeclNames
   }
@@ -810,7 +812,8 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
       case ::(_: TypeRef, ::(f: FieldIdentifier, _)) =>
         f.canonicalName
       case xs =>
-        logger.warn(s"Unhandled field structure ${xs.map(x => (x.label, x.code)).mkString(",")} @ ${debugLocation(fa)}")
+        val debugInfo = xs.collect { case x: CfgNode => (x.label(), x.code) }.mkString(",")
+        logger.warn(s"Unhandled field structure $debugInfo @ ${debugLocation(fa)}")
         wrapName("<unknown>")
     }
   }
@@ -1231,7 +1234,8 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
     lazy val existingTypes = storedNode.getKnownTypes
 
     val hasUnknownTypeFullName = storedNode
-      .property(PropertyNames.TYPE_FULL_NAME, Defines.Any)
+      .propertyOption(Properties.TypeFullName)
+      .getOrElse(Defines.Any)
       .matches(XTypeRecovery.unknownTypePattern.pattern.pattern())
 
     if (types.nonEmpty && (hasUnknownTypeFullName || types.toSet != existingTypes)) {
@@ -1270,10 +1274,12 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
     */
   protected def storeDefaultTypeInfo(n: StoredNode, types: Seq[String]): Unit =
     val hasUnknownType =
-      n.property(PropertyNames.TYPE_FULL_NAME, Defines.Any).matches(XTypeRecovery.unknownTypePattern.pattern.pattern())
+      n.propertyOption(Properties.TypeFullName)
+        .getOrElse(Defines.Any)
+        .matches(XTypeRecovery.unknownTypePattern.pattern.pattern())
 
     if (types.toSet != n.getKnownTypes || (hasUnknownType && types.nonEmpty)) {
-      setTypes(n, (n.property(PropertyNames.DYNAMIC_TYPE_HINT_FULL_NAME, Seq.empty) ++ types).distinct)
+      setTypes(n, (n.propertyOption(PropertyNames.DYNAMIC_TYPE_HINT_FULL_NAME).getOrElse(Seq.empty) ++ types).distinct)
     }
 
   /** If there is only 1 type hint then this is set to the `typeFullName` property and `dynamicTypeHintFullName` is
