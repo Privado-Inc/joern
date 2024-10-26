@@ -2,7 +2,7 @@ package io.joern.javasrc2cpg.querying
 
 import io.joern.javasrc2cpg.Config
 import io.joern.javasrc2cpg.testfixtures.JavaSrcCode2CpgFixture
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.joern.x2cpg.utils.ExternalCommand
 
 class ClassLoaderTypeTests extends JavaSrcCode2CpgFixture {
@@ -48,7 +48,6 @@ class ClassLoaderTypeTests extends JavaSrcCode2CpgFixture {
     }
 
     "be resolved by the system classloader (java 17)" in {
-      println(System.getProperty("java.version"))
       val cpg = code(testCode)
 
       cpg.call.name("getIconHeight").methodFullName.head.startsWith("<unresolved") shouldBe false
