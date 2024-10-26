@@ -2,7 +2,7 @@ name                     := "joern"
 ThisBuild / organization := "io.joern"
 ThisBuild / scalaVersion := "3.4.2"
 
-val cpgVersion = "1.6.16"
+val cpgVersion = "1.7.11"
 
 lazy val joerncli          = Projects.joerncli
 lazy val querydb           = Projects.querydb
@@ -45,7 +45,8 @@ ThisBuild / compile / javacOptions ++= Seq(
 ThisBuild / scalacOptions ++= Seq(
   "-deprecation", // Emit warning and location for usages of deprecated APIs.
   "--release",
-  "11"
+  "11",
+  "-Wshadow:type-parameter-shadow",
 )
 
 lazy val createDistribution = taskKey[File]("Create a complete Joern distribution")

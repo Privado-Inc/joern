@@ -6,8 +6,7 @@ import io.joern.dataflowengineoss.queryengine.{EngineConfig, EngineContext}
 import io.shiftleft.codepropertygraph.generated.EdgeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{CfgNode, Identifier, Literal}
 import io.shiftleft.semanticcpg.language.*
-import overflowdb.traversal.help.Table.AvailableWidthProvider
-import overflowdb.traversal.toNodeTraversal
+import flatgraph.help.Table.AvailableWidthProvider
 
 class DataFlowTests extends DataFlowCodeToCpgSuite {
 
@@ -1082,7 +1081,7 @@ class DataFlowTests extends DataFlowCodeToCpgSuite {
       cpg
         .call("bar")
         .outE(EdgeTypes.REACHING_DEF)
-        .count(_.inNode() == cpg.ret.head) shouldBe 1
+        .count(_.dst == cpg.ret.head) shouldBe 1
     }
   }
 
@@ -1987,6 +1986,139 @@ class DataFlowTestsWithCallDepth extends DataFlowCodeToCpgSuite {
           ("sink(plen3)", 12)
         )
       )
+    }
+  }
+
+  "DataFlowTest73" should {
+    val cpg = code("""
+        |int main(void) {
+        | int x = 5;
+        | call1(x%=2);
+        | call2(x);
+        |}
+        |""".stripMargin)
+
+    "the literal in x%=2 should taint the outer expression" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call1")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x%=2", 4), ("call1(x%=2)", 4)))
+    }
+
+    "the literal in x%=2 should taint the next occurrence of x" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call2")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x%=2", 4), ("call2(x)", 5)))
+    }
+
+  }
+
+  "DataFlowTest74" should {
+    val cpg = code("""
+        |int main(void) {
+        | int x = 5;
+        | call1(x^=2);
+        | call2(x);
+        |}
+        |""".stripMargin)
+
+    "the literal in x^=2 should taint the outer expression" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call1")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x^=2", 4), ("call1(x^=2)", 4)))
+    }
+
+    "the literal in x^=2 should taint the next occurrence of x" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call2")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x^=2", 4), ("call2(x)", 5)))
+    }
+  }
+
+  "DataFlowTest75" should {
+    val cpg = code("""
+        |int main(void) {
+        | int x = 5;
+        | call1(x|=2);
+        | call2(x);
+        |}
+        |""".stripMargin)
+
+    "the literal in x|=2 should taint the outer expression" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call1")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x|=2", 4), ("call1(x|=2)", 4)))
+    }
+
+    "the literal in x|=2 should taint the next occurrence of x" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call2")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x|=2", 4), ("call2(x)", 5)))
+    }
+  }
+
+  "DataFlowTest76" should {
+    val cpg = code("""
+        |int main(void) {
+        | int x = 5;
+        | call1(x&=2);
+        | call2(x);
+        |}
+        |""".stripMargin)
+
+    "the literal in x&=2 should taint the outer expression" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call1")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x&=2", 4), ("call1(x&=2)", 4)))
+    }
+
+    "the literal in x&=2 should taint the next occurrence of x" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call2")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x&=2", 4), ("call2(x)", 5)))
+    }
+  }
+
+  "DataFlowTest77" should {
+    val cpg = code("""
+        |int main(void) {
+        | int x = 5;
+        | call1(x<<=2);
+        | call2(x);
+        |}
+        |""".stripMargin)
+
+    "the literal in x<<=2 should taint the outer expression" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call1")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x<<=2", 4), ("call1(x<<=2)", 4)))
+    }
+
+    "the literal in x<<=2 should taint the next occurrence of x" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call2")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x<<=2", 4), ("call2(x)", 5)))
+    }
+  }
+
+  "DataFlowTest78" should {
+    val cpg = code("""
+        |int main(void) {
+        | int x = 5;
+        | call1(x>>=2);
+        | call2(x);
+        |}
+        |""".stripMargin)
+
+    "the literal in x>>=2 should taint the outer expression" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call1")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x>>=2", 4), ("call1(x>>=2)", 4)))
+    }
+
+    "the literal in x>>=2 should taint the next occurrence of x" in {
+      val source = cpg.literal("2")
+      val sink   = cpg.call("call2")
+      sink.reachableByFlows(source).map(flowToResultPairs).l shouldBe List(List(("x>>=2", 4), ("call2(x)", 5)))
     }
   }
 }
