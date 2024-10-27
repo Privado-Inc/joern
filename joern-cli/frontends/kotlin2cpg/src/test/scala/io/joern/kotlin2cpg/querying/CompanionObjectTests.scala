@@ -4,7 +4,7 @@ import io.joern.kotlin2cpg.Constants
 import io.joern.kotlin2cpg.testfixtures.KotlinCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
 import io.shiftleft.codepropertygraph.generated.nodes.{Call, FieldIdentifier, Identifier, Member}
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class CompanionObjectTests extends KotlinCode2CpgFixture(withOssDataflow = false) {
 
@@ -65,6 +65,25 @@ class CompanionObjectTests extends KotlinCode2CpgFixture(withOssDataflow = false
       firstArgOfLoweredCall.typeFullName shouldBe "mypkg.AClass$Companion"
       firstArgOfLoweredCall.refsTo.size shouldBe 0 // yes, 0. it's how the closed-source dataflow engine wants it atm
       secondArgOfLoweredCall.canonicalName shouldBe Constants.companionObjectMemberName
+    }
+  }
+
+  "nested companion object and nested class test" in {
+    val cpg = code("""
+                     |package mypkg
+                     |
+                     |class AClass {
+                     |    companion object {
+                     |        class BClass {
+                     |            companion object NamedCompanion {
+                     |            }
+                     |        }
+                     |    }
+                     |}
+                     |""".stripMargin)
+
+    inside(cpg.typeDecl.nameExact("NamedCompanion").l) { case List(typeDecl) =>
+      typeDecl.fullName shouldBe "mypkg.AClass$Companion$BClass$NamedCompanion"
     }
   }
 
