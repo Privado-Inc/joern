@@ -2,6 +2,7 @@ package io.joern.c2cpg.parser
 
 import better.files.File
 import io.joern.c2cpg.Config
+import io.joern.c2cpg.parser.JSONCompilationDatabaseParser.CommandObject
 import io.shiftleft.utils.IOUtils
 import org.eclipse.cdt.core.dom.ast.gnu.c.GCCLanguage
 import org.eclipse.cdt.core.dom.ast.gnu.cpp.GPPLanguage
@@ -30,20 +31,26 @@ object CdtParser {
     failure: Option[Throwable] = None
   )
 
-  def readFileAsFileContent(path: Path): FileContent = {
+  def loadLinesAsFileContent(path: Path, lines: Array[Char]): InternalFileContent = {
+    FileContent.create(path.toString, true, lines).asInstanceOf[InternalFileContent]
+  }
+
+  def readFileAsFileContent(path: Path): InternalFileContent = {
     val lines = IOUtils.readLinesInFile(path).mkString("\n").toArray
-    FileContent.create(path.toString, true, lines)
+    loadLinesAsFileContent(path, lines)
   }
 
 }
 
-class CdtParser(config: Config) extends ParseProblemsLogger with PreprocessorStatementsLogger {
+class CdtParser(config: Config, compilationDatabase: List[CommandObject])
+    extends ParseProblemsLogger
+    with PreprocessorStatementsLogger {
 
   import io.joern.c2cpg.parser.CdtParser._
 
   private val headerFileFinder = new HeaderFileFinder(config.inputPath)
-  private val parserConfig     = ParserConfig.fromConfig(config)
-  private val definedSymbols   = parserConfig.definedSymbols.asJava
+  private val parserConfig     = ParserConfig.fromConfig(config, compilationDatabase)
+  private val definedSymbols   = parserConfig.definedSymbols
   private val includePaths     = parserConfig.userIncludePaths
   private val log              = new DefaultLogService
 
@@ -76,7 +83,12 @@ class CdtParser(config: Config) extends ParseProblemsLogger with PreprocessorSta
     val additionalIncludes =
       if (FileDefaults.isCPPFile(file.toString)) parserConfig.systemIncludePathsCPP
       else parserConfig.systemIncludePathsC
-    new ScannerInfo(definedSymbols, (includePaths ++ additionalIncludes).map(_.toString).toArray)
+    val fileSpecificDefines  = parserConfig.definedSymbolsPerFile.getOrElse(file.toString, Map.empty)
+    val fileSpecificIncludes = parserConfig.includesPerFile.getOrElse(file.toString, List.empty)
+    new ScannerInfo(
+      (definedSymbols ++ fileSpecificDefines).asJava,
+      fileSpecificIncludes.toArray ++ (includePaths ++ additionalIncludes).map(_.toString).toArray
+    )
   }
 
   private def parseInternal(code: String, inFile: File): IASTTranslationUnit = {
@@ -97,8 +109,8 @@ class CdtParser(config: Config) extends ParseProblemsLogger with PreprocessorSta
       try {
         val fileContent         = readFileAsFileContent(realPath.path)
         val fileContentProvider = new CustomFileContentProvider(headerFileFinder)
-        val lang            = createParseLanguage(realPath.path, fileContent.asInstanceOf[InternalFileContent].toString)
-        val scannerInfo     = createScannerInfo(realPath.path)
+        val lang                = createParseLanguage(realPath.path, fileContent.toString)
+        val scannerInfo         = createScannerInfo(realPath.path)
         val translationUnit = lang.getASTTranslationUnit(fileContent, scannerInfo, fileContentProvider, null, opts, log)
         val problems        = CPPVisitor.getProblems(translationUnit)
         if (parserConfig.logProblems) logProblems(problems.toList)
