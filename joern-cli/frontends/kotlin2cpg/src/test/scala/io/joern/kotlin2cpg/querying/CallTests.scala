@@ -1,7 +1,9 @@
 package io.joern.kotlin2cpg.querying
 
+import io.joern.kotlin2cpg.Constants
 import io.joern.kotlin2cpg.testfixtures.KotlinCode2CpgFixture
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Identifier}
+import io.joern.x2cpg.Defines
+import io.shiftleft.codepropertygraph.generated.nodes.{Call, Identifier, Literal}
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
 import io.shiftleft.semanticcpg.language.*
 
@@ -228,7 +230,7 @@ class CallTests extends KotlinCode2CpgFixture(withOssDataflow = false) {
 
     "should contain a CALL node `writeText` with the correct props set" in {
       val List(c) = cpg.call.code("f.writeText.*").l
-      c.methodFullName shouldBe "java.io.File.writeText:void(java.lang.String,java.nio.charset.Charset)"
+      c.methodFullName shouldBe "kotlin.io.writeText:void(java.io.File,java.lang.String,java.nio.charset.Charset)"
     }
   }
 
@@ -258,11 +260,11 @@ class CallTests extends KotlinCode2CpgFixture(withOssDataflow = false) {
 
     "should contain a CALL node for `MyCaseClass(\\\"AN_ARGUMENT\\\")` with the correct props set" in {
       val List(c) = cpg.call.code("MyCaseClass.*AN_ARGUMENT.*").l
-      c.methodFullName shouldBe "no.such.CaseClass:ANY(ANY)"
+      c.methodFullName shouldBe s"no.such.CaseClass:${Defines.UnresolvedSignature}(1)"
       c.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
       c.lineNumber shouldBe Some(10)
       c.columnNumber shouldBe Some(17)
-      c.signature shouldBe "ANY(ANY)"
+      c.signature shouldBe s"${Defines.UnresolvedSignature}(1)"
     }
   }
 
@@ -356,7 +358,7 @@ class CallTests extends KotlinCode2CpgFixture(withOssDataflow = false) {
 
     "should contain a METHOD node with correct METHOD_FULL_NAME set" in {
       val List(c) = cpg.method.nameExact("mapIndexedNotNullTo").callIn.l
-      c.methodFullName shouldBe "kotlin.sequences.Sequence.mapIndexedNotNullTo:java.lang.Object(java.util.Collection,kotlin.Function2)"
+      c.methodFullName shouldBe "kotlin.sequences.mapIndexedNotNullTo:java.util.Collection(kotlin.sequences.Sequence,java.util.Collection,kotlin.jvm.functions.Function2)"
     }
   }
 
@@ -593,6 +595,110 @@ class CallTests extends KotlinCode2CpgFixture(withOssDataflow = false) {
     "should contain a CALL node with arguments with their ARGUMENT_NAME property set" in {
       val List(c: Call) = cpg.method.nameExact("f1").callIn.l
       c.argument.map(_.argumentName).flatten.l shouldBe List("two", "one")
+    }
+  }
+
+  "have correct call to overriden base class" in {
+    val cpg = code("""
+        |package somePackage
+        |class A: java.io.Closeable {
+        |    fun foo() {
+        |        close()
+        |    }
+        |    override fun close() {
+        |    }
+        |}
+        |""".stripMargin)
+
+    inside(cpg.call.nameExact("close").l) { case List(call) =>
+      call.methodFullName shouldBe "somePackage.A.close:void()"
+      call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
+      inside(call.receiver.l) { case List(receiver: Identifier) =>
+        receiver.name shouldBe Constants.this_
+        receiver.typeFullName shouldBe "somePackage.A"
+      }
+      inside(call.argument.l) { case List(argument: Identifier) =>
+        argument.name shouldBe Constants.this_
+        argument.argumentIndex shouldBe 0
+      }
+    }
+  }
+
+  "have correct call to kotlin standard library function" in {
+    val cpg = code("""
+        |fun method() {
+        |  println("test")
+        |}
+        |""".stripMargin)
+
+    inside(cpg.call.nameExact("println").l) { case List(call) =>
+      call.methodFullName shouldBe "kotlin.io.println:void(java.lang.Object)"
+      call.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
+      call.receiver.isEmpty shouldBe true
+      inside(call.argument.l) { case List(argument: Literal) =>
+        argument.code shouldBe "\"test\""
+        argument.argumentIndex shouldBe 1
+      }
+    }
+  }
+
+  "have correct call to custom top level function" in {
+    val cpg = code("""
+        |package somePackage
+        |fun topLevelFunc() {
+        |}
+        |fun method() {
+        |  topLevelFunc()
+        |}
+        |""".stripMargin)
+
+    inside(cpg.call.nameExact("topLevelFunc").l) { case List(call) =>
+      call.methodFullName shouldBe "somePackage.topLevelFunc:void()"
+      call.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
+
+      call.receiver.isEmpty shouldBe true
+      call.argument.isEmpty shouldBe true
+    }
+  }
+
+  "have correct call to private class method" in {
+    val cpg = code("""
+                     |package somePackage
+                     |class A {
+                     |  private fun func1() {
+                     |  }
+                     |  fun func2() {
+                     |    func1()
+                     |  }
+                     |}
+                     |""".stripMargin)
+
+    inside(cpg.call.nameExact("func1").l) { case List(call) =>
+      call.methodFullName shouldBe "somePackage.A.func1:void()"
+      call.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
+
+      call.receiver.isEmpty shouldBe true
+      inside(call.argument.l) { case List(argument: Identifier) =>
+        argument.name shouldBe "this"
+        argument.argumentIndex shouldBe 0
+      }
+    }
+  }
+
+  "have correct call for nested qualified expressions" in {
+    val cpg = code("""
+                     |package somePackage
+                     |class A {
+                     |  private val sub: A?;
+                     |  fun func() {
+                     |    sub?.sub?.func();
+                     |  }
+                     |}
+                     |""".stripMargin)
+
+    inside(cpg.call.nameExact("func").l) { case List(call) =>
+      call.methodFullName shouldBe "somePackage.A.func:void()"
+      call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
     }
   }
 }
