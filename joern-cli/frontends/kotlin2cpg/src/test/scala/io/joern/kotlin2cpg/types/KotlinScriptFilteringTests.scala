@@ -1,5 +1,6 @@
 package io.joern.kotlin2cpg.types
 
+import io.joern.kotlin2cpg.Config
 import io.joern.kotlin2cpg.compiler.{CompilerAPI, ErrorLoggingMessageCollector}
 import org.jetbrains.kotlin.resolve.BindingContext
 import org.scalatest.freespec.AnyFreeSpec
@@ -22,7 +23,7 @@ class KotlinScriptFilteringTests extends AnyFreeSpec with Matchers {
 
     "should not return an empty binding context" in {
       val sourceDir               = "src/test/resources/external_projects/kotlin-dsl"
-      val dirsForSourcesToCompile = ContentSourcesPicker.dirsForRoot(sourceDir)
+      val dirsForSourcesToCompile = ContentSourcesPicker.dirsForRoot(sourceDir, config = Config())
       val environment =
         CompilerAPI.makeEnvironment(dirsForSourcesToCompile, Seq(), Seq(), new ErrorLoggingMessageCollector)
       environment.getSourceFiles should not be List()
