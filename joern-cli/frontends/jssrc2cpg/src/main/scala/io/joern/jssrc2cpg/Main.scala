@@ -8,10 +8,16 @@ import scopt.OParser
 
 import java.nio.file.Paths
 
-final case class Config(tsTypes: Boolean = true) extends X2CpgConfig[Config] with TypeRecoveryParserConfig[Config] {
+final case class Config(tsTypes: Boolean = true, nodeOptions: String = "")
+    extends X2CpgConfig[Config]
+    with TypeRecoveryParserConfig[Config] {
 
   def withTsTypes(value: Boolean): Config = {
     copy(tsTypes = value).withInheritedFields(this)
+  }
+
+  def withNodeOptions(value: String): Config = {
+    copy(nodeOptions = value).withInheritedFields(this)
   }
 
 }
@@ -28,6 +34,10 @@ object Frontend {
         .hidden()
         .action((_, c) => c.withTsTypes(false))
         .text("disable generation of types via Typescript"),
+      opt[String]("node-options")
+        .hidden()
+        .action((nodeOptions, c) => c.withNodeOptions(nodeOptions))
+        .text("node options to be used with astGen"),
       XTypeRecovery.parserOptions
     )
   }
