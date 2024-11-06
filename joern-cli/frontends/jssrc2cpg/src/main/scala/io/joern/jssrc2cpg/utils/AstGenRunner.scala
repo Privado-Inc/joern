@@ -23,8 +23,6 @@ object AstGenRunner {
 
   private val LineLengthThreshold: Int = 10000
 
-  private val NODE_OPTIONS: Map[String, String] = Map("NODE_OPTIONS" -> "--max-old-space-size=8192")
-
   private val TypeDefinitionFileExtensions = List(".t.ts", ".d.ts")
 
   private val MinifiedPathRegex: Regex = ".*([.-]min\\..*js|bundle\\.js)".r
@@ -177,6 +175,9 @@ class AstGenRunner(config: Config) {
   import io.joern.jssrc2cpg.utils.AstGenRunner._
 
   private val executableArgs = if (!config.tsTypes) " --no-tsTypes" else ""
+  private val nodeOptionsFromConfig =
+    if config.nodeOptions.nonEmpty then config.nodeOptions else "--max-old-space-size=8192"
+  private val NODE_OPTIONS: Map[String, String] = Map("NODE_OPTIONS" -> nodeOptionsFromConfig)
 
   private def skippedFiles(astGenOut: List[String]): List[String] = {
     val skipped = astGenOut.collect {
