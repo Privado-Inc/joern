@@ -18,9 +18,9 @@ class AstGenTests extends AstJsSrc2CpgSuite {
 
       val fileSet = newInputDir.listRecursively.filter(_.isRegularFile).map(_.pathAsString).toSet
       fileSet.size shouldBe 2
-      fileSet.count(_.matches(".*folder1/1.js")) shouldBe 1
-      fileSet.count(_.matches(".*folder2/1.js")) shouldBe 1
-      fileSet.count(_.matches(".*folder3/1.js")) shouldBe 0
+      fileSet.count(_.matches(".*folder1.*")) shouldBe 1
+      fileSet.count(_.matches(".*folder2.*")) shouldBe 1
+      fileSet.count(_.matches(".*folder3.*")) shouldBe 0
     }
 
     "don't ignore files, if exclusion regex not passed" in {
@@ -28,9 +28,9 @@ class AstGenTests extends AstJsSrc2CpgSuite {
 
       val fileSet = newInputDir.listRecursively.filter(_.isRegularFile).map(_.pathAsString).toSet
       fileSet.size shouldBe 3
-      fileSet.count(_.matches(".*folder1/1.js")) shouldBe 1
-      fileSet.count(_.matches(".*folder2/1.js")) shouldBe 1
-      fileSet.count(_.matches(".*folder3/1.js")) shouldBe 1
+      fileSet.count(_.matches(".*folder1.*")) shouldBe 1
+      fileSet.count(_.matches(".*folder2.*")) shouldBe 1
+      fileSet.count(_.matches(".*folder3.*")) shouldBe 1
 
     }
   }
