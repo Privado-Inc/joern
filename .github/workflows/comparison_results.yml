@@ -73,7 +73,7 @@ jobs:
         with:
           repository: Privado-Inc/standalone-monitoring-stability
           path: ./temp/standalone-monitoring-stability
-          ref: custom-joern-build
+          ref: joern_comparison-sync-test
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v3
