@@ -5,12 +5,12 @@ import io.shiftleft.codepropertygraph.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.{Call, Method, TypeDecl}
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, PropertyNames}
 import io.shiftleft.passes.CpgPass
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import org.slf4j.{Logger, LoggerFactory}
 import overflowdb.{NodeDb, NodeRef}
 
 import scala.collection.mutable
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 
 /** We compute the set of possible call-targets for each dynamic call, and add them as CALL edges to the graph, based on
   * call.methodFullName, method.name and method.signature, the inheritance hierarchy and the AST of typedecls and
@@ -23,8 +23,7 @@ import scala.jdk.CollectionConverters._
   * Virtual Calls from Memory Corruption Attacks. 10.14722/ndss.2014.23287.
   */
 class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
-
-  import DynamicCallLinker._
+  import DynamicCallLinker.*
   // Used to track potential method candidates for a given method fullname. Since our method full names contain the type
   // decl we don't need to specify an addition map to wrap this in. LinkedHashSets are used here to preserve order in
   // the best interest of reproducibility during debugging.
@@ -50,30 +49,35 @@ class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
     */
   override def run(dstGraph: DiffGraphBuilder): Unit = {
     // Perform early stopping in the case of no virtual calls
-    if (!cpg.call.exists(_.dispatchType == DispatchTypes.DYNAMIC_DISPATCH)) {
-      return
-    }
-    initMaps()
-    // ValidM maps class C and method name N to the set of
-    // func ptrs implementing N for C and its subclasses
-    for (
-      typeDecl <- cpg.typeDecl;
-      method   <- typeDecl._methodViaAstOut
-    ) {
-      val methodName = method.fullName
-      val candidates = allSubclasses(typeDecl.fullName).flatMap { staticLookup(_, method) }
-      validM.put(methodName, candidates)
-    }
-
-    subclassCache.clear()
-
-    cpg.call.filter(_.dispatchType == DispatchTypes.DYNAMIC_DISPATCH).foreach { call =>
-      try {
-        linkDynamicCall(call, dstGraph)
-      } catch {
-        case exception: Exception =>
-          throw new RuntimeException(exception)
+    try {
+      if (!cpg.call.exists(_.dispatchType == DispatchTypes.DYNAMIC_DISPATCH)) {
+        return
       }
+      initMaps()
+      // ValidM maps class C and method name N to the set of
+      // func ptrs implementing N for C and its subclasses
+      for (
+        typeDecl <- cpg.typeDecl;
+        method   <- typeDecl._methodViaAstOut
+      ) {
+        val methodName = method.fullName
+        val candidates = allSubclasses(typeDecl.fullName).flatMap { staticLookup(_, method) }
+        validM.put(methodName, candidates)
+      }
+
+      subclassCache.clear()
+
+      cpg.call.filter(_.dispatchType == DispatchTypes.DYNAMIC_DISPATCH).foreach { call =>
+        try {
+          linkDynamicCall(call, dstGraph)
+        } catch {
+          case exception: Exception =>
+            throw new RuntimeException(exception)
+        }
+      }
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in DynamicCallLinker", ex)
     }
   }
 

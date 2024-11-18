@@ -3,10 +3,11 @@ package io.joern.x2cpg.passes.base
 import io.joern.x2cpg.Defines
 import io.joern.x2cpg.passes.base.MethodStubCreator.createMethodStub
 import io.shiftleft.codepropertygraph.Cpg
-import io.shiftleft.codepropertygraph.generated.nodes._
+import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, EvaluationStrategies, NodeTypes}
 import io.shiftleft.passes.CpgPass
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
+import org.slf4j.{Logger, LoggerFactory}
 import overflowdb.BatchedUpdate
 import overflowdb.BatchedUpdate.DiffGraphBuilder
 
@@ -19,28 +20,34 @@ case class CallSummary(name: String, signature: String, fullName: String, dispat
   */
 class MethodStubCreator(cpg: Cpg) extends CpgPass(cpg) {
 
+  private val logger: Logger = LoggerFactory.getLogger(this.getClass)
   // Since the method fullNames for fuzzyc are not unique, we do not have
   // a 1to1 relation and may overwrite some values. This is ok for now.
   private val methodFullNameToNode   = mutable.LinkedHashMap[String, Method]()
   private val methodToParameterCount = mutable.LinkedHashMap[CallSummary, Int]()
 
   override def run(dstGraph: BatchedUpdate.DiffGraphBuilder): Unit = {
-    for (method <- cpg.method) {
-      methodFullNameToNode.put(method.fullName, method)
-    }
+    try {
+      for (method <- cpg.method) {
+        methodFullNameToNode.put(method.fullName, method)
+      }
 
-    for (call <- cpg.call if call.methodFullName != Defines.DynamicCallUnknownFullName) {
-      methodToParameterCount.put(
-        CallSummary(call.name, call.signature, call.methodFullName, call.dispatchType),
-        call.argument.size
-      )
-    }
+      for (call <- cpg.call if call.methodFullName != Defines.DynamicCallUnknownFullName) {
+        methodToParameterCount.put(
+          CallSummary(call.name, call.signature, call.methodFullName, call.dispatchType),
+          call.argument.size
+        )
+      }
 
-    for (
-      (CallSummary(name, signature, fullName, dispatchType), parameterCount) <- methodToParameterCount
-      if !methodFullNameToNode.contains(fullName)
-    ) {
-      createMethodStub(name, fullName, signature, dispatchType, parameterCount, dstGraph)
+      for (
+        (CallSummary(name, signature, fullName, dispatchType), parameterCount) <- methodToParameterCount
+        if !methodFullNameToNode.contains(fullName)
+      ) {
+        createMethodStub(name, fullName, signature, dispatchType, parameterCount, dstGraph)
+      }
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in TypeDeclStubCreator", ex)
     }
   }
 

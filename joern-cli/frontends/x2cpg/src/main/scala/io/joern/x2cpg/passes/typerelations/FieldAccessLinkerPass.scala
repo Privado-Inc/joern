@@ -2,12 +2,11 @@ package io.joern.x2cpg.passes.typerelations
 
 import io.joern.x2cpg.passes.frontend.Dereference
 import io.joern.x2cpg.utils.LinkingUtil
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Member, StoredNode}
 import io.shiftleft.codepropertygraph.generated.*
+import io.shiftleft.codepropertygraph.generated.nodes.{Call, Member, StoredNode}
 import io.shiftleft.passes.CpgPass
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.operatorextension.{OpNodes, allFieldAccessTypes}
-import io.shiftleft.semanticcpg.utils.MemberAccess
 import org.slf4j.LoggerFactory
 
 import scala.jdk.CollectionConverters.*
@@ -20,16 +19,21 @@ class FieldAccessLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
   private val DOT    = "."
 
   override def run(dstGraph: DiffGraphBuilder): Unit = {
-    linkToMultiple(
-      cpg,
-      srcLabels = List(NodeTypes.CALL),
-      dstNodeLabel = NodeTypes.MEMBER,
-      edgeType = EdgeTypes.REF,
-      dstNodeMap = typeDeclMemberToNode(cpg, _),
-      getDstFullNames = (call: Call) => dstMemberFullNames(call),
-      dstFullNameKey = PropertyNames.NAME,
-      dstGraph
-    )
+    try {
+      linkToMultiple(
+        cpg,
+        srcLabels = List(NodeTypes.CALL),
+        dstNodeLabel = NodeTypes.MEMBER,
+        edgeType = EdgeTypes.REF,
+        dstNodeMap = typeDeclMemberToNode(cpg, _),
+        getDstFullNames = (call: Call) => dstMemberFullNames(call),
+        dstFullNameKey = PropertyNames.NAME,
+        dstGraph
+      )
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in FieldAccessLinkerPass", ex)
+    }
   }
 
   private def dstMemberFullNames(call: Call): Seq[String] = {

@@ -1,31 +1,41 @@
 package io.joern.x2cpg.passes.base
 
 import io.shiftleft.codepropertygraph.Cpg
-import io.shiftleft.codepropertygraph.generated.nodes._
-import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes}
+import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes, Properties}
 import io.shiftleft.passes.ConcurrentWriterCpgPass
+import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.mutable
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 
 /** This pass has MethodStubCreator and TypeDeclStubCreator as prerequisite for language frontends which do not provide
   * method stubs and type decl stubs.
   */
 class ContainsEdgePass(cpg: Cpg) extends ConcurrentWriterCpgPass[AstNode](cpg) {
-  import ContainsEdgePass._
+  import ContainsEdgePass.*
 
+  private val logger: Logger = LoggerFactory.getLogger(this.getClass)
   override def generateParts(): Array[AstNode] =
     cpg.graph.nodes(sourceTypes*).asScala.map(_.asInstanceOf[AstNode]).toArray
 
   override def runOnPart(dstGraph: DiffGraphBuilder, source: AstNode): Unit = {
-    // AST is assumed to be a tree. If it contains cycles, then this will give a nice endless loop with OOM
-    val queue = mutable.ArrayDeque[StoredNode](source)
-    while (queue.nonEmpty) {
-      val parent = queue.removeHead()
-      for (nextNode <- parent._astOut) {
-        if (isDestinationType(nextNode)) dstGraph.addEdge(source, nextNode, EdgeTypes.CONTAINS)
-        if (!isSourceType(nextNode)) queue.append(nextNode)
+    try {
+      // AST is assumed to be a tree. If it contains cycles, then this will give a nice endless loop with OOM
+      val queue = mutable.ArrayDeque[StoredNode](source)
+      while (queue.nonEmpty) {
+        val parent = queue.removeHead()
+        for (nextNode <- parent._astOut) {
+          if (isDestinationType(nextNode)) dstGraph.addEdge(source, nextNode, EdgeTypes.CONTAINS)
+          if (!isSourceType(nextNode)) queue.append(nextNode)
+        }
       }
+    } catch {
+      case ex: Exception =>
+        logger.warn(
+          s"Error in ContainsEdgePass for node in file '${source.propertyOption(Properties.FILENAME).toString}''",
+          ex
+        )
     }
   }
 }
