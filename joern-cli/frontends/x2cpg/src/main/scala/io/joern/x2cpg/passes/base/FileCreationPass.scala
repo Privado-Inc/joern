@@ -7,6 +7,7 @@ import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes, PropertyN
 import io.shiftleft.passes.CpgPass
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.FileTraversal
+import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.mutable
 
@@ -14,7 +15,8 @@ import scala.collection.mutable
   * SOURCE_FILE edges.
   */
 class FileCreationPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
-  private val srcLabels = List(NodeTypes.NAMESPACE_BLOCK, NodeTypes.TYPE_DECL, NodeTypes.METHOD, NodeTypes.COMMENT)
+  private val logger: Logger = LoggerFactory.getLogger(this.getClass)
+  private val srcLabels      = List(NodeTypes.NAMESPACE_BLOCK, NodeTypes.TYPE_DECL, NodeTypes.METHOD, NodeTypes.COMMENT)
 
   override def run(dstGraph: DiffGraphBuilder): Unit = {
     val originalFileNameToNode = mutable.Map.empty[String, StoredNode]
@@ -38,21 +40,25 @@ class FileCreationPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
         dstGraph.addEdge(srcNode, newFile, EdgeTypes.SOURCE_FILE)
       }
     }
-
-    // Create SOURCE_FILE edges from nodes of various types to FILE
-    linkToSingle(
-      cpg,
-      srcNodes = cpg.graph.nodes(srcLabels*).toList,
-      srcLabels = srcLabels,
-      dstNodeLabel = NodeTypes.FILE,
-      edgeType = EdgeTypes.SOURCE_FILE,
-      dstNodeMap = { x =>
-        originalFileNameToNode.get(x)
-      },
-      dstFullNameKey = PropertyNames.FILENAME,
-      dstGraph,
-      Some(createFileIfDoesNotExist)
-    )
+    try {
+      // Create SOURCE_FILE edges from nodes of various types to FILE
+      linkToSingle(
+        cpg,
+        srcNodes = cpg.graph.nodes(srcLabels*).toList,
+        srcLabels = srcLabels,
+        dstNodeLabel = NodeTypes.FILE,
+        edgeType = EdgeTypes.SOURCE_FILE,
+        dstNodeMap = { x =>
+          originalFileNameToNode.get(x)
+        },
+        dstFullNameKey = PropertyNames.FILENAME,
+        dstGraph,
+        Some(createFileIfDoesNotExist)
+      )
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in FileCreationPass", ex)
+    }
   }
 
 }

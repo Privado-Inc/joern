@@ -4,10 +4,13 @@ import io.joern.x2cpg.utils.LinkingUtil
 import io.shiftleft.codepropertygraph.Cpg
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes, PropertyNames}
 import io.shiftleft.passes.ForkJoinParallelCpgPass
+import org.slf4j.{Logger, LoggerFactory}
 import overflowdb.Node
 import overflowdb.traversal.*
 
 class TypeEvalPass(cpg: Cpg) extends ForkJoinParallelCpgPass[List[Node]](cpg) with LinkingUtil {
+  private val logger: Logger = LoggerFactory.getLogger(this.getClass)
+
   val srcLabels = List(
     NodeTypes.METHOD_PARAMETER_IN,
     NodeTypes.METHOD_PARAMETER_OUT,
@@ -28,16 +31,21 @@ class TypeEvalPass(cpg: Cpg) extends ForkJoinParallelCpgPass[List[Node]](cpg) wi
     nodes.grouped(getBatchSize(nodes.size)).toArray
   }
   def runOnPart(builder: DiffGraphBuilder, part: List[overflowdb.Node]): Unit = {
-    linkToSingle(
-      cpg = cpg,
-      srcNodes = part,
-      srcLabels = srcLabels,
-      dstNodeLabel = NodeTypes.TYPE,
-      edgeType = EdgeTypes.EVAL_TYPE,
-      dstNodeMap = typeFullNameToNode(cpg, _),
-      dstFullNameKey = PropertyNames.TYPE_FULL_NAME,
-      dstGraph = builder,
-      None
-    )
+    try {
+      linkToSingle(
+        cpg = cpg,
+        srcNodes = part,
+        srcLabels = srcLabels,
+        dstNodeLabel = NodeTypes.TYPE,
+        edgeType = EdgeTypes.EVAL_TYPE,
+        dstNodeMap = typeFullNameToNode(cpg, _),
+        dstFullNameKey = PropertyNames.TYPE_FULL_NAME,
+        dstGraph = builder,
+        None
+      )
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in TypeEvalPass", ex)
+    }
   }
 }

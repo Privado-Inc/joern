@@ -6,24 +6,30 @@ import io.shiftleft.codepropertygraph.generated.nodes.StoredNode
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes}
 import io.shiftleft.passes.CpgPass
 import io.shiftleft.semanticcpg.language.*
+import org.slf4j.{Logger, LoggerFactory}
 
 class AstLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
-
+  private val logger: Logger = LoggerFactory.getLogger(this.getClass)
   override def run(dstGraph: DiffGraphBuilder): Unit = {
-    cpg.method.whereNot(_.astParent).foreach { method =>
-      addAstParent(method, method.fullName, method.astParentType, method.astParentFullName, dstGraph)
-    }
-    cpg.typeDecl.whereNot(_.astParent).foreach { typeDecl =>
-      addAstParent(typeDecl, typeDecl.fullName, typeDecl.astParentType, typeDecl.astParentFullName, dstGraph)
-    }
-    cpg.member.whereNot(_.astParent).foreach { member =>
-      addAstParent(
-        member,
-        s"${member.astParentFullName}.${member.name}",
-        member.astParentType,
-        member.astParentFullName,
-        dstGraph
-      )
+    try {
+      cpg.method.whereNot(_.astParent).foreach { method =>
+        addAstParent(method, method.fullName, method.astParentType, method.astParentFullName, dstGraph)
+      }
+      cpg.typeDecl.whereNot(_.astParent).foreach { typeDecl =>
+        addAstParent(typeDecl, typeDecl.fullName, typeDecl.astParentType, typeDecl.astParentFullName, dstGraph)
+      }
+      cpg.member.whereNot(_.astParent).foreach { member =>
+        addAstParent(
+          member,
+          s"${member.astParentFullName}.${member.name}",
+          member.astParentType,
+          member.astParentFullName,
+          dstGraph
+        )
+      }
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in AstLinkerPass", ex)
     }
   }
 
