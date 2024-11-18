@@ -3,7 +3,7 @@ package io.joern.x2cpg.passes.base
 import io.joern.x2cpg.utils.LinkingUtil
 import io.shiftleft.codepropertygraph.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.StoredNode
-import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes}
+import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes, Properties}
 import io.shiftleft.passes.CpgPass
 import io.shiftleft.semanticcpg.language.*
 import org.slf4j.{Logger, LoggerFactory}
@@ -44,25 +44,33 @@ class AstLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
     astParentFullName: String,
     dstGraph: DiffGraphBuilder
   ): Unit = {
-    val astParentOption: Option[StoredNode] =
-      astParentType match {
-        case NodeTypes.METHOD          => methodFullNameToNode(cpg, astParentFullName)
-        case NodeTypes.TYPE_DECL       => typeDeclFullNameToNode(cpg, astParentFullName)
-        case NodeTypes.NAMESPACE_BLOCK => namespaceBlockFullNameToNode(cpg, astParentFullName)
-        case _ =>
-          logger.warn(
-            s"Invalid AST_PARENT_TYPE=$astParentFullName;" +
-              s" astChild LABEL=${astChild.label};" +
-              s" astChild FULL_NAME=$astChildFullName"
-          )
-          None
-      }
+    try {
+      val astParentOption: Option[StoredNode] =
+        astParentType match {
+          case NodeTypes.METHOD          => methodFullNameToNode(cpg, astParentFullName)
+          case NodeTypes.TYPE_DECL       => typeDeclFullNameToNode(cpg, astParentFullName)
+          case NodeTypes.NAMESPACE_BLOCK => namespaceBlockFullNameToNode(cpg, astParentFullName)
+          case _ =>
+            logger.warn(
+              s"Invalid AST_PARENT_TYPE=$astParentFullName;" +
+                s" astChild LABEL=${astChild.label};" +
+                s" astChild FULL_NAME=$astChildFullName"
+            )
+            None
+        }
 
-    astParentOption match {
-      case Some(astParent) =>
-        dstGraph.addEdge(astParent, astChild, EdgeTypes.AST)
-      case None =>
-        logFailedSrcLookup(EdgeTypes.AST, astParentType, astParentFullName, astChild.label, astChild.id.toString)
+      astParentOption match {
+        case Some(astParent) =>
+          dstGraph.addEdge(astParent, astChild, EdgeTypes.AST)
+        case None =>
+          logFailedSrcLookup(EdgeTypes.AST, astParentType, astParentFullName, astChild.label, astChild.id.toString)
+      }
+    } catch {
+      case ex: Exception =>
+        logger.warn(
+          s"Error in AstLinkerPass for node in file '${astChild.propertyOption(Properties.FILENAME).toString}''",
+          ex
+        )
     }
   }
 }
