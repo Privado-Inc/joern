@@ -1,12 +1,13 @@
 package io.joern.dataflowengineoss.passes.reachingdef
 
-import io.joern.dataflowengineoss.{globalFromLiteral, identifierToFirstUsages}
 import io.joern.dataflowengineoss.queryengine.AccessPathUsage.toTrackedBaseAndAccessPathSimple
 import io.joern.dataflowengineoss.semanticsloader.Semantics
+import io.joern.dataflowengineoss.{globalFromLiteral, identifierToFirstUsages}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, Operators, PropertyNames}
 import io.shiftleft.semanticcpg.accesspath.MatchResult
 import io.shiftleft.semanticcpg.language.*
+import org.slf4j.LoggerFactory
 import overflowdb.BatchedUpdate.DiffGraphBuilder
 
 import scala.collection.{Set, mutable}
@@ -14,7 +15,7 @@ import scala.collection.{Set, mutable}
 /** Creation of data dependence edges based on solution of the ReachingDefProblem.
   */
 class DdgGenerator(semantics: Semantics) {
-
+  private val logger        = LoggerFactory.getLogger(getClass)
   implicit val s: Semantics = semantics
 
   /** Once reaching definitions have been computed, we create a data dependence graph by checking which reaching
@@ -168,6 +169,7 @@ class DdgGenerator(semantics: Semantics) {
     }
 
     def addEdgesToCapturedIdentifiersAndParameters(): Unit = {
+
       val identifierDestPairs =
         method._identifierViaContainsOut
           .flatMap { identifier =>
@@ -202,18 +204,22 @@ class DdgGenerator(semantics: Semantics) {
           }
         }
     }
+    try {
+      addEdgesFromEntryNode()
+      allNodes.foreach {
+        case call: Call                   => addEdgesToCallSite(call)
+        case ret: Return                  => addEdgesToReturn(ret)
+        case paramOut: MethodParameterOut => addEdgesToMethodParameterOut(paramOut)
+        case _                            =>
+      }
 
-    addEdgesFromEntryNode()
-    allNodes.foreach {
-      case call: Call                   => addEdgesToCallSite(call)
-      case ret: Return                  => addEdgesToReturn(ret)
-      case paramOut: MethodParameterOut => addEdgesToMethodParameterOut(paramOut)
-      case _                            =>
+      addEdgesToCapturedIdentifiersAndParameters()
+      addEdgesToExitNode(method.methodReturn)
+      addEdgesFromLoneIdentifiersToExit(method)
+    } catch {
+      case exception: Exception =>
+        logger.warn("Error in DdgGenerator,", exception)
     }
-
-    addEdgesToCapturedIdentifiersAndParameters()
-    addEdgesToExitNode(method.methodReturn)
-    addEdgesFromLoneIdentifiersToExit(method)
   }
 
   private def addEdge(fromNode: StoredNode, toNode: StoredNode, variable: String = "")(implicit

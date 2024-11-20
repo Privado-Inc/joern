@@ -344,20 +344,25 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
   }
 
   override def run(): Unit = {
-    // Set known aliases that point to imports for local and external methods/modules
-    importNodes.foreach(visitImport)
-    // Look at symbols with existing type info
-    prepopulateSymbolTable()
-    // Prune import names if the methods exist in the CPG
-    postVisitImports()
-    // Populate local symbol table with assignments
-    assignments.foreach(visitAssignments)
-    // See if any new information are in the parameters of methods
-    returns.foreach(visitReturns)
-    // Persist findings
-    setTypeInformation()
-    // Entrypoint for any final changes
-    postSetTypeInformation()
+    try {
+      // Set known aliases that point to imports for local and external methods/modules
+      importNodes.foreach(visitImport)
+      // Look at symbols with existing type info
+      prepopulateSymbolTable()
+      // Prune import names if the methods exist in the CPG
+      postVisitImports()
+      // Populate local symbol table with assignments
+      assignments.foreach(visitAssignments)
+      // See if any new information are in the parameters of methods
+      returns.foreach(visitReturns)
+      // Persist findings
+      setTypeInformation()
+      // Entrypoint for any final changes
+      postSetTypeInformation()
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in XTypeRecovery ", ex)
+    }
   }
 
   private def debugLocation(n: AstNode): String = {
@@ -643,7 +648,14 @@ abstract class RecoverForXCompilationUnit[CompilationUnitType <: AstNode](
   protected def methodReturnValues(methodFullNames: Seq[String]): Set[String] = {
     val rs = cpg.method
       .fullNameExact(methodFullNames*)
-      .methodReturn
+      .flatMap(method => {
+        Try(method.methodReturn) match {
+          case Success(value) => Some(value)
+          case Failure(exception) =>
+            logger.warn(s"Error in Type Recovery for method ${method.fullName} from file ${method.filename}")
+            None
+        }
+      })
       .flatMap(mr => mr.typeFullName +: (mr.dynamicTypeHintFullName ++ mr.possibleTypes))
       .filterNot(_.equals("ANY"))
       .toSet

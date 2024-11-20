@@ -344,15 +344,22 @@ object UsageSlicing {
         typeDecl.fullName,
         typeDecl.member.map(m => DefComponent.fromNode(m)).collectAll[LocalDef].l,
         typeDecl.method
-          .map(m =>
-            ObservedCall(
-              m.name,
-              Option(m.fullName),
-              m.parameter.map(_.typeFullName).toList,
-              m.methodReturn.typeFullName,
-              m.lineNumber.map(_.intValue()),
-              m.columnNumber.map(_.intValue())
-            )
+          .flatMap(m =>
+            Try(
+              ObservedCall(
+                m.name,
+                Option(m.fullName),
+                m.parameter.map(_.typeFullName).toList,
+                m.methodReturn.typeFullName,
+                m.lineNumber.map(_.intValue()),
+                m.columnNumber.map(_.intValue())
+              )
+            ) match {
+              case Success(value) => Some(value)
+              case Failure(exception) =>
+                logger.warn("Error in dataflow UsageSlicing", exception)
+                None
+            }
           )
           .l,
         typeDecl.filename,
