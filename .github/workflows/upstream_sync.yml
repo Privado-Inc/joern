@@ -31,6 +31,7 @@ jobs:
         run: |
                gh api repos/joernio/joern/git/ref/tags/${{ env.RAW_RELEASE_TAG }} --verbose
                COMMIT_URL=$(gh api repos/joernio/joern/git/ref/tags/${{ env.RAW_RELEASE_TAG }} --jq '.object.url')
+               echo $COMMIT_URL
                COMMIT_SHA=$(curl -L \
                 -H "Accept: application/vnd.github+json" \
                 $COMMIT_URL | jq -r .object.sha)
