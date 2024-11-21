@@ -18,7 +18,7 @@ jobs:
               echo "RAW_RELEASE_TAG=$(curl -L \
               -H "Accept: application/vnd.github+json" \
               https://api.github.com/repos/joernio/joern/releases/latest | jq -r .name)" >> $GITHUB_ENV
-              echo "LATEST_TAG=$(${{ env.RAW_RELEASE_TAG }}| sed 's/[v]//g' | sed 's/[.]/-/g' )" >> $GITHUB_ENV
+              echo "LATEST_TAG=$(${{ env.RAW_RELEASE_TAG }} | sed 's/[v]//g' | sed 's/[.]/-/g' )" >> $GITHUB_ENV
 
       - name: Create tag branch and merge upstream
         run: |
