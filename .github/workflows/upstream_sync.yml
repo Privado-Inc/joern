@@ -15,13 +15,15 @@ jobs:
 
       - name: Get latest upstream release
         run: |
-              echo "LATEST_TAG=$(curl -L \
+              echo "RAW_RELEASE_TAG=$(curl -L \
               -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/joernio/joern/releases/latest | jq -r .name | sed 's/[v]//g' | sed 's/[.]/-/g' )" >> $GITHUB_ENV
+              https://api.github.com/repos/joernio/joern/releases/latest | jq -r .name)" >> $GITHUB_ENV
+              echo "LATEST_TAG=$(${{ env.RAW_RELEASE_TAG }}| sed 's/[v]//g' | sed 's/[.]/-/g' )" >> $GITHUB_ENV
 
       - name: Create tag branch and merge upstream
         run: |
-               LATEST_SHA=$(gh api repos/joernio/joern/git/ref/tags/${{ env.LATEST_TAG }} --jq '.object.sha')
+               
+               LATEST_SHA=$(gh api repos/joernio/joern/git/ref/tags/${{ env.RAW_RELEASE_TAG }} --jq '.object.sha')
                gh api repos/Privado-Inc/joern/git/refs \
                -X POST \
                -f ref="refs/heads/${{ env.LATEST_TAG }}" \
