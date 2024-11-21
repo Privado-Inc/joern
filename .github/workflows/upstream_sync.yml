@@ -29,18 +29,21 @@ jobs:
 
       - name: Create tag branch and merge upstream
         run: |
-               gh api repos/joernio/joern/git/ref/tags/${{ env.RAW_RELEASE_TAG }} --verbose
-               COMMIT_URL=$(gh api repos/joernio/joern/git/ref/tags/${{ env.RAW_RELEASE_TAG }} --jq '.object.url')
+               COMMIT_URL=$(curl -v \
+                -H "Authorization: Bearer ${{ env.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github+json" \
+                https://api.github.com/repos/joernio/joern/git/ref/tags/${{ env.RAW_RELEASE_TAG }} \
+                | jq -r '.object.url')
                echo $COMMIT_URL
                COMMIT_SHA=$(curl -L \
                 -H "Accept: application/vnd.github+json" \
                 $COMMIT_URL | jq -r .object.sha)
                echo $COMMIT_SHA
-               gh api repos/Privado-Inc/joern/git/refs \
-               -X POST \
-               -f ref="refs/heads/${{ env.LATEST_TAG }}" \
-               -f sha="$COMMIT_SHA"
-               --verbose
+                curl -X POST \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  -d '{"ref": "refs/heads/'"${LATEST_TAG}"'", "sha": "'"${COMMIT_SHA}"'"}' \
+                  https://api.github.com/repos/Privado-Inc/joern/git/refs
         env:
           GITHUB_TOKEN: ${{ secrets.CORE_AT }}
 
