@@ -35,8 +35,9 @@ jobs:
                -X POST \
                -f ref="refs/heads/${{ env.LATEST_TAG }}" \
                -f sha="$LATEST_SHA"
+               --verbose
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.CORE_AT }}
 
       - run: bash ./upstream_sync.sh --branch ${{ env.LATEST_TAG }}
         env:
