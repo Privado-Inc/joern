@@ -15,16 +15,40 @@ jobs:
 
       - name: Get latest upstream release
         run: |
-              echo "LATEST_TAG=$(curl -L \
-              -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/joernio/joern/releases/latest | jq -r .name | sed 's/[v]//g' | sed 's/[.]/-/g' )" >> $GITHUB_ENV
+              # Fetch the latest release tag from the GitHub API
+              RAW_RELEASE_TAG=$(curl -L \
+                -H "Accept: application/vnd.github+json" \
+                https://api.github.com/repos/joernio/joern/releases/latest | jq -r .name)
+              
+              # Process the tag to create the desired format
+              LATEST_TAG=$(echo "$RAW_RELEASE_TAG" | sed 's/^v//' | sed 's/\./-/g')
+              
+              # Export to GitHub environment variables
+              echo "RAW_RELEASE_TAG=$RAW_RELEASE_TAG" >> $GITHUB_ENV
+              echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
 
       - name: Create tag branch and merge upstream
-        uses: peterjgrainger/action-create-branch@v2.2.0
+        run: |
+               # Get the latest commit url
+               COMMIT_URL=$(curl -v \
+                -H "Authorization: Bearer ${{ env.GITHUB_TOKEN }}" \
+                -H "Accept: application/vnd.github+json" \
+                https://api.github.com/repos/joernio/joern/git/ref/tags/${{ env.RAW_RELEASE_TAG }} \
+                | jq -r '.object.url')
+
+               # Get SHA from the commit URL
+               COMMIT_SHA=$(curl -L \
+                -H "Accept: application/vnd.github+json" \
+                $COMMIT_URL | jq -r .object.sha)
+
+                # Create a branch pointing to the commit
+                curl -X POST \
+                  -H "Authorization: Bearer ${{ env.GITHUB_TOKEN }}" \
+                  -H "Accept: application/vnd.github+json" \
+                  -d '{"ref": "refs/heads/'"${LATEST_TAG}"'", "sha": "'"${COMMIT_SHA}"'"}' \
+                  https://api.github.com/repos/Privado-Inc/joern/git/refs
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          branch: ${{ env.LATEST_TAG }}
+          GITHUB_TOKEN: ${{ secrets.CORE_AT }}
 
       - run: bash ./upstream_sync.sh --branch ${{ env.LATEST_TAG }}
         env:
