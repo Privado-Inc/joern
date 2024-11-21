@@ -34,6 +34,7 @@ jobs:
                COMMIT_SHA=$(curl -L \
                 -H "Accept: application/vnd.github+json" \
                 $COMMIT_URL | jq -r .object.sha)
+               echo $COMMIT_SHA
                gh api repos/Privado-Inc/joern/git/refs \
                -X POST \
                -f ref="refs/heads/${{ env.LATEST_TAG }}" \
