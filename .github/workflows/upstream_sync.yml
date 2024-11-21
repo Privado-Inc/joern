@@ -20,11 +20,13 @@ jobs:
               https://api.github.com/repos/joernio/joern/releases/latest | jq -r .name | sed 's/[v]//g' | sed 's/[.]/-/g' )" >> $GITHUB_ENV
 
       - name: Create tag branch and merge upstream
-        uses: peterjgrainger/action-create-branch@v2.2.0
+        run: |
+               gh api repos/Privado-Inc/joern/git/refs \
+               -X POST \
+               -f ref="refs/heads/${{ env.LATEST_TAG }}" \
+               -f sha="$LATEST_TAG"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          branch: ${{ env.LATEST_TAG }}
 
       - run: bash ./upstream_sync.sh --branch ${{ env.LATEST_TAG }}
         env:
