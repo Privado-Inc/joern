@@ -33,6 +33,7 @@ jobs:
                LATEST_SHA=$(gh api repos/joernio/joern/git/ref/tags/${{ env.RAW_RELEASE_TAG }} --jq '.object.sha')
                COMMIT_SHA=$(gh api repos/joernio/joern/git/commits/$LATEST_SHA --jq '.sha')
                echo $LATEST_SHA
+               echo $COMMIT_SHA
                gh api repos/Privado-Inc/joern/git/refs \
                -X POST \
                -f ref="refs/heads/${{ env.LATEST_TAG }}" \
