@@ -29,7 +29,7 @@ jobs:
 
       - name: Create tag branch and merge upstream
         run: |
-               
+               gh api repos/joernio/joern/git/ref/tags/${{ env.RAW_RELEASE_TAG }} --verbose
                LATEST_SHA=$(gh api repos/joernio/joern/git/ref/tags/${{ env.RAW_RELEASE_TAG }} --jq '.object.sha')
                gh api repos/Privado-Inc/joern/git/refs \
                -X POST \
