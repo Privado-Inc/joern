@@ -21,10 +21,11 @@ jobs:
 
       - name: Create tag branch and merge upstream
         run: |
+               LATEST_SHA=$(gh api repos/joernio/joern/git/ref/tags/${{ env.LATEST_TAG }} --jq '.object.sha')
                gh api repos/Privado-Inc/joern/git/refs \
                -X POST \
                -f ref="refs/heads/${{ env.LATEST_TAG }}" \
-               -f sha="$LATEST_TAG"
+               -f sha="$LATEST_SHA"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
