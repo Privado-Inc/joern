@@ -1,13 +1,14 @@
 package io.joern.rubysrc2cpg.astcreation
 
 import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.*
-import io.joern.rubysrc2cpg.datastructures.{BlockScope, MethodScope, ModuleScope, TypeScope}
+import io.joern.rubysrc2cpg.datastructures.{BlockScope, MethodScope, ModuleScope, NamespaceScope, TypeScope}
 import io.joern.rubysrc2cpg.passes.Defines
 import io.joern.x2cpg.utils.NodeBuilders.newModifierNode
 import io.joern.x2cpg.{Ast, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{
   DispatchTypes,
+  EdgeTypes,
   EvaluationStrategies,
   ModifierTypes,
   NodeTypes,
@@ -19,7 +20,7 @@ import scala.collection.mutable
 
 trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
-  protected def astForClassDeclaration(node: RubyNode & TypeDeclaration): Seq[Ast] = {
+  protected def astForClassDeclaration(node: RubyExpression & TypeDeclaration): Seq[Ast] = {
     node.name match
       case name: SimpleIdentifier => astForSimpleNamedClassDeclaration(node, name)
       case name =>
@@ -27,46 +28,90 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
         astForUnknown(node) :: Nil
   }
 
-  private def getBaseClassName(node: RubyNode): Option[String] = {
+  private def getBaseClassName(node: RubyExpression): String = {
     node match
       case simpleIdentifier: SimpleIdentifier =>
-        val name = simpleIdentifier.text
-        scope.lookupVariable(name) match {
-          case Some(_) => Option(name) // in the case of singleton classes, we want to keep the variable name
-          case None    => scope.tryResolveTypeReference(name).map(_.name).orElse(Option(name))
-        }
+        simpleIdentifier.text
       case _: SelfIdentifier =>
-        scope.surroundingTypeFullName
+        Defines.Self
       case qualifiedBaseClass: MemberAccess =>
-        scope
-          .tryResolveTypeReference(qualifiedBaseClass.toString)
-          .map(_.name)
-          .orElse(Option(qualifiedBaseClass.toString))
+        qualifiedBaseClass.text.replace("::", ".")
+      case qualifiedBaseClass: MemberCall =>
+        qualifiedBaseClass.text.replace("::", ".")
       case x =>
         logger.warn(
-          s"Base class names of type ${x.getClass} are not supported yet: ${code(node)} ($relativeFileName), skipping"
+          s"Base class names of type ${x.getClass} are not supported yet: ${code(node)} ($relativeFileName), returning string as-is"
         )
-        None
+        x.text
   }
 
   private def astForSimpleNamedClassDeclaration(
-    node: RubyNode & TypeDeclaration,
+    node: RubyExpression & TypeDeclaration,
     nameIdentifier: SimpleIdentifier
   ): Seq[Ast] = {
-    val className     = nameIdentifier.text
-    val inheritsFrom  = node.baseClass.flatMap(getBaseClassName).toList
-    val classFullName = computeClassFullName(className)
-    val typeDecl = typeDeclNode(
-      node = node,
-      name = className,
-      fullName = classFullName,
-      filename = relativeFileName,
-      code = code(node),
-      inherits = inheritsFrom,
-      alias = None
-    )
-    scope.surroundingAstLabel.foreach(typeDecl.astParentType(_))
-    scope.surroundingScopeFullName.foreach(typeDecl.astParentFullName(_))
+    val className    = nameIdentifier.text
+    val inheritsFrom = node.baseClass.map(getBaseClassName).toList
+    pushAccessModifier(ModifierTypes.PUBLIC)
+
+    /** Pushes new NamespaceScope onto scope stack and populates AST_PARENT_FULL_NAME and AST_PARENT_TYPE for TypeDecls
+      * that are declared in a namespace
+      * @param typeDecl
+      *   \- TypeDecl node
+      * @param astParentFullName
+      *   \- Fullname of AstParent
+      * @return
+      *   typeDecl node with updated fields
+      */
+    def populateAstParentValues(typeDecl: NewTypeDecl, astParentFullName: String): NewTypeDecl = {
+      val namespaceBlockFullName = s"${scope.surroundingScopeFullName.getOrElse("")}.$astParentFullName"
+      scope.pushNewScope(NamespaceScope(namespaceBlockFullName))
+
+      val namespaceBlock =
+        NewNamespaceBlock().name(astParentFullName).fullName(astParentFullName).filename(relativeFileName)
+
+      diffGraph.addNode(namespaceBlock)
+
+      fileNode.foreach(diffGraph.addEdge(_, namespaceBlock, EdgeTypes.AST))
+
+      typeDecl.astParentFullName(astParentFullName)
+      typeDecl.astParentType(NodeTypes.NAMESPACE_BLOCK)
+
+      typeDecl.fullName(computeFullName(className))
+      typeDecl
+    }
+
+    val (typeDecl, classFullName, shouldPopAdditionalScope) = node match {
+      case x: NamespaceDeclaration if x.namespaceParts.isDefined =>
+        val className = nameIdentifier.text
+        val typeDeclTemp = typeDeclNode(
+          node = node,
+          name = className,
+          fullName = Defines.Any,
+          filename = relativeFileName,
+          code = code(node),
+          inherits = inheritsFrom,
+          alias = None
+        )
+        populateAstParentValues(typeDeclTemp, x.namespaceParts.get.mkString("."))
+        val classFullName = typeDeclTemp.fullName
+
+        (typeDeclTemp, classFullName, true)
+      case _ =>
+        val classFullName = computeFullName(className)
+        val typeDeclTemp = typeDeclNode(
+          node = node,
+          name = className,
+          fullName = classFullName,
+          filename = relativeFileName,
+          code = code(node),
+          inherits = inheritsFrom,
+          alias = None
+        )
+        scope.surroundingAstLabel.foreach(typeDeclTemp.astParentType(_))
+        scope.surroundingScopeFullName.foreach(typeDeclTemp.astParentFullName(_))
+        (typeDeclTemp, classFullName, false)
+    }
+
     /*
       In Ruby, there are semantic differences between the ordinary class and singleton class (think "meta" class in
       Python). Similar to how Java allows both static and dynamic methods/fields/etc. within the same type declaration,
@@ -98,16 +143,17 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
     val classBody =
       node.body.asInstanceOf[StatementList] // for now (bodyStatement is a superset of stmtList)
 
-    def handleDefaultConstructor(bodyAsts: Seq[Ast]): Seq[Ast] = bodyAsts match {
-      case bodyAsts if scope.shouldGenerateDefaultConstructor && this.parseLevel == AstParseLevel.FULL_AST =>
+    val classBodyAsts = {
+      val bodyAsts = classBody.statements.flatMap(astsForStatement)
+      if (scope.shouldGenerateDefaultConstructor && this.parseLevel == AstParseLevel.FULL_AST) {
         val bodyStart  = classBody.span.spanStart()
         val initBody   = StatementList(List())(bodyStart)
         val methodDecl = astForMethodDeclaration(MethodDeclaration(Defines.Initialize, List(), initBody)(bodyStart))
         methodDecl ++ bodyAsts
-      case bodyAsts => bodyAsts
+      } else {
+        bodyAsts
+      }
     }
-
-    val classBodyAsts = handleDefaultConstructor(classBody.statements.flatMap(astsForStatement))
 
     val fields = node match {
       case classDecl: ClassDeclaration   => classDecl.fields
@@ -146,12 +192,23 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
         .withChildren(fieldSingletonMemberNodes.map(_._2))
     val bodyMemberCallAst =
       node.bodyMemberCall match {
-        case Some(bodyMemberCall) => astForMemberCall(bodyMemberCall)
+        case Some(bodyMemberCall) => astForTypeDeclBodyCall(bodyMemberCall, classFullName)
         case None                 => Ast()
       }
 
     (typeDeclAst :: singletonTypeDeclAst :: Nil).foreach(Ast.storeInDiffGraph(_, diffGraph))
+
+    if shouldPopAdditionalScope then scope.popScope()
+    popAccessModifier()
     prefixAst :: bodyMemberCallAst :: Nil
+  }
+
+  private def astForTypeDeclBodyCall(node: TypeDeclBodyCall, typeFullName: String): Ast = {
+    val callAst = astForMemberCall(node.toMemberCall, isStatic = true)
+    callAst.nodes.collectFirst {
+      case c: NewCall if c.name == Defines.TypeDeclBody => c.methodFullName(s"$typeFullName.${Defines.TypeDeclBody}")
+    }
+    callAst
   }
 
   private def createTypeRefPointer(typeDecl: NewTypeDecl): Ast = {
@@ -179,7 +236,11 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
           .methodFullName(Operators.fieldAccess)
           .dispatchType(DispatchTypes.STATIC_DISPATCH)
           .typeFullName(Defines.Any)
-        callAst(fieldAccess, Seq(Ast(self), Ast(fi)))
+        val selfAst = scope
+          .lookupVariable(Defines.Self)
+          .map(selfParam => Ast(self).withRefEdge(self, selfParam))
+          .getOrElse(Ast(self))
+        callAst(fieldAccess, Seq(selfAst, Ast(fi)))
       }
       astForAssignment(typeRefIdent, typeRefNode, typeDecl.lineNumber, typeDecl.columnNumber)
     } else {
@@ -191,84 +252,58 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
     node.fieldNames.flatMap(astsForSingleFieldDeclaration(node, _))
   }
 
-  private def astsForSingleFieldDeclaration(node: FieldsDeclaration, nameNode: RubyNode): Seq[Ast] = {
+  private def astsForSingleFieldDeclaration(node: FieldsDeclaration, nameNode: RubyExpression): Seq[Ast] = {
     nameNode match
       case nameAsSymbol: StaticLiteral if nameAsSymbol.isSymbol =>
         val fieldName   = nameAsSymbol.innerText.prepended('@')
         val memberNode_ = memberNode(nameAsSymbol, fieldName, code(node), Defines.Any)
         val memberAst   = Ast(memberNode_)
-        val getterAst   = Option.when(node.hasGetter)(astForGetterMethod(node, fieldName))
-        val setterAst   = Option.when(node.hasSetter)(astForSetterMethod(node, fieldName))
-        Seq(memberAst) ++ getterAst.toList ++ setterAst.toList
+        val getterAst   = Option.when(node.hasGetter)(astForGetterMethod(node, fieldName)).getOrElse(Nil)
+        val setterAst   = Option.when(node.hasSetter)(astForSetterMethod(node, fieldName)).getOrElse(Nil)
+        Seq(memberAst) ++ getterAst ++ setterAst
+      case nameAsIdent: SimpleIdentifier =>
+        val fieldName   = nameAsIdent.span.text.prepended('@')
+        val memberNode_ = memberNode(nameAsIdent, fieldName, code(node), Defines.Any)
+        val memberAst   = Ast(memberNode_)
+        val getterAst   = Option.when(node.hasGetter)(astForGetterMethod(node, fieldName)).getOrElse(Nil)
+        val setterAst   = Option.when(node.hasSetter)(astForSetterMethod(node, fieldName)).getOrElse(Nil)
+        Seq(memberAst) ++ getterAst ++ setterAst
       case _ =>
-        logger.warn(s"Unsupported field declaration: ${nameNode.text}, skipping")
+        logger.warn(
+          s"Unsupported field declaration: ${nameNode.text} (${nameNode.getClass}) (${this.relativeFileName}), skipping"
+        )
         Seq()
   }
 
   // creates a `def <name>() { return <fieldName> }` METHOD, for <fieldName> = @<name>.
-  private def astForGetterMethod(node: FieldsDeclaration, fieldName: String): Ast = {
-    val name     = fieldName.drop(1)
-    val fullName = computeMethodFullName(name)
-    val method = methodNode(
-      node = node,
-      name = name,
-      fullName = fullName,
-      code = s"def $name (...)",
-      signature = None,
-      fileName = relativeFileName,
-      astParentType = scope.surroundingAstLabel,
-      astParentFullName = scope.surroundingScopeFullName
-    )
-    scope.pushNewScope(MethodScope(fullName, procParamGen.fresh))
-    val block_ = blockNode(node)
-    scope.pushNewScope(BlockScope(block_))
-    // TODO: Should it be `return this.@abc`?
-    val returnAst_ = {
-      val returnNode_         = returnNode(node, s"return $fieldName")
-      val fieldNameIdentifier = identifierNode(node, fieldName, fieldName, Defines.Any)
-      returnAst(returnNode_, Seq(Ast(fieldNameIdentifier)))
-    }
-
-    val methodBody = blockAst(block_, List(returnAst_))
-    scope.popScope()
-    scope.popScope()
-    methodAst(method, Seq(), methodBody, methodReturnNode(node, Defines.Any))
+  private def astForGetterMethod(node: FieldsDeclaration, fieldName: String): Seq[Ast] = {
+    val name = fieldName.drop(1)
+    val code = s"def $name (...)"
+    val methodDecl = MethodDeclaration(
+      name,
+      Nil,
+      StatementList(InstanceFieldIdentifier()(node.span.spanStart(fieldName)) :: Nil)(
+        node.span.spanStart(s"return $fieldName")
+      )
+    )(node.span.spanStart(code))
+    astForMethodDeclaration(methodDecl)
   }
 
   // creates a `def <name>=(x) { <fieldName> = x }` METHOD, for <fieldName> = @<name>
-  private def astForSetterMethod(node: FieldsDeclaration, fieldName: String): Ast = {
-    val name     = fieldName.drop(1) + "="
-    val fullName = computeMethodFullName(name)
-    val method = methodNode(
-      node = node,
-      name = name,
-      fullName = fullName,
-      code = s"def $name (...)",
-      signature = None,
-      fileName = relativeFileName,
-      astParentType = scope.surroundingAstLabel,
-      astParentFullName = scope.surroundingScopeFullName
-    )
-    scope.pushNewScope(MethodScope(fullName, procParamGen.fresh))
-    val parameter = parameterInNode(node, "x", "x", 1, false, EvaluationStrategies.BY_REFERENCE)
-    val methodBody = {
-      val block_ = blockNode(node)
-      scope.pushNewScope(BlockScope(block_))
-      val lhs = identifierNode(node, fieldName, fieldName, Defines.Any)
-      val rhs = identifierNode(node, parameter.name, parameter.name, Defines.Any)
-      val assignmentCall = callNode(
-        node,
-        s"${lhs.code} = ${rhs.code}",
-        Operators.assignment,
-        Operators.assignment,
-        DispatchTypes.STATIC_DISPATCH
-      )
-      val assignmentAst = callAst(assignmentCall, Seq(Ast(lhs), Ast(rhs)))
-      scope.popScope()
-      blockAst(blockNode(node), List(assignmentAst))
-    }
-    scope.popScope()
-    methodAst(method, Seq(Ast(parameter)), methodBody, methodReturnNode(node, Defines.Any))
+  private def astForSetterMethod(node: FieldsDeclaration, fieldName: String): Seq[Ast] = {
+    val name = fieldName.drop(1) + "="
+    val code = s"def $name (...)"
+    val assignment = SingleAssignment(
+      InstanceFieldIdentifier()(node.span.spanStart(fieldName)),
+      "=",
+      SimpleIdentifier()(node.span.spanStart("x"))
+    )(node.span.spanStart(s"$fieldName = x"))
+    val methodDecl = MethodDeclaration(
+      name,
+      MandatoryParameter("x")(node.span.spanStart("x")) :: Nil,
+      StatementList(assignment :: Nil)(node.span.spanStart(s"return $fieldName"))
+    )(node.span.spanStart(code))
+    astForMethodDeclaration(methodDecl)
   }
 
 }

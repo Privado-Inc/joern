@@ -126,7 +126,7 @@ object AstGenRunner {
     val astGenCommand = path.getOrElse("astgen")
     val localPath     = path.flatMap(File(_).parentOption.map(_.pathAsString)).getOrElse(".")
     val debugMsgPath  = path.getOrElse("PATH")
-    ExternalCommand.run(s"$astGenCommand --version", localPath).toOption.map(_.mkString.strip()) match {
+    ExternalCommand.run(Seq(astGenCommand, "--version"), localPath).successOption.map(_.mkString.strip()) match {
       case Some(installedVersion)
           if installedVersion != "unknown" &&
             Try(VersionHelper.compare(installedVersion, astGenVersion)).toOption.getOrElse(-1) >= 0 =>
@@ -175,7 +175,7 @@ class AstGenRunner(config: Config) {
 
   import io.joern.jssrc2cpg.utils.AstGenRunner._
 
-  private val executableArgs = if (!config.tsTypes) " --no-tsTypes" else ""
+  private val executableArgs = if (!config.tsTypes) Seq("--no-tsTypes") else Seq.empty
 
   private def skippedFiles(astGenOut: List[String]): List[String] = {
     val skipped = astGenOut.collect {
@@ -297,39 +297,70 @@ class AstGenRunner(config: Config) {
     }
 
     val result =
-      ExternalCommand.run(s"$astGenCommand$executableArgs -t ts -o $out", out.toString(), extraEnv = NODE_OPTIONS)
+      ExternalCommand.run(
+        (astGenCommand +: executableArgs) ++ Seq("-t", "ts", "-o", out.toString),
+        out.toString(),
+        extraEnv = NODE_OPTIONS
+      )
 
     val jsons = SourceFiles.determine(out.toString(), Set(".json"))
     jsons.foreach { jsonPath =>
-      val jsonFile    = File(jsonPath)
-      val jsonContent = IOUtils.readEntireFile(jsonFile.path)
-      val json        = ujson.read(jsonContent)
-      val fileName    = json("fullName").str
-      val newFileName = fileName.patch(fileName.lastIndexOf(".js"), ".ejs", 3)
-      json("relativeName") = newFileName
-      json("fullName") = newFileName
+      val jsonFile        = File(jsonPath)
+      val jsonContent     = IOUtils.readEntireFile(jsonFile.path)
+      val json            = ujson.read(jsonContent)
+      val fullName        = json("fullName").str
+      val relativeName    = json("relativeName").str
+      val newFullName     = fullName.patch(fullName.lastIndexOf(".js"), ".ejs", 3)
+      val newRelativeName = relativeName.patch(relativeName.lastIndexOf(".js"), ".ejs", 3)
+      json("relativeName") = newRelativeName
+      json("fullName") = newFullName
       jsonFile.writeText(json.toString())
     }
 
     tmpJsFiles.foreach(_.delete())
-    result
+    result.toTry
   }
 
   private def ejsFiles(in: File, out: File): Try[Seq[String]] = {
-    val files = SourceFiles.determine(in.pathAsString, Set(".ejs"))
+    val files =
+      SourceFiles.determine(
+        in.pathAsString,
+        Set(".ejs"),
+        ignoredDefaultRegex = Some(AstGenDefaultIgnoreRegex),
+        ignoredFilesRegex = Some(config.ignoredFilesRegex),
+        ignoredFilesPath = Some(config.ignoredFiles)
+      )
     if (files.nonEmpty) processEjsFiles(in, out, files)
     else Success(Seq.empty)
   }
 
   private def vueFiles(in: File, out: File): Try[Seq[String]] = {
-    val files = SourceFiles.determine(in.pathAsString, Set(".vue"))
+    val files = SourceFiles.determine(
+      in.pathAsString,
+      Set(".vue"),
+      ignoredDefaultRegex = Some(AstGenDefaultIgnoreRegex),
+      ignoredFilesRegex = Some(config.ignoredFilesRegex),
+      ignoredFilesPath = Some(config.ignoredFiles)
+    )
     if (files.nonEmpty)
-      ExternalCommand.run(s"$astGenCommand$executableArgs -t vue -o $out", in.toString(), extraEnv = NODE_OPTIONS)
+      ExternalCommand
+        .run(
+          (astGenCommand +: executableArgs) ++ Seq("-t", "vue", "-o", out.toString),
+          in.toString(),
+          extraEnv = NODE_OPTIONS
+        )
+        .toTry
     else Success(Seq.empty)
   }
 
   private def jsFiles(in: File, out: File): Try[Seq[String]] =
-    ExternalCommand.run(s"$astGenCommand$executableArgs -t ts -o $out", in.toString(), extraEnv = NODE_OPTIONS)
+    ExternalCommand
+      .run(
+        (astGenCommand +: executableArgs) ++ Seq("-t", "ts", "-o", out.toString),
+        in.toString(),
+        extraEnv = NODE_OPTIONS
+      )
+      .toTry
 
   private def runAstGenNative(in: File, out: File): Try[Seq[String]] = for {
     ejsResult <- ejsFiles(in, out)
