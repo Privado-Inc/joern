@@ -88,8 +88,13 @@ class DependencyDownloader(
       case Success(x) => x
     }
 
-    def createUrl(packageType: String, version: String): URL = {
-      URI(s"https://$NUGET_BASE_API_V2/$packageType/${dependencyName}/$version").toURL
+    def createUrl(packageType: String, version: String): Option[URL] = {
+      Try(new URI(s"https://$NUGET_BASE_API_V2/$packageType/${dependencyName}/$version").toURL) match {
+        case Success(url) => Some(url)
+        case Failure(e) =>
+          logger.debug(s"Failed to create URL for packageType: $packageType, version: $version. Error: ${e.getMessage}")
+          None
+      }
     }
 
     // If dependency version is not specified, latest is returned
@@ -115,10 +120,11 @@ class DependencyDownloader(
     * @return
     *   the package version.
     */
-  private def downloadPackage(targetDir: File, dependency: Dependency, url: URL): Unit = {
+  private def downloadPackage(targetDir: File, dependency: Dependency, url: Option[URL]): Unit = {
     var connection: Option[HttpURLConnection] = None
+    if (url.isEmpty) return
     try {
-      connection = Option(url.openConnection()).collect { case x: HttpURLConnection => x }
+      connection = Option(url.get.openConnection()).collect { case x: HttpURLConnection => x }
       // allow both GZip and Deflate (ZLib) encodings
       connection.foreach(_.setRequestProperty("Accept-Encoding", "gzip, deflate"))
       connection match {
@@ -217,5 +223,4 @@ class DependencyDownloader(
       .map(CSharpProgramSummary(_))
     CSharpProgramSummary(summaries)
   }
-
 }
