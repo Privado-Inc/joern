@@ -1,12 +1,12 @@
 package io.joern.rubysrc2cpg.querying
 
-import io.joern.rubysrc2cpg.passes.{GlobalTypes, Defines as RubyDefines}
-import io.joern.rubysrc2cpg.passes.Defines.RubyOperators
+import io.joern.rubysrc2cpg.passes.Defines.{Main, RubyOperators}
 import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
+import io.joern.rubysrc2cpg.passes.{GlobalTypes, Defines as RubyDefines}
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.joern.x2cpg.Defines
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
+import io.shiftleft.codepropertygraph.generated.{DispatchTypes, NodeTypes, Operators}
 import io.shiftleft.semanticcpg.language.*
 
 class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
@@ -19,7 +19,7 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     val List(puts) = cpg.call.name("puts").l
     puts.lineNumber shouldBe Some(2)
     puts.code shouldBe "puts 'hello'"
-    puts.methodFullName shouldBe s"$kernelPrefix:puts"
+    puts.methodFullName shouldBe s"$kernelPrefix.puts"
     puts.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
 
     val List(selfReceiver: Identifier, hello: Literal) = puts.argument.l: @unchecked
@@ -53,7 +53,7 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     val List(puts) = cpg.call.name("puts").l
     puts.lineNumber shouldBe Some(2)
     puts.code shouldBe "Kernel.puts 'hello'"
-    puts.methodFullName shouldBe s"$kernelPrefix:puts"
+    puts.methodFullName shouldBe s"$kernelPrefix.puts"
     puts.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
 
     val List(kernelRec: Call) = puts.receiver.l: @unchecked
@@ -71,7 +71,7 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     val List(atan2) = cpg.call.name("atan2").l
     atan2.lineNumber shouldBe Some(3)
     atan2.code shouldBe "Math.atan2(1, 1)"
-    atan2.methodFullName shouldBe s"${GlobalTypes.builtinPrefix}.Math:atan2"
+    atan2.methodFullName shouldBe s"${GlobalTypes.builtinPrefix}.Math.atan2"
     atan2.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
 
     val List(mathRec: Call) = atan2.receiver.l: @unchecked
@@ -155,35 +155,38 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
   "a simple object instantiation" should {
 
     val cpg = code("""class A
+        |   def initialize(a, b)
+        |   end
         |end
         |
-        |a = A.new
+        |a = A.new 1, 2
         |""".stripMargin)
 
-    "create an assignment from `a` to an <init> invocation block" in {
-      inside(cpg.method(":program").assignment.where(_.target.isIdentifier.name("a")).l) {
+    "create an assignment from `a` to an alloc lowering invocation block" in {
+      inside(cpg.method.isModule.assignment.and(_.target.isIdentifier.name("a"), _.source.isBlock).l) {
         case assignment :: Nil =>
-          assignment.code shouldBe "a = A.new"
+          assignment.code shouldBe "a = A.new 1, 2"
           inside(assignment.argument.l) {
             case (a: Identifier) :: (_: Block) :: Nil =>
               a.name shouldBe "a"
-              a.dynamicTypeHintFullName should contain("Test0.rb:<global>::program.A")
+              a.dynamicTypeHintFullName should contain(s"Test0.rb:$Main.A")
             case xs => fail(s"Expected one identifier and one call argument, got [${xs.code.mkString(",")}]")
           }
         case xs => fail(s"Expected a single assignment, got [${xs.code.mkString(",")}]")
       }
     }
 
-    "create an assignment from a temp variable to the <init> call" in {
-      inside(cpg.method(":program").assignment.where(_.target.isIdentifier.name("<tmp-0>")).l) {
+    "create an assignment from a temp variable to the alloc call" in {
+      inside(cpg.method.isModule.assignment.where(_.target.isIdentifier.name("<tmp-1>")).l) {
         case assignment :: Nil =>
           inside(assignment.argument.l) {
             case (a: Identifier) :: (alloc: Call) :: Nil =>
-              a.name shouldBe "<tmp-0>"
+              a.name shouldBe "<tmp-1>"
 
               alloc.name shouldBe Operators.alloc
               alloc.methodFullName shouldBe Operators.alloc
-              alloc.code shouldBe "A.new"
+              alloc.code shouldBe "A.new 1, 2"
+              alloc.argument.size shouldBe 0
             case xs => fail(s"Expected one identifier and one call argument, got [${xs.code.mkString(",")}]")
           }
         case xs => fail(s"Expected a single assignment, got [${xs.code.mkString(",")}]")
@@ -191,14 +194,70 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     }
 
     "create a call to the object's constructor, with the temp variable receiver" in {
-      inside(cpg.call.nameExact("new").l) {
+      inside(cpg.call.nameExact(RubyDefines.Initialize).l) {
         case constructor :: Nil =>
           inside(constructor.argument.l) {
-            case (a: Identifier) :: Nil =>
-              a.name shouldBe "<tmp-0>"
-              a.typeFullName shouldBe "Test0.rb:<global>::program.A"
+            case (a: Identifier) :: (one: Literal) :: (two: Literal) :: Nil =>
+              a.name shouldBe "<tmp-1>"
+              a.typeFullName shouldBe s"Test0.rb:$Main.A"
               a.argumentIndex shouldBe 0
+
+              one.code shouldBe "1"
+              two.code shouldBe "2"
             case xs => fail(s"Expected one identifier and one call argument, got [${xs.code.mkString(",")}]")
+          }
+
+          val recv = constructor.receiver.head.asInstanceOf[Call]
+          recv.methodFullName shouldBe Operators.fieldAccess
+          recv.name shouldBe Operators.fieldAccess
+          recv.code shouldBe s"A.${RubyDefines.Initialize}"
+
+          recv.argument(1).label shouldBe NodeTypes.CALL
+          recv.argument(1).code shouldBe "self.A"
+          recv.argument(2).label shouldBe NodeTypes.FIELD_IDENTIFIER
+          recv.argument(2).code shouldBe RubyDefines.Initialize
+        case xs => fail(s"Expected a single alloc, got [${xs.code.mkString(",")}]")
+      }
+    }
+  }
+
+  "an object instantiation from some expression" should {
+    val cpg = code("""def foo
+        | params[:type].constantize.new(path)
+        |end
+        |""".stripMargin)
+
+    "create a call node on the receiver end of the constructor lowering" in {
+      inside(cpg.call.nameExact(RubyDefines.Initialize).l) {
+        case constructor :: Nil =>
+          inside(constructor.argument.l) {
+            case (a: Identifier) :: (selfPath: Call) :: Nil =>
+              a.name shouldBe "<tmp-0>"
+              a.typeFullName shouldBe Defines.Any
+              a.argumentIndex shouldBe 0
+
+              selfPath.code shouldBe "self.path"
+            case xs => fail(s"Expected one identifier and one call argument, got [${xs.code.mkString(",")}]")
+          }
+
+          val recv = constructor.receiver.head.asInstanceOf[Call]
+          recv.methodFullName shouldBe Operators.fieldAccess
+          recv.name shouldBe Operators.fieldAccess
+          recv.code shouldBe s"(<tmp-2> = params[:type].constantize).${RubyDefines.Initialize}"
+
+          recv.argument(2).asInstanceOf[FieldIdentifier].canonicalName shouldBe RubyDefines.Initialize
+
+          inside(recv.argument(1).start.isCall.argument(2).isCall.argument.l) {
+            case (paramsAssign: Call) :: (constantize: FieldIdentifier) :: Nil =>
+              paramsAssign.code shouldBe "<tmp-1> = params[:type]"
+              inside(paramsAssign.argument.l) { case (tmpIdent: Identifier) :: (indexAccess: Call) :: Nil =>
+                tmpIdent.name shouldBe "<tmp-1>"
+
+                indexAccess.name shouldBe Operators.indexAccess
+                indexAccess.code shouldBe "params[:type]"
+              }
+
+              constantize.canonicalName shouldBe "constantize"
           }
         case xs => fail(s"Expected a single alloc, got [${xs.code.mkString(",")}]")
       }
@@ -218,7 +277,26 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
       inside(cpg.call("src").l) {
         case src :: Nil =>
           src.name shouldBe "src"
-          src.methodFullName shouldBe "Test0.rb:<global>::program:src"
+          src.methodFullName shouldBe s"Test0.rb:$Main.src"
+        case xs => fail(s"Expected exactly one `src` call, instead got [${xs.code.mkString(",")}]")
+      }
+    }
+  }
+
+  "a parenthesis-less call as the base of a member access" should {
+    val cpg = code("""
+        |def f(p)
+        | src.join(",")
+        |end
+        |
+        |def src = [1, 2]
+        |""".stripMargin)
+
+    "correctly create a `src` call instead of identifier" in {
+      inside(cpg.call("src").l) {
+        case src :: Nil =>
+          src.name shouldBe "src"
+          src.methodFullName shouldBe s"Test0.rb:$Main.src"
         case xs => fail(s"Expected exactly one `src` call, instead got [${xs.code.mkString(",")}]")
       }
     }
@@ -260,8 +338,24 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     inArg.argumentName shouldBe Option("in")
   }
 
+  "Calls with named arguments using symbols and hash rocket syntax" in {
+    val cpg                      = code("render :foo => \"bar\"")
+    val List(_, barArg: Literal) = cpg.call.nameExact("render").argument.l: @unchecked
+    barArg.code shouldBe "\"bar\""
+    barArg.argumentName shouldBe Option("foo")
+  }
+
+  "named parameters in parenthesis-less call with a known keyword as the association key should shadow the keyword" in {
+    val cpg = code("""
+        |foo retry: 3
+        |""".stripMargin)
+    val List(_, retry) = cpg.call.nameExact("foo").argument.l: @unchecked
+    retry.code shouldBe "3"
+    retry.argumentName shouldBe Some("retry")
+  }
+
   "a call with a quoted regex literal should have a literal receiver" in {
-    val cpg          = code("%r{^/}.freeze")
+    val cpg          = code("%r{^/}.freeze()")
     val regexLiteral = cpg.call.nameExact("freeze").receiver.fieldAccess.argument(1).head.asInstanceOf[Literal]
     regexLiteral.typeFullName shouldBe s"$kernelPrefix.Regexp"
     regexLiteral.code shouldBe "%r{^/}"
@@ -271,14 +365,206 @@ class CallTests extends RubyCode2CpgFixture(withPostProcessing = true) {
     val cpg          = code("::Augeas.open { |aug| aug.get('/augeas/version') }")
     val augeasReceiv = cpg.call.nameExact("open").receiver.head.asInstanceOf[Call]
     augeasReceiv.methodFullName shouldBe Operators.fieldAccess
-    augeasReceiv.code shouldBe "::Augeas.open"
+    augeasReceiv.code shouldBe "(<tmp-0> = ::Augeas).open"
 
     val selfAugeas = augeasReceiv.argument(1).asInstanceOf[Call]
 
-    selfAugeas.argument(1).asInstanceOf[Identifier].name shouldBe RubyDefines.Self
-    selfAugeas.argument(2).asInstanceOf[FieldIdentifier].canonicalName shouldBe "Augeas"
+    selfAugeas.argument(1).asInstanceOf[Identifier].name shouldBe "<tmp-0>"
+    selfAugeas.argument(2).asInstanceOf[Call].code shouldBe "self::Augeas"
 
     augeasReceiv.argument(2).asInstanceOf[FieldIdentifier].canonicalName shouldBe "open"
   }
 
+  "`nil` keyword as a member access should be a literal" in {
+    val cpg    = code("nil.to_json")
+    val toJson = cpg.fieldAccess.codeExact("nil.to_json").head
+    val nilRec = toJson.argument(1).asInstanceOf[Literal]
+
+    nilRec.code shouldBe "nil"
+    nilRec.lineNumber shouldBe Option(1)
+  }
+
+  "Object initialize calls should be DynamicUnknown" in {
+    val cpg = code("""Date.new(2013, 19, 20)""")
+
+    inside(cpg.call.name(RubyDefines.Initialize).l) {
+      case initCall :: Nil =>
+        initCall.methodFullName shouldBe Defines.DynamicCallUnknownFullName
+      case xs => fail(s"Expected one call to initialize, got ${xs.code.mkString}")
+    }
+  }
+
+  "Member calls where the LHS is a call" should {
+
+    "assign the first call to a temp variable to avoid a second invocation at arg 0" in {
+      val cpg = code("a().b()")
+
+      val bCall = cpg.call("b").head
+      bCall.code shouldBe "(<tmp-0> = a()).b()"
+
+      // Check receiver
+      val bAccess = bCall.receiver.isCall.head
+      bAccess.name shouldBe Operators.fieldAccess
+      bAccess.methodFullName shouldBe Operators.fieldAccess
+      bAccess.code shouldBe "(<tmp-0> = a()).b"
+
+      bAccess.argument(2).asInstanceOf[FieldIdentifier].canonicalName shouldBe "b"
+
+      val aAssign = bAccess.argument(1).asInstanceOf[Call]
+      aAssign.name shouldBe Operators.assignment
+      aAssign.methodFullName shouldBe Operators.assignment
+      aAssign.code shouldBe "<tmp-0> = a()"
+
+      aAssign.argument(1).asInstanceOf[Identifier].name shouldBe "<tmp-0>"
+      aAssign.argument(2).asInstanceOf[Call].name shouldBe "a"
+
+      // Check (cached) base
+      val base = bCall.argument(0).asInstanceOf[Identifier]
+      base.name shouldBe "<tmp-0>"
+    }
+  }
+
+  "Call with Array Argument" in {
+    val cpg = code("""
+        |def foo(a)
+        |  puts a
+        |end
+        |
+        |foo([:b, :c => 1])
+        |""".stripMargin)
+
+    inside(cpg.call.name("foo").l) {
+      case fooCall :: Nil =>
+        inside(fooCall.argument.l) {
+          case _ :: (arrayArg: Call) :: Nil =>
+            arrayArg.code shouldBe "[:b, :c => 1]"
+            arrayArg.methodFullName shouldBe Operators.arrayInitializer
+
+            inside(arrayArg.argument.l) {
+              case (elem1: Literal) :: (elem2: Call) :: Nil =>
+                elem1.code shouldBe ":b"
+                elem2.code shouldBe ":c => 1"
+
+                elem2.methodFullName shouldBe RubyDefines.RubyOperators.association
+              case xs => fail(s"Expected two args for elements, got ${xs.code.mkString(",")}")
+            }
+          case xs => fail(s"Expected two args, got ${xs.code.mkString(",")}")
+        }
+      case xs => fail(s"Expected one call for foo, got ${xs.code.mkString}")
+    }
+  }
+
+  "Calls separated by `tmp` should render correct `code` properties" in {
+    val cpg = code("""
+        |User.find_by(auth_token: cookies[:auth_token].to_s)
+        |""".stripMargin)
+
+    cpg.call("find_by").code.head shouldBe "(<tmp-0> = User).find_by(auth_token: cookies[:auth_token].to_s)"
+    cpg.call(Operators.indexAccess).code.head shouldBe "cookies[:auth_token]"
+    cpg.fieldAccess
+      .where(_.fieldIdentifier.canonicalNameExact("@to_s"))
+      .code
+      .head shouldBe "(<tmp-1> = cookies[:auth_token]).to_s"
+  }
+
+  "Calls with multiple splat args" in {
+    val cpg = code("""
+        |    doorkeeper_application&.includes_scope?(
+        |      *::Gitlab::Auth::API_SCOPE, *::Gitlab::Auth::READ_API_SCOPE,
+        |      *::Gitlab::Auth::ADMIN_SCOPES, *::Gitlab::Auth::REPOSITORY_SCOPES,
+        |      *::Gitlab::Auth::REGISTRY_SCOPES
+        |    )
+        |""".stripMargin)
+
+    inside(cpg.call.name("includes_scope\\?").argument.l) {
+      case _ :: (apiScopeSplat: Call) :: (readScopeSplat: Call) :: (adminScopeSplat: Call) :: (repoScopeSplat: Call) :: (registryScopeSplat: Call) :: Nil =>
+        apiScopeSplat.code shouldBe "*::Gitlab::Auth::API_SCOPE"
+        apiScopeSplat.methodFullName shouldBe RubyOperators.splat
+
+        readScopeSplat.code shouldBe "*::Gitlab::Auth::READ_API_SCOPE"
+        readScopeSplat.methodFullName shouldBe RubyOperators.splat
+
+        adminScopeSplat.code shouldBe "*::Gitlab::Auth::ADMIN_SCOPES"
+        adminScopeSplat.methodFullName shouldBe RubyOperators.splat
+
+        repoScopeSplat.code shouldBe "*::Gitlab::Auth::REPOSITORY_SCOPES"
+        repoScopeSplat.methodFullName shouldBe RubyOperators.splat
+
+        registryScopeSplat.code shouldBe "*::Gitlab::Auth::REGISTRY_SCOPES"
+        registryScopeSplat.methodFullName shouldBe RubyOperators.splat
+
+      case xs => fail(s"Expected 5 arguments for call, got [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "Multiple different arg types in a call" in {
+    val cpg = code("""
+        |params.require(:issue).permit(
+        |      "1234",
+        |      10,
+        |      *issue_params_attributes,
+        |      sentry_issue_attributes: [:sentry_issue_identifier]
+        |    )
+        |""".stripMargin)
+
+    inside(cpg.call.name("permit").argument.l) {
+      case _ :: (strLiteral: Literal) :: (numericLiteral: Literal) :: (issueSplat: Call) :: (sentryAssoc: Call) :: Nil =>
+        issueSplat.code shouldBe "*issue_params_attributes"
+        issueSplat.methodFullName shouldBe RubyOperators.splat
+
+        sentryAssoc.code shouldBe "[:sentry_issue_identifier]"
+        sentryAssoc.methodFullName shouldBe Operators.arrayInitializer
+
+        strLiteral.code shouldBe "\"1234\""
+        strLiteral.typeFullName shouldBe RubyDefines.getBuiltInType(RubyDefines.String)
+
+        numericLiteral.code shouldBe "10"
+        numericLiteral.typeFullName shouldBe RubyDefines.getBuiltInType(RubyDefines.Integer)
+      case xs => fail(s"Expected 6 parameters for call, got [${xs.code.mkString(", ")}]")
+    }
+  }
+
+  "Call with association IndexAccess key" in {
+    val cpg = code("""
+        |foo(bar[:baz] => nil)
+        |""".stripMargin)
+
+    inside(cpg.call.name("foo").argument.l) {
+      case _ :: (assocParam: Call) :: Nil =>
+        assocParam.methodFullName shouldBe RubyOperators.association
+        assocParam.code shouldBe "bar[:baz] => nil"
+
+        inside(assocParam.argument.l) {
+          case (lhs: Call) :: (rhs: Literal) :: Nil =>
+            lhs.methodFullName shouldBe Operators.indexAccess
+            lhs.code shouldBe "bar[:baz]"
+
+            rhs.code shouldBe "nil"
+          case xs => fail(s"Expected lhs and rhs for association, got [${xs.code.mkString(",")}]")
+        }
+      case xs => fail(s"Expected two params, got [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "Call with association MemberAccess key" in {
+    val cpg = code("""
+        |foo(bar.baz => nil)
+        |""".stripMargin)
+
+    inside(cpg.call.name("foo").argument.l) {
+      case _ :: (assocParam: Call) :: Nil =>
+        assocParam.methodFullName shouldBe RubyOperators.association
+        assocParam.code shouldBe "bar.baz => nil"
+
+        inside(assocParam.argument.l) {
+          case (lhs: Call) :: (rhs: Literal) :: Nil =>
+            lhs.methodFullName shouldBe Operators.fieldAccess
+            lhs.code shouldBe "bar.baz"
+
+            rhs.code shouldBe "nil"
+          case xs => fail(s"Expected lhs and rhs for association, got [${xs.code.mkString(",")}]")
+        }
+      case xs => fail(s"Expected two params, got [${xs.code.mkString(",")}]")
+    }
+  }
 }
