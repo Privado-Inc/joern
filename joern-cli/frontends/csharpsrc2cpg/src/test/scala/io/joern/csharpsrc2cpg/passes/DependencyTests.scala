@@ -176,7 +176,7 @@ class DependencyTests extends CSharpCode2CpgFixture {
           """
             |<Project Sdk="Microsoft.NET.Sdk">
             |    <ItemGroup>
-            |      <PackageReference Include=" System.Security.Cryptography.Pkcs" Version="6 .0.4"/>
+            |      <PackageReference Include=" System.Security.Cryptography.Pkcs" Version=" 6 .0.4 "/>
             |      <PackageReference Include="CommandLineParser" Version="2.9.1" />
             |    </ItemGroup>
             |</Project>
