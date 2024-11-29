@@ -5,26 +5,32 @@ import io.shiftleft.codepropertygraph.generated.EdgeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{Method, StoredNode}
 import io.shiftleft.passes.ForkJoinParallelCpgPass
 import io.shiftleft.semanticcpg.language.*
-
+import org.slf4j.LoggerFactory
 import scala.collection.mutable
 
 /** This pass has no prerequisites.
   */
 class CfgDominatorPass(cpg: Cpg) extends ForkJoinParallelCpgPass[Method](cpg) {
+  private val logger                          = LoggerFactory.getLogger(getClass)
   override def generateParts(): Array[Method] = cpg.method.toArray
 
   override def runOnPart(dstGraph: DiffGraphBuilder, method: Method): Unit = {
-    val cfgAdapter          = new CpgCfgAdapter()
-    val dominatorCalculator = new CfgDominator(cfgAdapter)
+    try {
+      val cfgAdapter          = new CpgCfgAdapter()
+      val dominatorCalculator = new CfgDominator(cfgAdapter)
 
-    val reverseCfgAdapter       = new ReverseCpgCfgAdapter()
-    val postDominatorCalculator = new CfgDominator(reverseCfgAdapter)
+      val reverseCfgAdapter       = new ReverseCpgCfgAdapter()
+      val postDominatorCalculator = new CfgDominator(reverseCfgAdapter)
 
-    val cfgNodeToImmediateDominator = dominatorCalculator.calculate(method)
-    addDomTreeEdges(dstGraph, cfgNodeToImmediateDominator)
+      val cfgNodeToImmediateDominator = dominatorCalculator.calculate(method)
+      addDomTreeEdges(dstGraph, cfgNodeToImmediateDominator)
 
-    val cfgNodeToPostImmediateDominator = postDominatorCalculator.calculate(method.methodReturn)
-    addPostDomTreeEdges(dstGraph, cfgNodeToPostImmediateDominator)
+      val cfgNodeToPostImmediateDominator = postDominatorCalculator.calculate(method.methodReturn)
+      addPostDomTreeEdges(dstGraph, cfgNodeToPostImmediateDominator)
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error for the METHOD node -> '${method.fullName}' in file '${method.filename}'")
+    }
 
   }
 

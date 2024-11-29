@@ -51,35 +51,43 @@ trait LinkingUtil {
     srcNodes.foreach { srcNode =>
       // If the source node does not have any outgoing edges of this type
       // This check is just required for backward compatibility
-      if (srcNode.outE(edgeType).isEmpty) {
-        srcNode
-          .propertyOption[String](dstFullNameKey)
-          .filter { dstFullName => dstDefaultPropertyValue != dstFullName }
-          .map { dstFullName =>
-            // for `UNKNOWN` this is not always set, so we're using an Option here
-            dstNodeMap(dstFullName) match {
-              case Some(dstNode) =>
-                dstGraph.addEdge(srcNode, dstNode, edgeType)
-              case None if dstNodeMap(dstFullName).isDefined =>
-                dstGraph.addEdge(srcNode, dstNodeMap(dstFullName).get, edgeType)
-              case None if dstNotExistsHandler.isDefined =>
-                dstNotExistsHandler.get(srcNode, dstFullName)
-              case _ =>
-                logFailedDstLookup(edgeType, srcNode.label, srcNode.id.toString, dstNodeLabel, dstFullName)
+      try {
+        if (srcNode.outE(edgeType).isEmpty) {
+          srcNode
+            .propertyOption[String](dstFullNameKey)
+            .filter { dstFullName => dstDefaultPropertyValue != dstFullName }
+            .map { dstFullName =>
+              // for `UNKNOWN` this is not always set, so we're using an Option here
+              dstNodeMap(dstFullName) match {
+                case Some(dstNode) =>
+                  dstGraph.addEdge(srcNode, dstNode, edgeType)
+                case None if dstNodeMap(dstFullName).isDefined =>
+                  dstGraph.addEdge(srcNode, dstNodeMap(dstFullName).get, edgeType)
+                case None if dstNotExistsHandler.isDefined =>
+                  dstNotExistsHandler.get(srcNode, dstFullName)
+                case _ =>
+                  logFailedDstLookup(edgeType, srcNode.label, srcNode.id.toString, dstNodeLabel, dstFullName)
+              }
             }
+        } else {
+          srcNode.out(edgeType).property(Properties.FullName).nextOption() match {
+            case Some(dstFullName) => dstGraph.setNodeProperty(srcNode, dstFullNameKey, dstFullName)
+            case None              => logger.info(s"Missing outgoing edge of type $edgeType from node $srcNode")
           }
-      } else {
-        srcNode.out(edgeType).property(Properties.FullName).nextOption() match {
-          case Some(dstFullName) => dstGraph.setNodeProperty(srcNode, dstFullNameKey, dstFullName)
-          case None              => logger.info(s"Missing outgoing edge of type $edgeType from node $srcNode")
+          if (!loggedDeprecationWarning) {
+            logger.info(
+              s"Using deprecated CPG format with already existing $edgeType edge between" +
+                s" a source node of type $srcLabels and a $dstNodeLabel node."
+            )
+            loggedDeprecationWarning = true
+          }
         }
-        if (!loggedDeprecationWarning) {
-          logger.info(
-            s"Using deprecated CPG format with already existing $edgeType edge between" +
-              s" a source node of type $srcLabels and a $dstNodeLabel node."
+      } catch {
+        case ex: Exception =>
+          logger.warn(
+            s"Error in linkToSingle for node in file '${srcNode.propertyOption(PropertyNames.FILENAME).toString}''",
+            ex
           )
-          loggedDeprecationWarning = true
-        }
       }
     }
   }
@@ -96,27 +104,35 @@ trait LinkingUtil {
   ): Unit = {
     var loggedDeprecationWarning = false
     cpg.graph.nodes(srcLabels*).cast[SRC_NODE_TYPE].foreach { srcNode =>
-      if (!srcNode.outE(edgeType).hasNext) {
-        getDstFullNames(srcNode).foreach { dstFullName =>
-          dstNodeMap(dstFullName) match {
-            case Some(dstNode) =>
-              dstGraph.addEdge(srcNode, dstNode, edgeType)
-            case None if dstNodeMap(dstFullName).isDefined =>
-              dstGraph.addEdge(srcNode, dstNodeMap(dstFullName).get, edgeType)
-            case None =>
-              logFailedDstLookup(edgeType, srcNode.label, srcNode.id.toString, dstNodeLabel, dstFullName)
+      try {
+        if (!srcNode.outE(edgeType).hasNext) {
+          getDstFullNames(srcNode).foreach { dstFullName =>
+            dstNodeMap(dstFullName) match {
+              case Some(dstNode) =>
+                dstGraph.addEdge(srcNode, dstNode, edgeType)
+              case None if dstNodeMap(dstFullName).isDefined =>
+                dstGraph.addEdge(srcNode, dstNodeMap(dstFullName).get, edgeType)
+              case None =>
+                logFailedDstLookup(edgeType, srcNode.label, srcNode.id.toString, dstNodeLabel, dstFullName)
+            }
+          }
+        } else {
+          val dstFullNames = srcNode.out(edgeType).property(Properties.FullName).l
+          dstGraph.setNodeProperty(srcNode, dstFullNameKey, dstFullNames)
+          if (!loggedDeprecationWarning) {
+            logger.info(
+              s"Using deprecated CPG format with already existing $edgeType edge between" +
+                s" a source node of type $srcLabels and a $dstNodeLabel node."
+            )
+            loggedDeprecationWarning = true
           }
         }
-      } else {
-        val dstFullNames = srcNode.out(edgeType).property(Properties.FullName).l
-        dstGraph.setNodeProperty(srcNode, dstFullNameKey, dstFullNames)
-        if (!loggedDeprecationWarning) {
-          logger.info(
-            s"Using deprecated CPG format with already existing $edgeType edge between" +
-              s" a source node of type $srcLabels and a $dstNodeLabel node."
+      } catch {
+        case ex: Exception =>
+          logger.warn(
+            s"Error in linkToMultiple for node in file '${srcNode.propertyOption(PropertyNames.FILENAME).toString}''",
+            ex
           )
-          loggedDeprecationWarning = true
-        }
       }
     }
   }

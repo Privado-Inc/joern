@@ -22,15 +22,20 @@ class ReachingDefPass(cpg: Cpg, maxNumberOfDefinitions: Int = 4000)(implicit s: 
 
   override def runOnPart(dstGraph: DiffGraphBuilder, method: Method): Unit = {
     logger.info("Calculating reaching definitions for: {} in {}", method.fullName, method.filename)
-    val problem = ReachingDefProblem.create(method)
-    if (shouldBailOut(method, problem)) {
-      logger.warn("Skipping.")
-      return
-    }
+    try {
+      val problem = ReachingDefProblem.create(method)
+      if (shouldBailOut(method, problem)) {
+        logger.warn("Skipping.")
+        return
+      }
 
-    val solution     = new DataFlowSolver().calculateMopSolutionForwards(problem)
-    val ddgGenerator = new DdgGenerator(s)
-    ddgGenerator.addReachingDefEdges(dstGraph, method, problem, solution)
+      val solution     = new DataFlowSolver().calculateMopSolutionForwards(problem)
+      val ddgGenerator = new DdgGenerator(s)
+      ddgGenerator.addReachingDefEdges(dstGraph, method, problem, solution)
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error for the METHOD node -> '${method.fullName}' in file '${method.filename}'")
+    }
   }
 
   /** Before we start propagating definitions in the graph, which is the bulk of the work, we check how many definitions

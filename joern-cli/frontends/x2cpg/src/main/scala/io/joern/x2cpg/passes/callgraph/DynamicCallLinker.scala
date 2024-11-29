@@ -49,30 +49,35 @@ class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
     */
   override def run(dstGraph: DiffGraphBuilder): Unit = {
     // Perform early stopping in the case of no virtual calls
-    if (!cpg.call.exists(_.dispatchType == DispatchTypes.DYNAMIC_DISPATCH)) {
-      return
-    }
-    initMaps()
-    // ValidM maps class C and method name N to the set of
-    // func ptrs implementing N for C and its subclasses
-    for {
-      typeDecl <- cpg.typeDecl
-      method   <- typeDecl._methodViaAstOut
-    } {
-      val methodName = method.fullName
-      val candidates = allSubclasses(typeDecl.fullName).flatMap { staticLookup(_, method) }
-      validM.put(methodName, candidates)
-    }
-
-    subclassCache.clear()
-
-    cpg.call.filter(_.dispatchType == DispatchTypes.DYNAMIC_DISPATCH).foreach { call =>
-      try {
-        linkDynamicCall(call, dstGraph)
-      } catch {
-        case exception: Exception =>
-          throw new RuntimeException(exception)
+    try {
+      if (!cpg.call.exists(_.dispatchType == DispatchTypes.DYNAMIC_DISPATCH)) {
+        return
       }
+      initMaps()
+      // ValidM maps class C and method name N to the set of
+      // func ptrs implementing N for C and its subclasses
+      for {
+        typeDecl <- cpg.typeDecl
+        method   <- typeDecl._methodViaAstOut
+      } {
+        val methodName = method.fullName
+        val candidates = allSubclasses(typeDecl.fullName).flatMap { staticLookup(_, method) }
+        validM.put(methodName, candidates)
+      }
+
+      subclassCache.clear()
+
+      cpg.call.filter(_.dispatchType == DispatchTypes.DYNAMIC_DISPATCH).foreach { call =>
+        try {
+          linkDynamicCall(call, dstGraph)
+        } catch {
+          case exception: Exception =>
+            throw new RuntimeException(exception)
+        }
+      }
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in DynamicCallLinker", ex)
     }
   }
 

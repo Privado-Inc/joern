@@ -6,12 +6,13 @@ import io.shiftleft.codepropertygraph.generated.nodes.{NewTypeDecl, TypeDeclBase
 import io.shiftleft.passes.CpgPass
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.{FileTraversal, NamespaceTraversal}
+import org.slf4j.{Logger, LoggerFactory}
 
 /** This pass has no other pass as prerequisite. For each `TYPE` node that does not have a corresponding `TYPE_DECL`
   * node, this pass creates a `TYPE_DECL` node. The `TYPE_DECL` is considered external.
   */
 class TypeDeclStubCreator(cpg: Cpg) extends CpgPass(cpg) {
-
+  private val logger: Logger         = LoggerFactory.getLogger(this.getClass)
   private var typeDeclFullNameToNode = Map[String, TypeDeclBase]()
 
   private def privateInit(): Unit = {
@@ -22,15 +23,20 @@ class TypeDeclStubCreator(cpg: Cpg) extends CpgPass(cpg) {
   }
 
   override def run(dstGraph: DiffGraphBuilder): Unit = {
-    privateInit()
+    try {
+      privateInit()
 
-    cpg.typ
-      .filterNot(typ => typeDeclFullNameToNode.isDefinedAt(typ.fullName))
-      .foreach { typ =>
-        val newTypeDecl = TypeDeclStubCreator.createTypeDeclStub(typ.name, typ.fullName)
-        typeDeclFullNameToNode += typ.fullName -> newTypeDecl
-        dstGraph.addNode(newTypeDecl)
-      }
+      cpg.typ
+        .filterNot(typ => typeDeclFullNameToNode.isDefinedAt(typ.fullName))
+        .foreach { typ =>
+          val newTypeDecl = TypeDeclStubCreator.createTypeDeclStub(typ.name, typ.fullName)
+          typeDeclFullNameToNode += typ.fullName -> newTypeDecl
+          dstGraph.addNode(newTypeDecl)
+        }
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in TypeDeclStubCreator", ex)
+    }
   }
 
 }

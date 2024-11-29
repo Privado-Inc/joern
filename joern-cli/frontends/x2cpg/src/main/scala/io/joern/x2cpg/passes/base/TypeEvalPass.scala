@@ -5,8 +5,10 @@ import io.shiftleft.codepropertygraph.generated.{Cpg, EdgeTypes, NodeTypes, Prop
 import io.shiftleft.codepropertygraph.generated.nodes.{Local, StoredNode}
 import io.shiftleft.passes.ForkJoinParallelCpgPass
 import io.shiftleft.semanticcpg.language.*
+import org.slf4j.{Logger, LoggerFactory}
 
 class TypeEvalPass(cpg: Cpg) extends ForkJoinParallelCpgPass[List[StoredNode]](cpg) with LinkingUtil {
+  private val logger: Logger = LoggerFactory.getLogger(this.getClass)
   private val srcLabels = List(
     NodeTypes.METHOD_PARAMETER_IN,
     NodeTypes.METHOD_PARAMETER_OUT,
@@ -27,17 +29,22 @@ class TypeEvalPass(cpg: Cpg) extends ForkJoinParallelCpgPass[List[StoredNode]](c
   }
 
   def runOnPart(builder: DiffGraphBuilder, part: List[StoredNode]): Unit = {
-    linkToSingle(
-      cpg = cpg,
-      srcNodes = part,
-      srcLabels = srcLabels,
-      dstNodeLabel = NodeTypes.TYPE,
-      edgeType = EdgeTypes.EVAL_TYPE,
-      dstNodeMap = typeFullNameToNode(cpg, _),
-      dstFullNameKey = PropertyNames.TYPE_FULL_NAME,
-      dstDefaultPropertyValue = Local.PropertyDefaults.TypeFullName,
-      dstGraph = builder,
-      None
-    )
+    try {
+      linkToSingle(
+        cpg = cpg,
+        srcNodes = part,
+        srcLabels = srcLabels,
+        dstNodeLabel = NodeTypes.TYPE,
+        edgeType = EdgeTypes.EVAL_TYPE,
+        dstNodeMap = typeFullNameToNode(cpg, _),
+        dstFullNameKey = PropertyNames.TYPE_FULL_NAME,
+        dstDefaultPropertyValue = Local.PropertyDefaults.TypeFullName,
+        dstGraph = builder,
+        None
+      )
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in TypeEvalPass", ex)
+    }
   }
 }

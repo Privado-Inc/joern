@@ -21,16 +21,21 @@ class FieldAccessLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
   private val DOT    = "."
 
   override def run(dstGraph: DiffGraphBuilder): Unit = {
-    linkToMultiple(
-      cpg,
-      srcLabels = List(NodeTypes.CALL),
-      dstNodeLabel = NodeTypes.MEMBER,
-      edgeType = EdgeTypes.REF,
-      dstNodeMap = typeDeclMemberToNode(cpg, _),
-      getDstFullNames = (call: Call) => dstMemberFullNames(call),
-      dstFullNameKey = PropertyNames.NAME,
-      dstGraph
-    )
+    try {
+      linkToMultiple(
+        cpg,
+        srcLabels = List(NodeTypes.CALL),
+        dstNodeLabel = NodeTypes.MEMBER,
+        edgeType = EdgeTypes.REF,
+        dstNodeMap = typeDeclMemberToNode(cpg, _),
+        getDstFullNames = (call: Call) => dstMemberFullNames(call),
+        dstFullNameKey = PropertyNames.NAME,
+        dstGraph
+      )
+    } catch {
+      case ex: Exception =>
+        logger.warn(s"Error in FieldAccessLinkerPass", ex)
+    }
   }
 
   private def dstMemberFullNames(call: Call): Seq[String] = {
