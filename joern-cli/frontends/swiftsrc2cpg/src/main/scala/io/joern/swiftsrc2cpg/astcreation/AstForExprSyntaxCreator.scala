@@ -1,11 +1,11 @@
 package io.joern.swiftsrc2cpg.astcreation
 
 import io.joern.swiftsrc2cpg.parser.SwiftNodeSyntax.*
-import io.joern.swiftsrc2cpg.passes.Defines
 import io.joern.swiftsrc2cpg.passes.GlobalBuiltins
 import io.joern.x2cpg.Ast
 import io.joern.x2cpg.datastructures.Stack.*
 import io.joern.x2cpg.ValidationMode
+import io.joern.x2cpg.frontendspecific.swiftsrc2cpg.Defines
 import io.shiftleft.codepropertygraph.generated.ControlStructureTypes
 import io.shiftleft.codepropertygraph.generated.DispatchTypes
 import io.shiftleft.codepropertygraph.generated.Operators
@@ -494,11 +494,7 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   private def astForTryExprSyntax(node: TryExprSyntax): Ast = {
     val tryNode = controlStructureNode(node, ControlStructureTypes.TRY, code(node))
     val bodyAst = astForNode(node.expression)
-    // The semantics of try statement children is defined by their order value.
-    // Thus we set the here explicitly and do not rely on the usual consecutive
-    // ordering.
-    setOrderExplicitly(bodyAst, 1)
-    Ast(tryNode).withChild(bodyAst)
+    tryCatchAst(tryNode, bodyAst, Seq.empty, None)
   }
 
   private def astForTupleExprSyntax(node: TupleExprSyntax): Ast = {

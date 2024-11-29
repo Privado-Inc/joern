@@ -2,7 +2,7 @@ package io.joern.dataflowengineoss.queryengine
 
 import io.joern.dataflowengineoss.globalFromLiteral
 import io.joern.x2cpg.Defines
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.operatorextension.allAssignmentTypes
@@ -32,7 +32,7 @@ object SourcesToStartingPoints {
         .map(src => {
           // We need to get Cpg wrapper from graph. Hence we are taking head element from source iterator.
           // This will also ensure if the source list is empty then these tasks are invoked.
-          val cpg                           = Cpg(src.graph())
+          val cpg                           = Cpg(src.graph)
           val (startingPoints, methodTasks) = calculateStartingPoints(sources, executorService)
           val startingPointFromUsageInOtherClasses =
             calculateStatingPointsWithUsageInOtherClasses(methodTasks, cpg, executorService)
@@ -189,12 +189,13 @@ abstract class BaseSourceToStartingPoints extends Callable[Unit] {
   protected def sourceToStartingPoints(src: StoredNode): (List[CfgNode], List[UsageInput]) = {
     src match {
       case methodReturn: MethodReturn =>
-        (methodReturn.method.callIn.l, Nil)
+        // n.b. there's a generated `callIn` step that we really want to use, but it's shadowed by `MethodTraversal.callIn`
+        (methodReturn.method._callIn.cast[Call].l, Nil)
       case lit: Literal =>
         val usageInput = targetsToClassIdentifierPair(literalToInitializedMembers(lit), src)
         val uses       = usages(usageInput)
         val globals = globalFromLiteral(lit, recursive = false).flatMap {
-          case x: Identifier if x.isModuleVariable => x :: moduleVariableToFirstUsagesAcrossProgram(x)
+          case x: Identifier if x.isModuleVariable => moduleVariableToFirstUsagesAcrossProgram(x)
           case x                                   => x :: Nil
         }
         (lit :: (uses ++ globals), usageInput)
