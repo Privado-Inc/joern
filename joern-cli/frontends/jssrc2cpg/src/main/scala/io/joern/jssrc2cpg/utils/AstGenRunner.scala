@@ -23,6 +23,14 @@ object AstGenRunner {
 
   private val LineLengthThreshold: Int = 10000
 
+  private val WhitespaceRatioThreshold = 0.05
+
+  private val CommentRatioThreshold = 0.02
+
+  private val MaxLinesOfCodeThreshold = 50
+
+  private val MiniLinesOfCodeThreshold = 10
+
   private val TypeDefinitionFileExtensions = List(".t.ts", ".d.ts")
 
   private val MinifiedPathRegex: Regex = ".*([.-]min\\..*js|bundle\\.js)".r
@@ -214,16 +222,34 @@ class AstGenRunner(config: Config) {
     }
   }
 
-  private def isMinifiedFile(filePath: String): Boolean = filePath match {
+  def isMinifiedFile(filePath: String): Boolean = filePath match {
     case p if MinifiedPathRegex.matches(p) => true
     case p if File(p).exists && p.endsWith(".js") =>
-      val lines             = IOUtils.readLinesInFile(File(filePath).path)
-      val linesOfCode       = lines.size
-      val longestLineLength = if (lines.isEmpty) 0 else lines.map(_.length).max
-      if (longestLineLength >= LineLengthThreshold && linesOfCode <= 50) {
-        logger.debug(s"'$filePath' seems to be a minified file (contains a line with length $longestLineLength)")
-        true
-      } else false
+      val lines       = File(filePath).lines.toSeq
+      val linesOfCode = lines.size
+
+      if (lines.isEmpty) return false
+
+      val longestLineLength = lines.map(_.length).max
+
+      val totalChars      = lines.map(_.length).sum.toDouble
+      val totalWhitespace = lines.map(line => line.count(_.isWhitespace)).sum.toDouble
+      val whitespaceRatio = if (totalChars > 0) totalWhitespace / totalChars else 1.0
+
+      val totalComments = lines.count(line => line.trim.startsWith("//") || line.contains("/*"))
+      val commentRatio  = if (linesOfCode > 0) totalComments.toDouble / linesOfCode else 0.0
+
+      val isMinified =
+        (longestLineLength >= LineLengthThreshold && linesOfCode <= MaxLinesOfCodeThreshold) ||
+          (whitespaceRatio < WhitespaceRatioThreshold && commentRatio < CommentRatioThreshold && linesOfCode > MiniLinesOfCodeThreshold)
+
+      if (isMinified) {
+        logger.debug(
+          s"'$filePath' seems to be a minified file (line length: $longestLineLength, whitespace ratio: $whitespaceRatio, comment ratio: $commentRatio)"
+        )
+      }
+
+      isMinified
     case _ => false
   }
 
