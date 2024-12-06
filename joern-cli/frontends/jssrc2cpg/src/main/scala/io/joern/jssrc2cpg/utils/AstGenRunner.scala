@@ -365,8 +365,9 @@ class AstGenRunner(config: Config) {
       .filterNot(_.isDirectory)
       .filter(file => isMinifiedFile(file.path.toString))
       .map(path => in.path.relativize(path).toString)
-      .toSet
-    val regexSkipFile = s".*(${skipList.mkString("|")}|libphonenumber.js).*"
+      .toList ++ List("libphonenumber.js")
+
+    val regexSkipFile = s".*(${skipList.mkString("|")}).*"
 
     logger.debug("JS skiplist size: " + skipList.size)
     logger.debug("JS skip regex: " + regexSkipFile)
