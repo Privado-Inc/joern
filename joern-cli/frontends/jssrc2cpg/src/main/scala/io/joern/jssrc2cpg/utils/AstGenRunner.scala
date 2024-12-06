@@ -222,7 +222,7 @@ class AstGenRunner(config: Config) {
     }
   }
 
-  def isMinifiedFile(filePath: String): Boolean = filePath match {
+  private def isMinifiedFile(filePath: String): Boolean = filePath match {
     case p if MinifiedPathRegex.matches(p) => true
     case p if File(p).exists && p.endsWith(".js") =>
       val lines       = File(filePath).lines.toSeq
@@ -360,8 +360,21 @@ class AstGenRunner(config: Config) {
     else Success(Seq.empty)
   }
 
-  private def jsFiles(in: File, out: File): Try[Seq[String]] =
-    ExternalCommand.run(s"$astGenCommand$executableArgs -t ts -o $out", in.toString(), extraEnv = NODE_OPTIONS)
+  private def jsFiles(in: File, out: File): Try[Seq[String]] = {
+    val skipList = in.listRecursively
+      .filterNot(_.isDirectory)
+      .filter(file => isMinifiedFile(file.path.toString))
+      .map(path => in.path.relativize(path).toString)
+      .toSet
+    val regexSkipFile = s".*(${skipList.mkString("|")}|libphonenumber.js).*"
+
+    logger.debug("JS skiplist size: " + skipList.size)
+    logger.debug("JS skip regex: " + regexSkipFile)
+    val command = s"$astGenCommand$executableArgs -t ts -o $out --exclude-regex \"$regexSkipFile\""
+
+    logger.debug("AST Gen command: " + command)
+    ExternalCommand.run(command, in.toString(), extraEnv = NODE_OPTIONS)
+  }
 
   private def runAstGenNative(in: File, out: File): Try[Seq[String]] = for {
     ejsResult <- ejsFiles(in, out)
