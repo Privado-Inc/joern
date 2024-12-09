@@ -1,7 +1,7 @@
 package io.joern.console
 
 import io.joern.console.Query
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
@@ -10,11 +10,6 @@ import org.slf4j.{Logger, LoggerFactory}
 package object scan {
 
   private val logger: Logger = LoggerFactory.getLogger(this.getClass)
-
-  implicit class ScannerStarters(val cpg: Cpg) extends AnyVal {
-    def finding: Iterator[Finding] =
-      overflowdb.traversal.InitialTraversal.from[Finding](cpg.graph, NodeTypes.FINDING)
-  }
 
   implicit class QueryWrapper(q: Query) {
 

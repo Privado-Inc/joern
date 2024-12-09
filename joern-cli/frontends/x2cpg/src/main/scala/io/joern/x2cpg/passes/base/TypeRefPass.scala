@@ -1,21 +1,21 @@
 package io.joern.x2cpg.passes.base
 
 import io.joern.x2cpg.utils.LinkingUtil
-import io.shiftleft.codepropertygraph.Cpg
-import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes, PropertyNames}
+import io.shiftleft.codepropertygraph.generated.{Cpg, EdgeTypes, NodeTypes, PropertyNames}
+import io.shiftleft.codepropertygraph.generated.nodes.{Type, StoredNode}
 import io.shiftleft.passes.ForkJoinParallelCpgPass
+import io.shiftleft.semanticcpg.language.*
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.Node
-import overflowdb.traversal.*
 
-class TypeRefPass(cpg: Cpg) extends ForkJoinParallelCpgPass[List[Node]](cpg) with LinkingUtil {
-  val srcLabels              = List(NodeTypes.TYPE)
+class TypeRefPass(cpg: Cpg) extends ForkJoinParallelCpgPass[List[StoredNode]](cpg) with LinkingUtil {
+  private val srcLabels      = List(NodeTypes.TYPE)
   private val logger: Logger = LoggerFactory.getLogger(this.getClass)
-  def generateParts(): Array[List[Node]] = {
-    val nodes = cpg.graph.nodes(srcLabels*).toList
-    nodes.grouped(getBatchSize(nodes.size)).toArray
+
+  def generateParts(): Array[List[StoredNode]] = {
+    cpg.graph.nodes(srcLabels*).cast[StoredNode].toList.grouped(MAX_BATCH_SIZE).toArray
   }
-  def runOnPart(builder: DiffGraphBuilder, part: List[overflowdb.Node]): Unit = {
+
+  def runOnPart(builder: DiffGraphBuilder, part: List[StoredNode]): Unit = {
     try {
       linkToSingle(
         cpg = cpg,
@@ -25,6 +25,7 @@ class TypeRefPass(cpg: Cpg) extends ForkJoinParallelCpgPass[List[Node]](cpg) wit
         edgeType = EdgeTypes.REF,
         dstNodeMap = typeDeclFullNameToNode(cpg, _),
         dstFullNameKey = PropertyNames.TYPE_DECL_FULL_NAME,
+        dstDefaultPropertyValue = Type.PropertyDefaults.TypeDeclFullName,
         dstGraph = builder,
         None
       )

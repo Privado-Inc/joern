@@ -1,9 +1,8 @@
 package io.joern.x2cpg.passes.base
 
 import io.joern.x2cpg.utils.LinkingUtil
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.codepropertygraph.generated.nodes.StoredNode
-import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes, Properties}
 import io.shiftleft.passes.CpgPass
 import io.shiftleft.semanticcpg.language.*
 import org.slf4j.{Logger, LoggerFactory}
@@ -68,7 +67,7 @@ class AstLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
     } catch {
       case ex: Exception =>
         logger.warn(
-          s"Error in AstLinkerPass for node in file '${astChild.propertyOption(Properties.FILENAME).toString}''",
+          s"Error in AstLinkerPass for node in file '${astChild.propertyOption(PropertyNames.FILENAME).toString}''",
           ex
         )
     }

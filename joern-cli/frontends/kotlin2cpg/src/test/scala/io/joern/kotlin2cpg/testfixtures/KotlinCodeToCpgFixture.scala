@@ -10,7 +10,7 @@ import io.joern.kotlin2cpg.Kotlin2Cpg
 import io.joern.x2cpg.testfixtures.Code2CpgFixture
 import io.joern.x2cpg.testfixtures.DefaultTestCpg
 import io.joern.x2cpg.testfixtures.LanguageFrontend
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.utils.ProjectRoot
 
 import java.io.File
@@ -66,5 +66,5 @@ class KotlinCode2CpgFixture(
     )
     with SemanticCpgTestFixture(extraFlows) {
 
-  protected def flowToResultPairs(path: Path): List[(String, Option[Integer])] = path.resultPairs()
+  protected def flowToResultPairs(path: Path): List[(String, Option[Int])] = path.resultPairs()
 }

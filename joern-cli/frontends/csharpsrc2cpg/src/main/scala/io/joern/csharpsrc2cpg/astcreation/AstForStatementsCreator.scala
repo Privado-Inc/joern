@@ -295,16 +295,11 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
     * Thus, this is lowered as a try-finally, with finally making a call to `Dispose` on the declared variable.
     */
   private def astForUsingStatement(usingStmt: DotNetNodeInfo): Seq[Ast] = {
-    val tryNode = NewControlStructure()
-      .controlStructureType(ControlStructureTypes.TRY)
-      .code(code(usingStmt))
-      .lineNumber(line(usingStmt))
-      .columnNumber(column(usingStmt))
+    val tryNode = controlStructureNode(usingStmt, ControlStructureTypes.TRY, code(usingStmt))
     val declAst = Try(createDotNetNodeInfo(usingStmt.json(ParserKeys.Declaration))) match {
       case Success(declNodevalue) => astForNode(declNodevalue)
       case _                      => Seq.empty[Ast]
     }
-
     val tryNodeInfo = createDotNetNodeInfo(usingStmt.json(ParserKeys.Statement))
     val tryAst      = astForBlock(tryNodeInfo, Option("try"))
 
@@ -322,11 +317,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
       )
       val disposeAst  = callAst(disposeCall, receiver = Option(Ast(id)))
       val childrenAst = Ast(blockNode(usingStmt)).withChild(disposeAst)
-      val finallyNode = NewControlStructure()
-        .controlStructureType(ControlStructureTypes.FINALLY)
-        .code("finally")
-        .lineNumber(line(usingStmt))
-        .columnNumber(column(usingStmt))
+      val finallyNode = controlStructureNode(usingStmt, ControlStructureTypes.FINALLY, "finally")
       Ast(finallyNode).withChild(childrenAst)
     }
 

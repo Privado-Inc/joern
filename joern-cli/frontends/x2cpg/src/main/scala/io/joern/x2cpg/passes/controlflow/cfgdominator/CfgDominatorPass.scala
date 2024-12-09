@@ -1,12 +1,11 @@
 package io.joern.x2cpg.passes.controlflow.cfgdominator
 
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.EdgeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{Method, StoredNode}
 import io.shiftleft.passes.ForkJoinParallelCpgPass
 import io.shiftleft.semanticcpg.language.*
 import org.slf4j.LoggerFactory
-
 import scala.collection.mutable
 
 /** This pass has no prerequisites.

@@ -1,10 +1,11 @@
 package io.joern.rubysrc2cpg.querying
 
-import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
-import io.joern.x2cpg.Defines
 import io.joern.rubysrc2cpg.passes.Defines as RDefines
+import io.joern.rubysrc2cpg.passes.Defines.Main
+import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
+import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
+import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, NodeTypes, Operators}
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Identifier, Literal, MethodRef, Return, TypeRef}
 import io.shiftleft.semanticcpg.language.*
 
 class MethodTests extends RubyCode2CpgFixture {
@@ -17,7 +18,7 @@ class MethodTests extends RubyCode2CpgFixture {
     "be represented by a METHOD node" in {
       val List(f) = cpg.method.name("f").l
 
-      f.fullName shouldBe "Test0.rb:<global>::program:f"
+      f.fullName shouldBe s"Test0.rb:$Main.f"
       f.isExternal shouldBe false
       f.lineNumber shouldBe Some(2)
       f.numberOfLines shouldBe 1
@@ -30,12 +31,18 @@ class MethodTests extends RubyCode2CpgFixture {
 
     "have a corresponding bound type" in {
       val List(fType) = cpg.typeDecl("f").l
-      fType.fullName shouldBe "Test0.rb:<global>::program:f"
+      fType.fullName shouldBe s"Test0.rb:$Main.f"
       fType.code shouldBe "def f(x) = 1"
-      fType.astParentFullName shouldBe "Test0.rb:<global>::program:f"
+      fType.astParentFullName shouldBe s"Test0.rb:$Main"
       fType.astParentType shouldBe NodeTypes.METHOD
       val List(fMethod) = fType.iterator.boundMethod.l
-      fType.fullName shouldBe "Test0.rb:<global>::program:f"
+      fType.fullName shouldBe s"Test0.rb:$Main.f"
+    }
+
+    "create a 'fake' method for the file" in {
+      val List(m) = cpg.method.nameExact(RDefines.Main).l
+      m.fullName shouldBe s"Test0.rb:$Main"
+      m.isModule.nonEmpty shouldBe true
     }
   }
 
@@ -48,7 +55,7 @@ class MethodTests extends RubyCode2CpgFixture {
 
     val List(f) = cpg.method.name("f").l
 
-    f.fullName shouldBe "Test0.rb:<global>::program:f"
+    f.fullName shouldBe s"Test0.rb:$Main.f"
     f.isExternal shouldBe false
     f.lineNumber shouldBe Some(2)
     f.numberOfLines shouldBe 3
@@ -62,7 +69,7 @@ class MethodTests extends RubyCode2CpgFixture {
 
     val List(f) = cpg.method.name("f").l
 
-    f.fullName shouldBe "Test0.rb:<global>::program:f"
+    f.fullName shouldBe s"Test0.rb:$Main.f"
     f.isExternal shouldBe false
     f.lineNumber shouldBe Some(2)
     f.numberOfLines shouldBe 1
@@ -80,7 +87,7 @@ class MethodTests extends RubyCode2CpgFixture {
 
     val List(f) = cpg.method.name("f").l
 
-    f.fullName shouldBe "Test0.rb:<global>::program:f"
+    f.fullName shouldBe s"Test0.rb:$Main.f"
     f.isExternal shouldBe false
     f.lineNumber shouldBe Some(2)
     f.numberOfLines shouldBe 1
@@ -186,8 +193,8 @@ class MethodTests extends RubyCode2CpgFixture {
           case funcF :: Nil =>
             inside(funcF.parameter.l) {
               case thisParam :: xParam :: Nil =>
-                thisParam.code shouldBe "this"
-                thisParam.typeFullName shouldBe "Test0.rb:<global>::program.C"
+                thisParam.code shouldBe RDefines.Self
+                thisParam.typeFullName shouldBe s"Test0.rb:$Main.C"
                 thisParam.index shouldBe 0
                 thisParam.isVariadic shouldBe false
 
@@ -220,8 +227,8 @@ class MethodTests extends RubyCode2CpgFixture {
           case funcF :: Nil =>
             inside(funcF.parameter.l) {
               case thisParam :: xParam :: Nil =>
-                thisParam.code shouldBe "this"
-                thisParam.typeFullName shouldBe "Test0.rb:<global>::program.C"
+                thisParam.code shouldBe RDefines.Self
+                thisParam.typeFullName shouldBe s"Test0.rb:$Main.C"
                 thisParam.index shouldBe 0
                 thisParam.isVariadic shouldBe false
 
@@ -252,7 +259,7 @@ class MethodTests extends RubyCode2CpgFixture {
           xs.name shouldBe "xs"
           xs.code shouldBe "*xs"
           xs.isVariadic shouldBe true
-          xs.typeFullName shouldBe "__builtin.Array"
+          xs.typeFullName shouldBe s"$kernelPrefix.Array"
         case xs => fail(s"Expected `foo` to have one parameter, got [${xs.code.mkString(", ")}]")
       }
     }
@@ -263,7 +270,7 @@ class MethodTests extends RubyCode2CpgFixture {
           ys.name shouldBe "ys"
           ys.code shouldBe "**ys"
           ys.isVariadic shouldBe true
-          ys.typeFullName shouldBe "__builtin.Hash"
+          ys.typeFullName shouldBe s"$kernelPrefix.Hash"
         case xs => fail(s"Expected `foo` to have one parameter, got [${xs.code.mkString(", ")}]")
       }
     }
@@ -296,7 +303,7 @@ class MethodTests extends RubyCode2CpgFixture {
     "create a method under `Foo` for both `x=`, `x`, and `bar=`, where `bar=` forwards parameters to a call to `x=`" in {
       inside(cpg.typeDecl("Foo").l) {
         case foo :: Nil =>
-          inside(foo.method.nameNot(Defines.ConstructorMethodName, Defines.StaticInitMethodName).l) {
+          inside(foo.method.nameNot(RDefines.Initialize, RDefines.TypeDeclBody).l) {
             case xeq :: x :: bar :: Nil =>
               xeq.name shouldBe "x="
               x.name shouldBe "x"
@@ -339,13 +346,13 @@ class MethodTests extends RubyCode2CpgFixture {
         |""".stripMargin)
 
     "exist under the module TYPE_DECL" in {
-      inside(cpg.typeDecl.name("F").method.l) {
+      inside(cpg.typeDecl.name("F").method.nameExact("bar", "baz").l) {
         case bar :: baz :: Nil =>
           inside(bar.parameter.l) {
             case thisParam :: xParam :: Nil =>
-              thisParam.name shouldBe "this"
+              thisParam.name shouldBe RDefines.Self
               thisParam.code shouldBe "F"
-              thisParam.typeFullName shouldBe "Test0.rb:<global>::program.F"
+              thisParam.typeFullName shouldBe s"Test0.rb:$Main.F"
 
               xParam.name shouldBe "x"
             case xs => fail(s"Expected two parameters, got ${xs.name.mkString(", ")}")
@@ -353,9 +360,9 @@ class MethodTests extends RubyCode2CpgFixture {
 
           inside(baz.parameter.l) {
             case thisParam :: xParam :: Nil =>
-              thisParam.name shouldBe "this"
+              thisParam.name shouldBe RDefines.Self
               thisParam.code shouldBe "F"
-              thisParam.typeFullName shouldBe "Test0.rb:<global>::program.F"
+              thisParam.typeFullName shouldBe s"Test0.rb:$Main.F"
 
               xParam.name shouldBe "x"
               xParam.code shouldBe "x"
@@ -365,14 +372,20 @@ class MethodTests extends RubyCode2CpgFixture {
       }
     }
 
-    "baz should not exist in the :program block" in {
-      inside(cpg.method.name(":program").l) {
+    // TODO: we cannot bind baz as this is a dynamic assignment to `F` which is trickier to determine
+    //   Also, double check bindings
+    "have bindings to the singleton module TYPE_DECL" ignore {
+      cpg.typeDecl.name("F<class>").methodBinding.methodFullName.l shouldBe List(s"Test0.rb:$Main.F.bar")
+    }
+
+    "baz should not exist in the <main> block" in {
+      inside(cpg.method.isModule.l) {
         case prog :: Nil =>
           inside(prog.block.astChildren.isMethod.name("baz").l) {
             case Nil => // passing case
             case _   => fail("Baz should not exist under program method block")
           }
-        case _ => fail("Expected one Method for :program")
+        case _ => fail("Expected one Method for <block>")
       }
     }
   }
@@ -387,7 +400,7 @@ class MethodTests extends RubyCode2CpgFixture {
     "be represented by a METHOD node" in {
       inside(cpg.method.name("exists\\?").l) {
         case existsMethod :: Nil =>
-          existsMethod.fullName shouldBe "Test0.rb:<global>::program:exists?"
+          existsMethod.fullName shouldBe s"Test0.rb:$Main.exists?"
           existsMethod.isExternal shouldBe false
 
           inside(existsMethod.methodReturn.cfgIn.l) {
@@ -520,6 +533,7 @@ class MethodTests extends RubyCode2CpgFixture {
         |class Foo
         | def authenticate(email, password)
         |   auth = nil
+        |   a = getPass()
         |   if a == Digest::MD5.hexdigest(password)
         |     auth = a
         |   end
@@ -532,20 +546,27 @@ class MethodTests extends RubyCode2CpgFixture {
         case Some(ifCond: Call) =>
           inside(ifCond.argument.l) {
             case (leftArg: Identifier) :: (rightArg: Call) :: Nil =>
+              leftArg.name shouldBe "a"
+
               rightArg.name shouldBe "hexdigest"
               rightArg.code shouldBe "Digest::MD5.hexdigest(password)"
 
               inside(rightArg.argument.l) {
                 case (md5: Call) :: (passwordArg: Identifier) :: Nil =>
-                  md5.name shouldBe "MD5"
-                  inside(md5.argument.l) {
-                    case (digest: Identifier) :: Nil =>
-                      digest.name shouldBe "Digest"
-                    case xs => fail(s"Expected 1 argument, got ${xs.code.mkString(", ")} instead")
-                  }
+                  md5.name shouldBe Operators.fieldAccess
+                  md5.code shouldBe "Digest::MD5"
+
+                  val md5Base = md5.argument(1).asInstanceOf[Call]
+                  md5.argument(2).asInstanceOf[FieldIdentifier].canonicalName shouldBe "MD5"
+
+                  md5Base.name shouldBe Operators.fieldAccess
+                  md5Base.code shouldBe "self.Digest"
+
+                  md5Base.argument(1).asInstanceOf[Identifier].name shouldBe RDefines.Self
+                  md5Base.argument(2).asInstanceOf[FieldIdentifier].canonicalName shouldBe "Digest"
                 case xs => fail(s"Expected identifier and call, got ${xs.code.mkString(", ")} instead")
               }
-            case xs => fail(s"Expected 3 arguments, got ${xs.code.mkString(", ")} instead")
+            case xs => fail(s"Expected 2 arguments, got ${xs.code.mkString(", ")} instead")
           }
         case None => fail("Expected if-condition")
       }
@@ -581,31 +602,34 @@ class MethodTests extends RubyCode2CpgFixture {
       )
 
     "be directly under :program" in {
-      inside(cpg.method.name(RDefines.Program).filename("t1.rb").assignment.l) {
+      inside(cpg.method.name(RDefines.Main).filename("t1.rb").assignment.l) {
         case moduleAssignment :: classAssignment :: methodAssignment :: Nil =>
-          moduleAssignment.code shouldBe "A = class t1.rb:<global>::program.A (...)"
-          classAssignment.code shouldBe "B = class t1.rb:<global>::program.B (...)"
-          methodAssignment.code shouldBe "c = def c (...)"
+          moduleAssignment.code shouldBe "self.A = module A (...)"
+          classAssignment.code shouldBe "self.B = class B (...)"
+          methodAssignment.code shouldBe "self.c = def c (...)"
 
           inside(moduleAssignment.argument.l) {
-            case (lhs: Identifier) :: (rhs: TypeRef) :: Nil =>
-              lhs.name shouldBe "A"
-              rhs.typeFullName shouldBe "t1.rb:<global>::program.A"
+            case (lhs: Call) :: (rhs: TypeRef) :: Nil =>
+              lhs.code shouldBe "self.A"
+              lhs.name shouldBe Operators.fieldAccess
+              rhs.typeFullName shouldBe s"t1.rb:$Main.A<class>"
             case xs => fail(s"Expected lhs and rhs, instead got ${xs.code.mkString(",")}")
           }
 
           inside(classAssignment.argument.l) {
-            case (lhs: Identifier) :: (rhs: TypeRef) :: Nil =>
-              lhs.name shouldBe "B"
-              rhs.typeFullName shouldBe "t1.rb:<global>::program.B"
+            case (lhs: Call) :: (rhs: TypeRef) :: Nil =>
+              lhs.code shouldBe "self.B"
+              lhs.name shouldBe Operators.fieldAccess
+              rhs.typeFullName shouldBe s"t1.rb:$Main.B<class>"
             case xs => fail(s"Expected lhs and rhs, instead got ${xs.code.mkString(",")}")
           }
 
           inside(methodAssignment.argument.l) {
-            case (lhs: Identifier) :: (rhs: MethodRef) :: Nil =>
-              lhs.name shouldBe "c"
-              rhs.methodFullName shouldBe "t1.rb:<global>::program:c"
-              rhs.typeFullName shouldBe RDefines.Any
+            case (lhs: Call) :: (rhs: MethodRef) :: Nil =>
+              lhs.code shouldBe "self.c"
+              lhs.name shouldBe Operators.fieldAccess
+              rhs.methodFullName shouldBe s"t1.rb:$Main.c"
+              rhs.typeFullName shouldBe s"t1.rb:$Main.c"
             case xs => fail(s"Expected lhs and rhs, instead got ${xs.code.mkString(",")}")
           }
 
@@ -614,28 +638,244 @@ class MethodTests extends RubyCode2CpgFixture {
     }
 
     "not be present in other files" in {
-      inside(cpg.method.name(RDefines.Program).filename("t2.rb").assignment.l) {
+      inside(cpg.method.name(RDefines.Main).filename("t2.rb").assignment.l) {
         case classAssignment :: methodAssignment :: Nil =>
-          classAssignment.code shouldBe "D = class t2.rb:<global>::program.D (...)"
-          methodAssignment.code shouldBe "e = def e (...)"
+          classAssignment.code shouldBe "self.D = class D (...)"
+          methodAssignment.code shouldBe "self.e = def e (...)"
 
           inside(classAssignment.argument.l) {
-            case (lhs: Identifier) :: (rhs: TypeRef) :: Nil =>
-              lhs.name shouldBe "D"
-              rhs.typeFullName shouldBe "t2.rb:<global>::program.D"
+            case (lhs: Call) :: (rhs: TypeRef) :: Nil =>
+              lhs.code shouldBe "self.D"
+              lhs.name shouldBe Operators.fieldAccess
+              rhs.typeFullName shouldBe s"t2.rb:$Main.D<class>"
             case xs => fail(s"Expected lhs and rhs, instead got ${xs.code.mkString(",")}")
           }
 
           inside(methodAssignment.argument.l) {
-            case (lhs: Identifier) :: (rhs: MethodRef) :: Nil =>
-              lhs.name shouldBe "e"
-              rhs.methodFullName shouldBe "t2.rb:<global>::program:e"
-              rhs.typeFullName shouldBe RDefines.Any
+            case (lhs: Call) :: (rhs: MethodRef) :: Nil =>
+              lhs.code shouldBe "self.e"
+              lhs.name shouldBe Operators.fieldAccess
+              rhs.methodFullName shouldBe s"t2.rb:$Main.e"
+              rhs.typeFullName shouldBe s"t2.rb:$Main.e"
             case xs => fail(s"Expected lhs and rhs, instead got ${xs.code.mkString(",")}")
           }
 
         case xs => fail(s"Expected two assignments, got [${xs.code.mkString(",")}]")
       }
+    }
+
+    "be placed in order of definition" in {
+      inside(cpg.method.name(RDefines.Main).filename("t1.rb").block.astChildren.l) {
+        case (a1: Call) :: (a2: Call) :: (a3: Call) :: (a4: Call) :: (a5: Call) :: Nil =>
+          a1.code shouldBe "self.A = module A (...)"
+          a2.code shouldBe "self::A::<body>"
+          a3.code shouldBe "self.B = class B (...)"
+          a4.code shouldBe "self::B::<body>"
+          a5.code shouldBe "self.c = def c (...)"
+        case xs => fail(s"Expected assignments to appear before definitions, instead got [${xs.mkString("\n")}]")
+      }
+    }
+  }
+
+  "Splatting and normal argument" in {
+    val cpg = code("""
+        |def foo(*x, y)
+        |end
+        |""".stripMargin)
+
+    inside(cpg.method.name("foo").l) {
+      case fooMethod :: Nil =>
+        inside(fooMethod.method.parameter.l) {
+          case selfArg :: splatArg :: normalArg :: Nil =>
+            splatArg.code shouldBe "*x"
+            splatArg.index shouldBe 1
+
+            normalArg.code shouldBe "y"
+            normalArg.index shouldBe 2
+          case xs => fail(s"Expected two parameters, got [${xs.code.mkString(",")}]")
+        }
+      case xs => fail(s"Expected one method, got [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "Splatting argument in call" in {
+    val cpg = code("""
+        |def foo(a, b)
+        |end
+        |
+        |x = 1,2
+        |foo(*x, y)
+        |""".stripMargin)
+
+    inside(cpg.call.name("foo").l) {
+      case fooCall :: Nil =>
+        inside(fooCall.argument.l) {
+          case selfArg :: xArg :: yArg :: Nil =>
+            xArg.code shouldBe "*x"
+            yArg.code shouldBe "self.y"
+          case xs => fail(s"Expected two args, got [${xs.code.mkString(",")}]")
+        }
+      case xs => fail(s"Expected one call to foo, got [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "a nested method declaration inside of a do-block should connect the member node to the bound type decl" in {
+    val cpg = code("""
+        |foo do
+        | def bar
+        | end
+        |end
+        |""".stripMargin)
+
+    val parentType = cpg.member("bar").typeDecl.head
+    parentType.isLambda should not be empty
+    parentType.methodBinding.methodFullName.head should endWith("<lambda>0")
+  }
+
+  "a method that is redefined should have a counter suffixed to ensure uniqueness" in {
+    val cpg = code("""
+          |def foo;end
+          |def bar;end
+          |def foo;end
+          |def foo;end
+          |""".stripMargin)
+
+    cpg.method.name("(foo|bar).*").name.l shouldBe List("foo", "bar", "foo", "foo")
+    cpg.method.name("(foo|bar).*").fullName.l shouldBe List(
+      s"Test0.rb:$Main.foo",
+      s"Test0.rb:$Main.bar",
+      s"Test0.rb:$Main.foo0",
+      s"Test0.rb:$Main.foo1"
+    )
+  }
+
+  "MemberCall with a function name the same as a reserved keyword" in {
+    val cpg = code("""
+        |batch.retry!()
+        |""".stripMargin)
+
+    inside(cpg.call.name(".*retry!").l) {
+      case batchCall :: Nil =>
+        batchCall.name shouldBe "retry!"
+        batchCall.code shouldBe "batch.retry!()"
+
+        inside(batchCall.receiver.l) {
+          case (receiverCall: Call) :: Nil =>
+            receiverCall.name shouldBe Operators.fieldAccess
+            receiverCall.code shouldBe "batch.retry!"
+
+            val selfBatch = receiverCall.argument(1).asInstanceOf[Call]
+            selfBatch.code shouldBe "self.batch"
+
+            val retry = receiverCall.argument(2).asInstanceOf[FieldIdentifier]
+            retry.code shouldBe "retry!"
+
+          case xs => fail(s"Expected one receiver for call, got [${xs.code.mkString(",")}]")
+        }
+
+      case xs => fail(s"Expected one method for batch.retry, got [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "Call with :: syntax and reserved keyword" in {
+    val cpg = code("""
+        |batch::retry!()
+        |""".stripMargin)
+
+    inside(cpg.call.name(".*retry!").l) {
+      case batchCall :: Nil =>
+        batchCall.name shouldBe "retry!"
+        batchCall.code shouldBe "batch::retry!()"
+
+        inside(batchCall.receiver.l) {
+          case (receiverCall: Call) :: Nil =>
+            receiverCall.name shouldBe Operators.fieldAccess
+            receiverCall.code shouldBe "batch.retry!"
+
+            val selfBatch = receiverCall.argument(1).asInstanceOf[Call]
+            selfBatch.code shouldBe "self.batch"
+
+            val retry = receiverCall.argument(2).asInstanceOf[FieldIdentifier]
+            retry.code shouldBe "retry!"
+
+          case xs => fail(s"Expected one receiver for call, got [${xs.code.mkString(",")}]")
+        }
+
+      case xs => fail(s"Expected one method for batch.retry, got [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "Call with reserved keyword as base and call name using . notation" in {
+    val cpg = code("""
+        |retry.retry!()
+        |""".stripMargin)
+
+    inside(cpg.call.name(".*retry!").l) {
+      case batchCall :: Nil =>
+        batchCall.name shouldBe "retry!"
+        batchCall.code shouldBe "retry.retry!()"
+
+        inside(batchCall.receiver.l) {
+          case (receiverCall: Call) :: Nil =>
+            receiverCall.name shouldBe Operators.fieldAccess
+            receiverCall.code shouldBe "retry.retry!"
+
+            val selfBatch = receiverCall.argument(1).asInstanceOf[Call]
+            selfBatch.code shouldBe "self.retry"
+
+            val retry = receiverCall.argument(2).asInstanceOf[FieldIdentifier]
+            retry.code shouldBe "retry!"
+
+          case xs => fail(s"Expected one receiver for call, got [${xs.code.mkString(",")}]")
+        }
+
+      case xs => fail(s"Expected one method for batch.retry, got [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "Call with reserved keyword as base and call name" in {
+    val cpg = code("""
+        |retry::retry!()
+        |""".stripMargin)
+
+    inside(cpg.call.name(".*retry!").l) {
+      case batchCall :: Nil =>
+        batchCall.name shouldBe "retry!"
+        batchCall.code shouldBe "retry::retry!()"
+
+        inside(batchCall.receiver.l) {
+          case (receiverCall: Call) :: Nil =>
+            receiverCall.name shouldBe Operators.fieldAccess
+            receiverCall.code shouldBe "retry.retry!"
+
+            val selfBatch = receiverCall.argument(1).asInstanceOf[Call]
+            selfBatch.code shouldBe "self.retry"
+
+            val retry = receiverCall.argument(2).asInstanceOf[FieldIdentifier]
+            retry.code shouldBe "retry!"
+
+          case xs => fail(s"Expected one receiver for call, got [${xs.code.mkString(",")}]")
+        }
+
+      case xs => fail(s"Expected one method for batch.retry, got [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "%x should be represented as a call to EXEC" in {
+    val cpg = code("""
+        |%x(ls -l)
+        |""".stripMargin)
+
+    inside(cpg.call.name("exec").l) {
+      case execCall :: Nil =>
+        execCall.name shouldBe "exec"
+        inside(execCall.argument.l) {
+          case selfArg :: lsArg :: Nil =>
+            selfArg.code shouldBe "self"
+            lsArg.code shouldBe "ls -l"
+          case xs => fail(s"expected 2 arguments, got [${xs.code.mkString(",")}]")
+        }
+      case xs => fail(s"Expected one call to exec, got [${xs.code.mkString(",")}]")
     }
   }
 }

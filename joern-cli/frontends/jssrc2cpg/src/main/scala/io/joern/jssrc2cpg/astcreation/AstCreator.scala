@@ -5,8 +5,8 @@ import io.joern.jssrc2cpg.datastructures.{MethodScope, Scope}
 import io.joern.jssrc2cpg.parser.BabelAst.*
 import io.joern.jssrc2cpg.parser.BabelJsonParser.ParseResult
 import io.joern.jssrc2cpg.parser.BabelNodeInfo
-import io.joern.jssrc2cpg.passes.Defines
 import io.joern.x2cpg.datastructures.Stack.*
+import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
 import io.joern.x2cpg.utils.NodeBuilders.{newMethodReturnNode, newModifierNode}
 import io.joern.x2cpg.{Ast, AstCreatorBase, ValidationMode, AstNodeBuilder as X2CpgAstNodeBuilder}
 import io.joern.x2cpg.datastructures.Global
@@ -18,7 +18,7 @@ import io.shiftleft.codepropertygraph.generated.nodes.NewNode
 import io.shiftleft.codepropertygraph.generated.nodes.NewTypeDecl
 import io.shiftleft.codepropertygraph.generated.nodes.NewTypeRef
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 import ujson.Value
 
 import scala.collection.mutable
@@ -79,7 +79,7 @@ class AstCreator(val config: Config, val global: Global, val parserResult: Parse
     val columnNumber    = astNodeInfo.columnNumber
     val lineNumberEnd   = astNodeInfo.lineNumberEnd
     val columnNumberEnd = astNodeInfo.columnNumberEnd
-    val name            = ":program"
+    val name            = Defines.Program
     val fullName        = s"$path:$name"
 
     val programMethod =
@@ -253,11 +253,11 @@ class AstCreator(val config: Config, val global: Global, val parserResult: Parse
 
   private def astsForProgram(program: BabelNodeInfo): List[Ast] = createBlockStatementAsts(program.json("body"))
 
-  protected def line(node: BabelNodeInfo): Option[Integer]      = node.lineNumber
-  protected def column(node: BabelNodeInfo): Option[Integer]    = node.columnNumber
-  protected def lineEnd(node: BabelNodeInfo): Option[Integer]   = node.lineNumberEnd
-  protected def columnEnd(node: BabelNodeInfo): Option[Integer] = node.columnNumberEnd
-  protected def code(node: BabelNodeInfo): String               = node.code
+  protected def line(node: BabelNodeInfo): Option[Int]      = node.lineNumber
+  protected def column(node: BabelNodeInfo): Option[Int]    = node.columnNumber
+  protected def lineEnd(node: BabelNodeInfo): Option[Int]   = node.lineNumberEnd
+  protected def columnEnd(node: BabelNodeInfo): Option[Int] = node.columnNumberEnd
+  protected def code(node: BabelNodeInfo): String           = node.code
 
   protected def nodeOffsets(node: Value): Option[(Int, Int)] = {
     for {

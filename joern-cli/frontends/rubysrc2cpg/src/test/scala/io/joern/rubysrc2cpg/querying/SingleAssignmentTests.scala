@@ -4,6 +4,7 @@ import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.nodes.{Block, Call, Identifier, Literal}
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
 import io.shiftleft.semanticcpg.language.*
+import io.joern.rubysrc2cpg.passes.Defines as RubyDefines
 
 class SingleAssignmentTests extends RubyCode2CpgFixture {
 
@@ -213,4 +214,79 @@ class SingleAssignmentTests extends RubyCode2CpgFixture {
     }
   }
 
+  "in a method body" in {
+    val cpg = code("""
+        |def f(p)
+        |  y = p
+        |  y
+        |end
+        |""".stripMargin)
+
+    inside(cpg.assignment.code("y = p").l) {
+      case assign :: Nil =>
+        inside(assign.argument.l) {
+          case (y: Identifier) :: (p: Identifier) :: Nil =>
+            y.name shouldBe "y"
+            p.name shouldBe "p"
+          case _ => fail(s"Expected two assigment identifiers arguments")
+        }
+      case _ => fail("Unable to find assignment `y = p`")
+    }
+  }
+
+  "Bracket Assignments" in {
+    val cpg = code("""
+                     | def get_pto_schedule
+                     |    begin
+                     |       schedules = current_user.paid_time_off.schedule
+                     |       jfs = []
+                     |       schedules.each do |s|
+                     |          hash = Hash.new
+                     |          hash[:id] = s[:id]
+                     |          hash[:title] = s[:event_name]
+                     |          hash[:start] = s[:date_begin]
+                     |          hash[:end] = s[:date_end]
+                     |          jfs << hash
+                     |       end
+                     |    rescue
+                     |    end
+                     |    respond_to do |format|
+                     |       format.json { render json: jfs.to_json }
+                     |    end
+                     |  end
+                     |""".stripMargin)
+
+    inside(cpg.method.isLambda.l) {
+      case scheduleLambda :: _ :: _ :: Nil =>
+        inside(scheduleLambda.call.name(Operators.assignment).l) {
+          case _ :: id :: title :: start :: end :: _ :: Nil =>
+            id.code shouldBe "hash[:id] = s[:id]"
+
+            inside(id.argument.l) {
+              case (lhs: Call) :: (rhs: Call) :: Nil =>
+                lhs.methodFullName shouldBe Operators.indexAccess
+                lhs.code shouldBe "hash[:id]"
+
+                rhs.methodFullName shouldBe Operators.indexAccess
+                rhs.code shouldBe "s[:id]"
+
+                inside(lhs.argument.l) {
+                  case base :: (index: Literal) :: Nil =>
+                    index.typeFullName shouldBe RubyDefines.getBuiltInType(RubyDefines.Symbol)
+                  case xs => fail(s"Expected base and index, got [${xs.code.mkString(",")}]")
+                }
+
+                inside(rhs.argument.l) {
+                  case base :: (index: Literal) :: Nil =>
+                    index.typeFullName shouldBe RubyDefines.getBuiltInType(RubyDefines.Symbol)
+                  case xs => fail(s"Expected base and index, got [${xs.code.mkString(",")}]")
+                }
+
+              case xs => fail(s"Expected lhs and rhs, got ${xs.code.mkString(";")}]")
+            }
+          case xs => fail(s"Expected six assignemnts, got [${xs.code.mkString(";")}]")
+        }
+      case xs => fail(s"Expected three lambdas, got ${xs.size} lambdas instead")
+    }
+  }
 }

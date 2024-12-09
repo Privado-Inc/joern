@@ -1,9 +1,10 @@
 package io.joern.rubysrc2cpg.querying
 
-import io.joern.rubysrc2cpg.passes.Defines.RubyOperators
+import io.joern.rubysrc2cpg.passes.Defines.{Main, RubyOperators}
+import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.Operators
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Literal, Method, MethodRef, Return}
+import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 
 class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
@@ -71,7 +72,7 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
     r.lineNumber shouldBe Some(3)
 
     val List(c: Call) = r.astChildren.isCall.l
-    c.methodFullName shouldBe "__builtin:puts"
+    c.methodFullName shouldBe s"$kernelPrefix.puts"
     c.lineNumber shouldBe Some(3)
     c.code shouldBe "puts x"
   }
@@ -155,7 +156,7 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
 
     val List(s: Literal) = r.astChildren.isLiteral.l
     s.code shouldBe ":g"
-    s.typeFullName shouldBe "__builtin.Symbol"
+    s.typeFullName shouldBe s"$kernelPrefix.Symbol"
   }
 
   "explicit RETURN node for `\"\"` exists" in {
@@ -191,14 +192,14 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
             val List(twenty: Literal) = return20.astChildren.l: @unchecked
             twenty.code shouldBe "20"
             twenty.lineNumber shouldBe Some(4)
-            twenty.typeFullName shouldBe "__builtin.Integer"
+            twenty.typeFullName shouldBe s"$kernelPrefix.Integer"
 
             returnNil.code shouldBe "return nil"
             returnNil.lineNumber shouldBe Some(3)
             val List(nil: Literal) = returnNil.astChildren.l: @unchecked
             nil.code shouldBe "nil"
             nil.lineNumber shouldBe Some(3)
-            nil.typeFullName shouldBe "__builtin.NilClass"
+            nil.typeFullName shouldBe s"$kernelPrefix.NilClass"
           case xs => fail(s"Expected exactly two return nodes, instead got [${xs.code.mkString(",")}]")
         }
       case xs => fail(s"Expected exactly one method with the name `f`, instead got [${xs.code.mkString(",")}]")
@@ -226,14 +227,14 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
             val List(twenty: Literal) = return20.astChildren.l: @unchecked
             twenty.code shouldBe "20"
             twenty.lineNumber shouldBe Some(4)
-            twenty.typeFullName shouldBe "__builtin.Integer"
+            twenty.typeFullName shouldBe s"$kernelPrefix.Integer"
 
             return40.code shouldBe "40"
             return40.lineNumber shouldBe Some(6)
             val List(forty: Literal) = return40.astChildren.l: @unchecked
             forty.code shouldBe "40"
             forty.lineNumber shouldBe Some(6)
-            forty.typeFullName shouldBe "__builtin.Integer"
+            forty.typeFullName shouldBe s"$kernelPrefix.Integer"
           case xs => fail(s"Expected exactly two return nodes, instead got [${xs.code.mkString(",")}]")
         }
       case xs => fail(s"Expected exactly one method with the name `f`, instead got [${xs.code.mkString(",")}]")
@@ -296,14 +297,14 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
             val List(twenty: Literal) = return20.astChildren.l: @unchecked
             twenty.code shouldBe "20"
             twenty.lineNumber shouldBe Some(2)
-            twenty.typeFullName shouldBe "__builtin.Integer"
+            twenty.typeFullName shouldBe s"$kernelPrefix.Integer"
 
             return40.code shouldBe "40"
             return40.lineNumber shouldBe Some(2)
             val List(forty: Literal) = return40.astChildren.l: @unchecked
             forty.code shouldBe "40"
             forty.lineNumber shouldBe Some(2)
-            forty.typeFullName shouldBe "__builtin.Integer"
+            forty.typeFullName shouldBe s"$kernelPrefix.Integer"
           case xs => fail(s"Expected exactly two return nodes, instead got [${xs.code.mkString(",")}]")
         }
       case xs => fail(s"Expected exactly one method with the name `f`, instead got [${xs.code.mkString(",")}]")
@@ -338,7 +339,7 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
     }
   }
 
-  "implicit RETURN node for ASSOCIATION" in {
+  "implicit RETURN node for super call" in {
     val cpg = code("""
                      |def j
                      |  super(only: ["a"])
@@ -349,11 +350,11 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
       case jMethod :: Nil =>
         inside(jMethod.methodReturn.toReturn.l) {
           case retAssoc :: Nil =>
-            retAssoc.code shouldBe "only: [\"a\"]"
+            retAssoc.code shouldBe "super(only: [\"a\"])"
 
             val List(call: Call) = retAssoc.astChildren.l: @unchecked
-            call.name shouldBe RubyOperators.association
-            call.code shouldBe "only: [\"a\"]"
+            call.name shouldBe "super"
+            call.code shouldBe "super(only: [\"a\"])"
           case xs => fail(s"Expected exactly one return nodes, instead got [${xs.code.mkString(",")}]")
         }
       case _ => fail("Only one method expected")
@@ -379,7 +380,7 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
           inside(bar.astChildren.collectAll[Method].l) {
             case closureMethod :: Nil =>
               closureMethod.name shouldBe "<lambda>0"
-              closureMethod.fullName shouldBe "Test0.rb:<global>::program:bar:<lambda>0"
+              closureMethod.fullName shouldBe s"Test0.rb:$Main.bar.<lambda>0"
             case xs => fail(s"Expected closure method, but found ${xs.code.mkString(", ")} instead")
           }
 
@@ -391,8 +392,8 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
 
                   returnCall.name shouldBe "foo"
 
-                  val List(_, arg: MethodRef) = returnCall.argument.l: @unchecked
-                  arg.methodFullName shouldBe "Test0.rb:<global>::program:bar:<lambda>0"
+                  val List(_, arg: TypeRef) = returnCall.argument.l: @unchecked
+                  arg.typeFullName shouldBe s"Test0.rb:$Main.bar.<lambda>0&Proc"
                 case xs => fail(s"Expected one call for return, but found ${xs.code.mkString(", ")} instead")
               }
 
@@ -432,9 +433,26 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
 
     inside(cpg.method.nameExact("custom_fact_content").methodReturn.toReturn.astChildren.l) {
       case (heredoc: Literal) :: Nil =>
-        heredoc.typeFullName shouldBe "__builtin.String"
+        heredoc.typeFullName shouldBe s"$kernelPrefix.String"
         heredoc.code should startWith("<<-EOM")
       case xs => fail(s"Expected a single literal node, instead got [${xs.code.mkString(", ")}]")
+    }
+  }
+
+  "a return in an expression position without arguments should generate a return node with no children" in {
+    val cpg = code("""
+        |def foo
+        | return unless baz()
+        | bar()
+        |end
+        |""".stripMargin)
+
+    inside(cpg.method.nameExact("foo").ast.isReturn.headOption) {
+      case Some(ret) =>
+        ret.code shouldBe "return"
+        ret.astChildren.size shouldBe 0
+        ret.astParent.astParent.code shouldBe "return unless baz()"
+      case None => fail(s"Expected at least one return node")
     }
   }
 
