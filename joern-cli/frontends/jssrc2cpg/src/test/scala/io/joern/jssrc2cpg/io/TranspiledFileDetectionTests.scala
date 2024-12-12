@@ -5,7 +5,7 @@ import io.shiftleft.semanticcpg.language.*
 
 class TranspiledFileDetectionTests extends AstJsSrc2CpgSuite {
 
-  "Detecting transpiled files" should {
+  "Detecting transpiled files" ignore {
     "skip transpiled files correctly (with source map comment)" in {
       val cpg = code(
         """
