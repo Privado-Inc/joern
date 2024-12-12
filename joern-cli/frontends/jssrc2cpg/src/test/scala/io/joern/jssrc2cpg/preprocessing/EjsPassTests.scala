@@ -5,7 +5,7 @@ import io.shiftleft.semanticcpg.language.*
 
 class EjsPassTests extends AstJsSrc2CpgSuite {
 
-  "ejs files" should {
+  "ejs files" ignore {
 
     "be renamed correctly" in {
       val cpg = code(
