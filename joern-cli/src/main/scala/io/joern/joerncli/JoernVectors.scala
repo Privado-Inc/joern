@@ -1,7 +1,7 @@
 package io.joern.joerncli
 
 import io.joern.joerncli.CpgBasedTool.exitIfInvalid
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.PropertyNames
 import io.shiftleft.codepropertygraph.generated.nodes.{AstNode, Method}
 import io.shiftleft.semanticcpg.language.*
@@ -15,11 +15,10 @@ import scala.util.hashing.MurmurHash3
 
 class BagOfPropertiesForNodes extends EmbeddingGenerator[AstNode, (String, String)] {
   override def structureToString(pair: (String, String)): String = pair._1 + ":" + pair._2
-  override def extractObjects(cpg: Cpg): Iterator[AstNode]       = cpg.graph.V.collect { case x: AstNode => x }
+  override def extractObjects(cpg: Cpg): Iterator[AstNode]       = cpg.astNode
   override def enumerateSubStructures(obj: AstNode): List[(String, String)] = {
     val relevantFieldTypes = Set(PropertyNames.NAME, PropertyNames.FULL_NAME, PropertyNames.CODE)
-    val relevantFields = obj
-      .propertiesMap()
+    val relevantFields = obj.propertiesMap
       .entrySet()
       .asScala
       .toList
@@ -136,7 +135,7 @@ object JoernVectors {
   def main(args: Array[String]) = {
     parseConfig(args).foreach { config =>
       exitIfInvalid(config.outDir, config.cpgFileName)
-      Using.resource(CpgBasedTool.loadFromOdb(config.cpgFileName)) { cpg =>
+      Using.resource(CpgBasedTool.loadFromFile(config.cpgFileName)) { cpg =>
         val generator = new BagOfPropertiesForNodes()
         val embedding = generator.embed(cpg)
         println("{")
@@ -150,8 +149,8 @@ object JoernVectors {
         traversalToJson(embedding.vectors, generator.vectorToString)
         println(",\"edges\":")
         traversalToJson(
-          cpg.graph.edges().map { x =>
-            Map("src" -> x.outNode().id(), "dst" -> x.inNode().id(), "label" -> x.label())
+          cpg.graph.allEdges.map { edge =>
+            Map("src" -> edge.src.id, "dst" -> edge.dst.id, "label" -> edge.label)
           },
           generator.defaultToString
         )

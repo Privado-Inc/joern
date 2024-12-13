@@ -19,16 +19,17 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
     case node: ForExpression              => astForForExpression(node) :: Nil
     case node: CaseExpression             => astsForCaseExpression(node)
     case node: StatementList              => astForStatementList(node) :: Nil
-    case node: SimpleCallWithBlock        => astsForCallWithBlock(node)
-    case node: MemberCallWithBlock        => astsForCallWithBlock(node)
+    case node: SimpleCallWithBlock        => astForCallWithBlock(node) :: Nil
+    case node: MemberCallWithBlock        => astForCallWithBlock(node) :: Nil
     case node: ReturnExpression           => astForReturnStatement(node) :: Nil
     case node: AnonymousTypeDeclaration   => astForAnonymousTypeDeclaration(node) :: Nil
-    case node: TypeDeclaration            => astForClassDeclaration(node) :: Nil
+    case node: TypeDeclaration            => astForClassDeclaration(node)
     case node: FieldsDeclaration          => astsForFieldDeclarations(node)
     case node: MethodDeclaration          => astForMethodDeclaration(node)
-    case node: SingletonMethodDeclaration => astForSingletonMethodDeclaration(node) :: Nil
+    case node: SingletonMethodDeclaration => astForSingletonMethodDeclaration(node)
     case node: MultipleAssignment         => node.assignments.map(astForExpression)
     case node: BreakStatement             => astForBreakStatement(node) :: Nil
+    case node: SingletonStatementList     => astForSingletonStatementList(node)
     case _                                => astForExpression(node) :: Nil
 
   private def astForWhileStatement(node: WhileExpression): Ast = {
@@ -194,20 +195,20 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
    * foo(<args>, <method_ref>)
    * ```
    */
-  protected def astsForCallWithBlock[C <: RubyCall](node: RubyNode & RubyCallWithBlock[C]): Seq[Ast] = {
-    val Seq(methodDecl, typeDecl, _, methodRef) = astForDoBlock(node.block): @unchecked
-    val methodRefDummyNode                      = methodRef.root.map(DummyNode(_)(node.span)).toList
+  protected def astForCallWithBlock[C <: RubyCall](node: RubyNode & RubyCallWithBlock[C]): Ast = {
+    val Seq(typeRef, _)  = astForDoBlock(node.block): @unchecked
+    val typeRefDummyNode = typeRef.root.map(DummyNode(_)(node.span)).toList
 
     // Create call with argument referencing the MethodRef
     val callWithLambdaArg = node.withoutBlock match {
-      case x: SimpleCall => astForSimpleCall(x.copy(arguments = x.arguments ++ methodRefDummyNode)(x.span))
-      case x: MemberCall => astForMemberCall(x.copy(arguments = x.arguments ++ methodRefDummyNode)(x.span))
+      case x: SimpleCall => astForSimpleCall(x.copy(arguments = x.arguments ++ typeRefDummyNode)(x.span))
+      case x: MemberCall => astForMemberCall(x.copy(arguments = x.arguments ++ typeRefDummyNode)(x.span))
       case x =>
         logger.warn(s"Unhandled call-with-block type ${code(x)}, creating anonymous method structures only")
         Ast()
     }
 
-    methodDecl :: typeDecl :: callWithLambdaArg :: Nil
+    callWithLambdaArg
   }
 
   protected def astForDoBlock(block: Block & RubyNode): Seq[Ast] = {
@@ -221,12 +222,6 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
         astForMethodDeclaration(block.toMethodDeclaration(methodName, Option(block.parameters)), isClosure = true)
     }
 
-    // Set span contents
-    methodAstsWithRefs.flatMap(_.nodes).foreach {
-      case m: NewMethodRef => DummyNode(m.copy)(block.span.spanStart(m.code))
-      case _               =>
-    }
-
     methodAstsWithRefs
   }
 
@@ -234,6 +229,15 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
     val argumentAsts = node.expressions.map(astForExpression)
     val returnNode_  = returnNode(node, code(node))
     returnAst(returnNode_, argumentAsts)
+  }
+
+  protected def astForNextExpression(node: NextExpression): Ast = {
+    val nextNode = NewControlStructure()
+      .controlStructureType(ControlStructureTypes.CONTINUE)
+      .lineNumber(line(node))
+      .columnNumber(column(node))
+      .code(code(node))
+    Ast(nextNode)
   }
 
   protected def astForStatementListReturningLastExpression(node: StatementList): Ast = {
@@ -280,8 +284,8 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
         )
       case node: MemberAccess    => astForReturnMemberCall(node) :: Nil
       case ret: ReturnExpression => astForReturnStatement(ret) :: Nil
-      case node: MethodDeclaration =>
-        (astForMethodDeclaration(node) :+ astForReturnMethodDeclarationSymbolName(node)).toList
+      case node: (MethodDeclaration | SingletonMethodDeclaration) =>
+        (astsForStatement(node) :+ astForReturnMethodDeclarationSymbolName(node)).toList
       case _: BreakStatement => astsForStatement(node).toList
       case node =>
         logger.warn(
@@ -291,11 +295,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
   }
 
   private def returnAstForRubyCall[C <: RubyCall](node: RubyNode & RubyCallWithBlock[C]): Seq[Ast] = {
-    val Seq(methodDecl, typeDecl, callAst) = astsForCallWithBlock(node): @unchecked
-
-    Ast.storeInDiffGraph(methodDecl, diffGraph)
-    Ast.storeInDiffGraph(typeDecl, diffGraph)
-
+    val callAst = astForCallWithBlock(node)
     returnAst(returnNode(node, code(node)), List(callAst)) :: Nil
   }
 
@@ -305,7 +305,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
 
   // The evaluation of a MethodDeclaration returns its name in symbol form.
   // E.g. `def f = 0` ===> `:f`
-  private def astForReturnMethodDeclarationSymbolName(node: MethodDeclaration): Ast = {
+  private def astForReturnMethodDeclarationSymbolName(node: RubyNode & ProcedureDeclaration): Ast = {
     val literalNode_ = literalNode(node, s":${node.methodName}", getBuiltInType(Defines.Symbol))
     val returnNode_  = returnNode(node, literalNode_.code)
     returnAst(returnNode_, Seq(Ast(literalNode_)))
@@ -326,6 +326,10 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
       .columnNumber(column(node))
       .code(code(node))
     Ast(_node)
+  }
+
+  protected def astForSingletonStatementList(list: SingletonStatementList): Seq[Ast] = {
+    list.statements.map(astForExpression)
   }
 
   /** Wraps the last RubyNode with a ReturnExpression.
@@ -410,6 +414,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
           whenClauses.map(transform),
           elseClause.map(transform).orElse(defaultElseBranch(node.span))
         )(node.span)
+      case next: NextExpression => next
     }
   }
 }

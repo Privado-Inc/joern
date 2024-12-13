@@ -1,6 +1,6 @@
 package io.joern.rubysrc2cpg.astcreation
 
-import io.joern.rubysrc2cpg.passes.Defines
+import io.joern.rubysrc2cpg.passes.{Defines, GlobalTypes}
 import io.shiftleft.codepropertygraph.generated.nodes.NewNode
 
 import scala.annotation.tailrec
@@ -8,23 +8,26 @@ import scala.annotation.tailrec
 object RubyIntermediateAst {
 
   case class TextSpan(
-    line: Option[Integer],
-    column: Option[Integer],
-    lineEnd: Option[Integer],
-    columnEnd: Option[Integer],
+    line: Option[Int],
+    column: Option[Int],
+    lineEnd: Option[Int],
+    columnEnd: Option[Int],
+    offset: Option[(Int, Int)],
     text: String
   ) {
-    def spanStart(newText: String = ""): TextSpan = TextSpan(line, column, line, column, newText)
+    def spanStart(newText: String = ""): TextSpan = TextSpan(line, column, line, column, offset, newText)
   }
 
   sealed class RubyNode(val span: TextSpan) {
-    def line: Option[Integer] = span.line
+    def line: Option[Int] = span.line
 
-    def column: Option[Integer] = span.column
+    def column: Option[Int] = span.column
 
-    def lineEnd: Option[Integer] = span.lineEnd
+    def lineEnd: Option[Int] = span.lineEnd
 
-    def columnEnd: Option[Integer] = span.columnEnd
+    def columnEnd: Option[Int] = span.columnEnd
+
+    def offset: Option[(Int, Int)] = span.offset
 
     def text: String = span.text
   }
@@ -46,15 +49,29 @@ object RubyIntermediateAst {
     def size: Int = statements.size
   }
 
+  final case class SingletonStatementList(statements: List[RubyNode])(span: TextSpan) extends RubyNode(span) {
+    override def text: String = statements.size match
+      case 0 | 1 => span.text
+      case _     => "(...)"
+
+    def size: Int = statements.size
+  }
+
   sealed trait AllowedTypeDeclarationChild
 
   sealed trait TypeDeclaration extends AllowedTypeDeclarationChild {
     def name: RubyNode
     def baseClass: Option[RubyNode]
     def body: RubyNode
+    def bodyMemberCall: Option[TypeDeclBodyCall]
   }
 
-  final case class ModuleDeclaration(name: RubyNode, body: RubyNode)(span: TextSpan)
+  final case class ModuleDeclaration(
+    name: RubyNode,
+    body: RubyNode,
+    fields: List[RubyNode & RubyFieldIdentifier],
+    bodyMemberCall: Option[TypeDeclBodyCall]
+  )(span: TextSpan)
       extends RubyNode(span)
       with TypeDeclaration {
     def baseClass: Option[RubyNode] = None
@@ -64,21 +81,30 @@ object RubyIntermediateAst {
     name: RubyNode,
     baseClass: Option[RubyNode],
     body: RubyNode,
-    fields: List[RubyNode & RubyFieldIdentifier]
+    fields: List[RubyNode & RubyFieldIdentifier],
+    bodyMemberCall: Option[TypeDeclBodyCall]
   )(span: TextSpan)
       extends RubyNode(span)
       with TypeDeclaration
 
   sealed trait AnonymousTypeDeclaration extends RubyNode with TypeDeclaration
 
-  final case class AnonymousClassDeclaration(name: RubyNode, baseClass: Option[RubyNode], body: RubyNode)(
-    span: TextSpan
-  ) extends RubyNode(span)
+  final case class AnonymousClassDeclaration(
+    name: RubyNode,
+    baseClass: Option[RubyNode],
+    body: RubyNode,
+    bodyMemberCall: Option[TypeDeclBodyCall] = None
+  )(span: TextSpan)
+      extends RubyNode(span)
       with AnonymousTypeDeclaration
 
-  final case class SingletonClassDeclaration(name: RubyNode, baseClass: Option[RubyNode], body: RubyNode)(
-    span: TextSpan
-  ) extends RubyNode(span)
+  final case class SingletonClassDeclaration(
+    name: RubyNode,
+    baseClass: Option[RubyNode],
+    body: RubyNode,
+    bodyMemberCall: Option[TypeDeclBodyCall] = None
+  )(span: TextSpan)
+      extends RubyNode(span)
       with AnonymousTypeDeclaration
 
   final case class FieldsDeclaration(fieldNames: List[RubyNode])(span: TextSpan)
@@ -89,8 +115,15 @@ object RubyIntermediateAst {
     def hasSetter: Boolean = text.startsWith("attr_writer") || text.startsWith("attr_accessor")
   }
 
+  sealed trait ProcedureDeclaration {
+    def methodName: String
+    def parameters: List[RubyNode]
+    def body: RubyNode
+  }
+
   final case class MethodDeclaration(methodName: String, parameters: List[RubyNode], body: RubyNode)(span: TextSpan)
       extends RubyNode(span)
+      with ProcedureDeclaration
       with AllowedTypeDeclarationChild
 
   final case class SingletonMethodDeclaration(
@@ -100,7 +133,17 @@ object RubyIntermediateAst {
     body: RubyNode
   )(span: TextSpan)
       extends RubyNode(span)
+      with ProcedureDeclaration
       with AllowedTypeDeclarationChild
+
+  final case class SingletonObjectMethodDeclaration(
+    methodName: String,
+    parameters: List[RubyNode],
+    body: RubyNode,
+    baseClass: RubyNode
+  )(span: TextSpan)
+      extends RubyNode(span)
+      with ProcedureDeclaration
 
   sealed trait MethodParameter {
     def name: String
@@ -219,6 +262,8 @@ object RubyIntermediateAst {
       extends RubyNode(span)
       with ControlFlowClause
 
+  final case class NextExpression()(span: TextSpan) extends RubyNode(span) with ControlFlowExpression
+
   final case class ReturnExpression(expressions: List[RubyNode])(span: TextSpan) extends RubyNode(span)
 
   /** Represents an unqualified identifier e.g. `X`, `x`,  `@@x`, `$x`, `$<`, etc. */
@@ -227,6 +272,13 @@ object RubyIntermediateAst {
       with RubyIdentifier
       with SingletonMethodIdentifier {
     override def toString: String = s"SimpleIdentifier(${span.text}, $typeFullName)"
+  }
+
+  /** Represents a type reference successfully determined, e.g. module A; end; A
+    */
+  final case class TypeIdentifier(typeFullName: String)(span: TextSpan) extends RubyNode(span) with RubyIdentifier {
+    def isBuiltin: Boolean        = typeFullName.startsWith(GlobalTypes.builtinPrefix)
+    override def toString: String = s"TypeIdentifier(${span.text}, $typeFullName)"
   }
 
   /** Represents a InstanceFieldIdentifier e.g `@x` */
@@ -346,6 +398,19 @@ object RubyIntermediateAst {
   ) extends RubyNode(span)
       with RubyCall
 
+  /** Special class for `<body>` calls of type decls.
+    */
+  final case class TypeDeclBodyCall(target: RubyNode, typeName: String)(span: TextSpan)
+      extends RubyNode(span)
+      with RubyCall {
+
+    def toMemberCall: MemberCall = MemberCall(target, op, Defines.TypeDeclBody, arguments)(span)
+
+    def arguments: List[RubyNode] = Nil
+
+    def op: String = "::"
+  }
+
   final case class MemberCallWithBlock(
     target: RubyNode,
     op: String,
@@ -361,7 +426,6 @@ object RubyIntermediateAst {
   /** Represents index accesses, e.g. `x[0]`, `self.x.y[1, 2]` */
   final case class IndexAccess(target: RubyNode, indices: List[RubyNode])(span: TextSpan) extends RubyNode(span)
 
-  // TODO: Might be replaced by MemberCall simply?
   final case class MemberAccess(target: RubyNode, op: String, memberName: String)(span: TextSpan)
       extends RubyNode(span) {
     override def toString: String = s"${target.text}.$memberName"
@@ -390,7 +454,6 @@ object RubyIntermediateAst {
       case Some(givenParameters) => MethodDeclaration(name, givenParameters, body)(span)
       case None                  => MethodDeclaration(name, this.parameters, body)(span)
     }
-
   }
 
   /** A dummy class for wrapping around `NewNode` and allowing it to integrate with RubyNode classes.

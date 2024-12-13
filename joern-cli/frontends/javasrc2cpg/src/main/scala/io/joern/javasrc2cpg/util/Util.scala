@@ -2,15 +2,12 @@ package io.joern.javasrc2cpg.util
 
 import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration
 import com.github.javaparser.resolution.types.ResolvedReferenceType
-import io.joern.javasrc2cpg.typesolvers.TypeInfoCalculator.TypeConstants
-import io.joern.x2cpg.{Ast, Defines}
-import io.shiftleft.codepropertygraph.generated.{DispatchTypes, PropertyNames}
-import io.shiftleft.codepropertygraph.generated.nodes.{NewCall, NewFieldIdentifier, NewMember}
+import io.joern.x2cpg.Defines
 import org.slf4j.LoggerFactory
 
 import scala.collection.mutable
 import scala.util.{Failure, Success, Try}
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 
 object Util {
 
@@ -48,6 +45,19 @@ object Util {
 
   def composeUnresolvedSignature(paramCount: Int): String = {
     s"${Defines.UnresolvedSignature}($paramCount)"
+  }
+
+  def stripGenericTypes(typeName: String): String = {
+    if (typeName.startsWith(Defines.UnresolvedNamespace)) {
+      logger.warn(s"stripGenericTypes should not be used for javasrc2cpg type $typeName")
+      typeName.head +: takeUntilGenericStart(typeName.tail)
+    } else {
+      takeUntilGenericStart(typeName)
+    }
+  }
+
+  private def takeUntilGenericStart(typeName: String): String = {
+    typeName.takeWhile(char => char != '<')
   }
 
   private def getAllParents(typ: ResolvedReferenceType, result: mutable.ArrayBuffer[ResolvedReferenceType]): Unit = {

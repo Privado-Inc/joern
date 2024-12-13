@@ -1,17 +1,17 @@
 package io.joern.rubysrc2cpg.astcreation
 
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.*
 import io.joern.rubysrc2cpg.datastructures.{BlockScope, NamespaceScope, RubyProgramSummary, RubyScope, RubyStubbedType}
 import io.joern.rubysrc2cpg.parser.{RubyNodeCreator, RubyParser}
 import io.joern.rubysrc2cpg.passes.Defines
-import io.joern.x2cpg.utils.NodeBuilders.newModifierNode
+import io.joern.x2cpg.utils.NodeBuilders.{newBindingNode, newModifierNode}
 import io.joern.x2cpg.{Ast, AstCreatorBase, AstNodeBuilder, ValidationMode}
-import io.shiftleft.codepropertygraph.generated.{DispatchTypes, ModifierTypes, Operators}
+import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, ModifierTypes, Operators}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.BatchedUpdate
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 import java.util.regex.Matcher
 
@@ -19,7 +19,9 @@ class AstCreator(
   val fileName: String,
   protected val programCtx: RubyParser.ProgramContext,
   protected val projectRoot: Option[String] = None,
-  protected val programSummary: RubyProgramSummary = RubyProgramSummary()
+  protected val programSummary: RubyProgramSummary = RubyProgramSummary(),
+  val enableFileContents: Boolean = false,
+  val fileContent: String = ""
 )(implicit withSchemaValidation: ValidationMode)
     extends AstCreatorBase(fileName)
     with AstCreatorHelper
@@ -38,20 +40,22 @@ class AstCreator(
 
   protected var parseLevel: AstParseLevel = AstParseLevel.FULL_AST
 
+  override protected def offset(node: RubyNode): Option[(Int, Int)] = node.offset
+
   protected val relativeFileName: String =
     projectRoot
       .map(fileName.stripPrefix)
       .map(_.stripPrefix(java.io.File.separator))
       .getOrElse(fileName)
 
-  private def internalLineAndColNum: Option[Integer] = Option(1)
+  private def internalLineAndColNum: Option[Int] = Option(1)
 
   /** The relative file name, in a unix path delimited format.
     */
   private def relativeUnixStyleFileName =
     relativeFileName.replaceAll(Matcher.quoteReplacement(java.io.File.separator), "/")
 
-  override def createAst(): BatchedUpdate.DiffGraphBuilder = {
+  override def createAst(): DiffGraphBuilder = {
     val rootNode = new RubyNodeCreator().visit(programCtx).asInstanceOf[StatementList]
     val ast      = astForRubyFile(rootNode)
     Ast.storeInDiffGraph(ast, diffGraph)
@@ -63,7 +67,9 @@ class AstCreator(
    * allowing for a straightforward representation of out-of-method statements.
    */
   protected def astForRubyFile(rootStatements: StatementList): Ast = {
-    val fileNode = NewFile().name(relativeFileName)
+    val fileNode =
+      if enableFileContents then NewFile().name(relativeFileName).content(fileContent)
+      else NewFile().name(relativeFileName)
     val fullName = s"$relativeUnixStyleFileName:${NamespaceTraversal.globalNamespaceName}"
     val namespaceBlock = NewNamespaceBlock()
       .filename(relativeFileName)
@@ -71,16 +77,18 @@ class AstCreator(
       .fullName(fullName)
 
     scope.pushNewScope(NamespaceScope(fullName))
-    val rubyFileMethod = astInFakeMethod(rootStatements)
+    val rubyFakeMethodAst = astInFakeMethod(rootStatements)
     scope.popScope()
 
-    Ast(fileNode).withChild(Ast(namespaceBlock).withChild(rubyFileMethod))
+    Ast(fileNode).withChild(Ast(namespaceBlock).withChild(rubyFakeMethodAst))
   }
 
   private def astInFakeMethod(rootNode: StatementList): Ast = {
-    val name     = Defines.Program
-    val fullName = computeMethodFullName(name)
-    val code     = rootNode.text
+    val name = Defines.Main
+    // From the <main> method onwards, we do not embed the <global> namespace name in the full names
+    val fullName =
+      s"${scope.surroundingScopeFullName.head.stripSuffix(NamespaceTraversal.globalNamespaceName)}$name"
+    val code = rootNode.text
     val methodNode_ = methodNode(
       node = rootNode,
       name = name,
@@ -96,81 +104,21 @@ class AstCreator(
         scope.pushNewScope(moduleScope)
         val block = blockNode(rootNode)
         scope.pushNewScope(BlockScope(block))
-        val statementAsts         = rootNode.statements.flatMap(astsForStatement)
-        val internalMethodRefAsts = methodRefNodesForInternalMethods()
-        val internalTypeRefAsts   = typeRefNodesForInternalDecls()
+        val statementAsts = rootNode.statements.flatMap(astsForStatement)
         scope.popScope()
-        val bodyAst = blockAst(block, internalTypeRefAsts ++ internalMethodRefAsts ++ statementAsts)
+        val bodyAst = blockAst(block, statementAsts)
         scope.popScope()
-        methodAst(methodNode_, Seq.empty, bodyAst, methodReturn, newModifierNode(ModifierTypes.MODULE) :: Nil)
+        methodAst(
+          methodNode_,
+          Seq.empty,
+          bodyAst,
+          methodReturn,
+          newModifierNode(ModifierTypes.MODULE) :: newModifierNode(ModifierTypes.VIRTUAL) :: Nil
+        )
       }
       .getOrElse(Ast())
   }
 
-  private def methodRefNodesForInternalMethods(): List[Ast] = {
-    val typeNameForMethods = scope.surroundingTypeFullName
-      .map { x =>
-        x.stripSuffix(s":${Defines.Program}")
-      }
-      .getOrElse(Defines.Undefined)
-
-    scope.surroundingTypeFullName
-      .map { x =>
-        val typeNameForMethods = x.stripSuffix(s":${Defines.Program}")
-        programSummary.namespaceToType
-          .filter(_._1 == typeNameForMethods)
-          .flatMap(_._2)
-          .filter(!_.isInstanceOf[RubyStubbedType])
-          .flatMap(_.methods)
-          .map { method =>
-            val methodRefNode = NewMethodRef()
-              .code(s"def ${method.name} (...)")
-              .methodFullName(scope.surroundingTypeFullName.map { x => s"$x:${method.name}" }.getOrElse(method.name))
-              .typeFullName(Defines.Any)
-              .lineNumber(internalLineAndColNum)
-              .columnNumber(internalLineAndColNum)
-
-            val methodRefIdent = NewIdentifier()
-              .code(method.name)
-              .name(method.name)
-              .typeFullName(Defines.Any)
-              .lineNumber(internalLineAndColNum)
-              .columnNumber(internalLineAndColNum)
-
-            astForAssignment(methodRefIdent, methodRefNode, internalLineAndColNum, internalLineAndColNum)
-          }
-          .toList
-      }
-      .getOrElse(List.empty)
-
-  }
-
-  private def typeRefNodesForInternalDecls(): List[Ast] = {
-    scope.surroundingTypeFullName
-      .map { surroundingTypeFullName =>
-        programSummary.namespaceToType
-          .filter(_._1.contains(surroundingTypeFullName))
-          .flatMap(_._2)
-          .map { x =>
-            val typeRefName = x.name.split("[.]").takeRight(1).head
-            val typeRefNode = NewTypeRef()
-              .code(s"class ${x.name} (...)")
-              .typeFullName(x.name)
-
-            val typeRefIdent = NewIdentifier()
-              .code(typeRefName)
-              .name(typeRefName)
-              .typeFullName(x.name)
-              .lineNumber(internalLineAndColNum)
-              .columnNumber(internalLineAndColNum)
-
-            astForAssignment(typeRefIdent, typeRefNode, internalLineAndColNum, internalLineAndColNum)
-          }
-          .toList
-      }
-      .getOrElse(List.empty)
-
-  }
 }
 
 /** Determines till what depth the AST creator will parse until.

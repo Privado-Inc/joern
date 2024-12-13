@@ -1,7 +1,7 @@
 package io.joern.jssrc2cpg.passes.ast
 
 import io.joern.jssrc2cpg.testfixtures.AstJsSrc2CpgSuite
-import io.joern.jssrc2cpg.passes.Defines
+import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
 import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, DispatchTypes, Operators}
 import io.shiftleft.codepropertygraph.generated.nodes.{Block, Call, Identifier}
 import io.shiftleft.semanticcpg.language.*
@@ -108,8 +108,7 @@ class TsAstCreationPassTests extends AstJsSrc2CpgSuite(".ts") {
       arg.typeFullName shouldBe Defines.String
       arg.code shouldBe "arg: string"
       arg.index shouldBe 1
-      val List(parentTypeDecl) = cpg.typeDecl.name(":program").l
-      parentTypeDecl.bindsOut.flatMap(_.refOut).l should contain(func)
+      cpg.method("foo").bindingTypeDecl.fullName.l shouldBe List("Test0.ts::program:foo")
     }
 
     "have correct structure for type assertion" in {

@@ -1,9 +1,10 @@
 package io.joern.x2cpg.passes.base
 
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.{Cpg, PropertyNames}
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes, Properties}
-import io.shiftleft.passes.ConcurrentWriterCpgPass
+import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes}
+import io.shiftleft.passes.ForkJoinParallelCpgPass
+import io.shiftleft.semanticcpg.language.*
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.mutable
@@ -12,12 +13,12 @@ import scala.jdk.CollectionConverters.*
 /** This pass has MethodStubCreator and TypeDeclStubCreator as prerequisite for language frontends which do not provide
   * method stubs and type decl stubs.
   */
-class ContainsEdgePass(cpg: Cpg) extends ConcurrentWriterCpgPass[AstNode](cpg) {
-  import ContainsEdgePass.*
+class ContainsEdgePass(cpg: Cpg) extends ForkJoinParallelCpgPass[AstNode](cpg) {
+  import ContainsEdgePass._
 
   private val logger: Logger = LoggerFactory.getLogger(this.getClass)
   override def generateParts(): Array[AstNode] =
-    cpg.graph.nodes(sourceTypes*).asScala.map(_.asInstanceOf[AstNode]).toArray
+    cpg.graph.nodes(sourceTypes*).cast[AstNode].toArray
 
   override def runOnPart(dstGraph: DiffGraphBuilder, source: AstNode): Unit = {
     try {
@@ -33,7 +34,7 @@ class ContainsEdgePass(cpg: Cpg) extends ConcurrentWriterCpgPass[AstNode](cpg) {
     } catch {
       case ex: Exception =>
         logger.warn(
-          s"Error in ContainsEdgePass for node in file '${source.propertyOption(Properties.FILENAME).toString}''",
+          s"Error in ContainsEdgePass for node in file '${source.propertyOption(PropertyNames.FILENAME).toString}''",
           ex
         )
     }

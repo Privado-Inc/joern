@@ -1,7 +1,7 @@
 package io.joern.javasrc2cpg.querying
 
 import io.joern.javasrc2cpg.testfixtures.JavaSrcCode2CpgFixture
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 import java.io.File
 
@@ -171,6 +171,27 @@ class MethodTests4 extends JavaSrcCode2CpgFixture {
       val List(method) = cpg.method("run").l
       method.signature shouldBe "foo.bar.Baz(foo.bar.Baz)"
       method.fullName shouldBe "Foo.run:foo.bar.Baz(foo.bar.Baz)"
+    }
+  }
+
+  "Method parameters interspersed with comments" should {
+    val cpg = code("""
+        |class Foo {
+        | abstract void run(
+        |   /* comment for 1st argument */
+        |   int arg1,
+        |   int arg2, // comment for arg2
+        |   int arg3);
+        |}
+        |""".stripMargin)
+
+    "have correct `code` fields" in {
+      cpg.method("run").parameter.indexFrom(1).l match
+        case List(arg1, arg2, arg3) =>
+          arg1.code shouldBe "int arg1"
+          arg2.code shouldBe "int arg2"
+          arg3.code shouldBe "int arg3"
+        case result => fail(s"Expected 3 parameters but got $result")
     }
   }
 
