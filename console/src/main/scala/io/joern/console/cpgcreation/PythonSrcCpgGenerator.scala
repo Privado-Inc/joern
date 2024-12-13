@@ -14,13 +14,12 @@ import scala.util.Try
 import scala.compiletime.uninitialized
 
 case class PythonSrcCpgGenerator(config: FrontendConfig, rootPath: Path) extends CpgGenerator {
-  private lazy val command: Path = if (isWin) rootPath.resolve("pysrc2cpg.bat") else rootPath.resolve("pysrc2cpg")
-  private var typeRecoveryConfig: XTypeRecoveryConfig = uninitialized
+  private lazy val command: Path      = if (isWin) rootPath.resolve("pysrc2cpg.bat") else rootPath.resolve("pysrc2cpg")
+  private lazy val typeRecoveryConfig = XTypeRecoveryConfig.parse(config.cmdLineParams.toSeq)
 
   /** Generate a CPG for the given input path. Returns the output path, or None, if no CPG was generated.
     */
   override def generate(inputPath: String, outputPath: String = "cpg.bin.zip"): Try[String] = {
-    typeRecoveryConfig = XTypeRecoveryConfig.parse(config.cmdLineParams.toSeq)
     val arguments = Seq(inputPath, "-o", outputPath) ++ config.cmdLineParams
     runShellCommand(command.toString, arguments).map(_ => outputPath)
   }
@@ -30,7 +29,6 @@ case class PythonSrcCpgGenerator(config: FrontendConfig, rootPath: Path) extends
 
   override def applyPostProcessingPasses(cpg: Cpg): Cpg = {
     pysrc2cpg.postProcessingPasses(cpg, typeRecoveryConfig).foreach(_.createAndApply())
-
     cpg
   }
 
