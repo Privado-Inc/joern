@@ -1,7 +1,8 @@
 package io.joern.jssrc2cpg.passes.ast
 
-import io.joern.jssrc2cpg.passes.{Defines, EcmaBuiltins}
+import io.joern.jssrc2cpg.passes.EcmaBuiltins
 import io.joern.jssrc2cpg.testfixtures.AstJsSrc2CpgSuite
+import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
 import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
@@ -858,7 +859,7 @@ class SimpleAstCreationPassTests extends AstJsSrc2CpgSuite {
       val List(typeDecl) = cpg.typeDecl.nameExact("method").l
       typeDecl.fullName should endWith("Test0.js::program:method")
 
-      val List(binding) = typeDecl.bindsOut.l
+      val List(binding) = typeDecl.bindsOut.cast[Binding].l
       binding.name shouldBe ""
       binding.signature shouldBe ""
 

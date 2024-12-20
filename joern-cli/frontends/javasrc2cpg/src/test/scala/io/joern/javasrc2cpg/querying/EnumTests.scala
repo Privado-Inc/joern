@@ -2,7 +2,7 @@ package io.joern.javasrc2cpg.querying
 
 import io.joern.javasrc2cpg.testfixtures.JavaSrcCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.nodes.Literal
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class EnumTests extends JavaSrcCode2CpgFixture {
   val cpg = code("""
@@ -59,7 +59,7 @@ class EnumTests extends JavaSrcCode2CpgFixture {
     cpg.typeDecl.name(".*Color.*").member.size shouldBe 3
     val List(r, b, l) = cpg.typeDecl.name(".*Color.*").member.l
 
-    l.code shouldBe "java.lang.String label"
+    l.code shouldBe "String label"
 
     r.code shouldBe "RED(\"Red\")"
     r.astChildren.size shouldBe 0

@@ -1,6 +1,7 @@
 package io.joern.swiftsrc2cpg.passes
 
-import io.shiftleft.codepropertygraph.Cpg
+import io.joern.x2cpg.frontendspecific.swiftsrc2cpg.Defines
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.{NewNamespaceBlock, NewType, NewTypeDecl}
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes}
 import io.shiftleft.passes.CpgPass

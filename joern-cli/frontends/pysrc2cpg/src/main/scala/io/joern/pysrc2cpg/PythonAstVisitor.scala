@@ -2,13 +2,14 @@ package io.joern.pysrc2cpg
 
 import PythonAstVisitor.{logger, metaClassSuffix, noLineAndColumn}
 import io.joern.pysrc2cpg.memop.*
-import io.joern.pysrc2cpg.Constants.builtinPrefix
+import io.joern.x2cpg.frontendspecific.pysrc2cpg.Constants.builtinPrefix
 import io.joern.pythonparser.ast
+import io.joern.x2cpg.frontendspecific.pysrc2cpg.Constants
 import io.joern.x2cpg.{AstCreatorBase, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.codepropertygraph.generated.nodes.{NewCall, NewIdentifier, NewNode, NewTypeDecl}
 import org.slf4j.LoggerFactory
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 import scala.collection.mutable
 
@@ -33,7 +34,7 @@ class PythonAstVisitor(
     extends AstCreatorBase(relFileName)
     with PythonAstVisitorHelpers {
 
-  private val diffGraph     = new DiffGraphBuilder()
+  private val diffGraph     = Cpg.newDiffGraphBuilder
   protected val nodeBuilder = new NodeBuilder(diffGraph)
   protected val edgeBuilder = new EdgeBuilder(diffGraph)
 
@@ -1293,7 +1294,10 @@ class PythonAstVisitor(
     val code   = nodeToCode.getCode(errorStatement)
     val line   = errorStatement.attributeProvider.lineno
     val column = errorStatement.attributeProvider.col_offset
-    logger.warn(s"Could not parse file $relFileName at line $line column $column. Invalid code: $code")
+    logger.warn(
+      s"Could not parse file $relFileName at line $line column $column. Invalid code: $code" +
+        s"\nParser exception message: ${errorStatement.exception.getMessage}"
+    )
     nodeBuilder.unknownNode(errorStatement.toString, errorStatement.getClass.getName, lineAndColOf(errorStatement))
   }
 

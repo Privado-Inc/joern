@@ -1,10 +1,11 @@
 package io.joern.x2cpg.passes.typerelations
 
-import io.joern.x2cpg.utils.LinkingUtil
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.TypeDecl
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, NodeTypes, PropertyNames}
 import io.shiftleft.passes.CpgPass
+import io.shiftleft.semanticcpg.language.*
+import io.joern.x2cpg.utils.LinkingUtil
 import org.slf4j.{Logger, LoggerFactory}
 
 class AliasLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {

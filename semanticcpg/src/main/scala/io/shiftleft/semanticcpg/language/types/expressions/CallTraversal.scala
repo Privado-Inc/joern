@@ -2,20 +2,24 @@ package io.shiftleft.semanticcpg.language.types.expressions
 
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.language.operatorextension.OpNodes.Assignment
+import io.shiftleft.semanticcpg.language.operatorextension.allAssignmentTypes
 
-/** A call site
-  */
+/** A call site. */
 class CallTraversal(val traversal: Iterator[Call]) extends AnyVal {
 
-  /** Only statically dispatched calls
-    */
+  /** Only statically dispatched calls */
   def isStatic: Iterator[Call] =
-    traversal.dispatchType("STATIC_DISPATCH")
+    traversal.filter(_.isStatic)
 
-  /** Only dynamically dispatched calls
-    */
+  /** Only dynamically dispatched calls */
   def isDynamic: Iterator[Call] =
-    traversal.dispatchType("DYNAMIC_DISPATCH")
+    traversal.filter(_.isDynamic)
+
+  /** Only assignment calls
+    */
+  def isAssignment: Iterator[Assignment] =
+    traversal.methodFullNameExact(allAssignmentTypes.toSeq*).collectAll[Assignment]
 
   /** The receiver of a call if the call has a receiver associated.
     */

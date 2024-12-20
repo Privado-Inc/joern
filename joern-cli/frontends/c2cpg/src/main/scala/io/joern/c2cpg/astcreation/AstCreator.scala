@@ -4,13 +4,12 @@ import io.joern.c2cpg.Config
 import io.joern.x2cpg.datastructures.Scope
 import io.joern.x2cpg.datastructures.Stack.*
 import io.joern.x2cpg.{Ast, AstCreatorBase, ValidationMode, AstNodeBuilder as X2CpgAstNodeBuilder}
-import io.joern.x2cpg.datastructures.Global
 import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import org.eclipse.cdt.core.dom.ast.{IASTNode, IASTTranslationUnit}
 import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 import java.util.concurrent.ConcurrentHashMap
 import scala.collection.mutable
@@ -19,7 +18,7 @@ import scala.collection.mutable
   */
 class AstCreator(
   val filename: String,
-  val global: Global,
+  val global: CGlobal,
   val config: Config,
   val cdtAst: IASTTranslationUnit,
   val file2OffsetTable: ConcurrentHashMap[String, Array[Int]]
@@ -32,6 +31,7 @@ class AstCreator(
     with AstForExpressionsCreator
     with AstNodeBuilder
     with AstCreatorHelper
+    with FullNameProvider
     with MacroHandler
     with X2CpgAstNodeBuilder[IASTNode, AstCreator] {
 
@@ -82,12 +82,12 @@ class AstCreator(
     methodAstParentStack.push(fakeGlobalMethod)
     scope.pushNewScope(fakeGlobalMethod)
 
-    val blockNode_ = blockNode(iASTTranslationUnit, Defines.empty, registerType(Defines.anyTypeName))
+    val blockNode_ = blockNode(iASTTranslationUnit)
 
     val declsAsts = allDecls.flatMap(astsForDeclaration)
     setArgumentIndices(declsAsts)
 
-    val methodReturn = newMethodReturnNode(iASTTranslationUnit, Defines.anyTypeName)
+    val methodReturn = methodReturnNode(iASTTranslationUnit, Defines.Any)
     Ast(fakeGlobalTypeDecl).withChild(
       methodAst(fakeGlobalMethod, Seq.empty, blockAst(blockNode_, declsAsts), methodReturn)
     )
@@ -95,21 +95,21 @@ class AstCreator(
 
   override protected def code(node: IASTNode): String = shortenCode(nodeSignature(node))
 
-  override protected def line(node: IASTNode): Option[Integer] = {
+  override protected def line(node: IASTNode): Option[Int] = {
     nullSafeFileLocation(node).map(_.getStartingLineNumber)
   }
 
-  override protected def lineEnd(node: IASTNode): Option[Integer] = {
-    nullSafeFileLocation(node).map(_.getEndingLineNumber)
+  override protected def lineEnd(node: IASTNode): Option[Int] = {
+    nullSafeFileLocationLast(node).map(_.getEndingLineNumber)
   }
 
-  protected def column(node: IASTNode): Option[Integer] = {
+  protected def column(node: IASTNode): Option[Int] = {
     nodeOffsets(node).map { case (startOffset, _) =>
       offsetToColumn(node, startOffset)
     }
   }
 
-  protected def columnEnd(node: IASTNode): Option[Integer] = {
+  protected def columnEnd(node: IASTNode): Option[Int] = {
     nodeOffsets(node).map { case (_, endOffset) =>
       offsetToColumn(node, endOffset - 1)
     }

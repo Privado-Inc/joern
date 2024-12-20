@@ -3,14 +3,15 @@ package io.joern.csharpsrc2cpg.astcreation
 import io.joern.csharpsrc2cpg.parser.DotNetJsonAst.*
 import io.joern.csharpsrc2cpg.parser.{DotNetJsonAst, DotNetNodeInfo, ParserKeys}
 import io.joern.csharpsrc2cpg.{CSharpDefines, Constants, astcreation}
+import io.joern.x2cpg.utils.IntervalKeyPool
 import io.joern.x2cpg.{Ast, Defines, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators, PropertyNames}
-import io.shiftleft.passes.IntervalKeyPool
 import ujson.Value
 
 import scala.annotation.tailrec
 import scala.util.{Failure, Success, Try}
+
 trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
   private val anonymousTypeKeyPool = new IntervalKeyPool(first = 0, last = Long.MaxValue)
@@ -83,7 +84,7 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
       case x: NewMethodParameterIn =>
         identifierNode(dotNetNode.orNull, x.name, x.code, x.typeFullName, x.dynamicTypeHintFullName)
       case x =>
-        logger.warn(s"Unhandled declaration type '${x.label()}' for ${x.name}")
+        logger.warn(s"Unhandled declaration type '${x.label}' for ${x.name}")
         identifierNode(dotNetNode.orNull, x.name, x.name, Defines.Any)
   }
 
@@ -170,10 +171,10 @@ object AstCreatorHelper {
     */
   def createDotNetNodeInfo(json: Value, relativeFileName: Option[String] = None): DotNetNodeInfo = {
     val metaData = json(ParserKeys.MetaData)
-    val ln       = metaData(ParserKeys.LineStart).numOpt.map(_.toInt.asInstanceOf[Integer])
-    val cn       = metaData(ParserKeys.ColumnStart).numOpt.map(_.toInt.asInstanceOf[Integer])
-    val lnEnd    = metaData(ParserKeys.LineEnd).numOpt.map(_.toInt.asInstanceOf[Integer])
-    val cnEnd    = metaData(ParserKeys.ColumnEnd).numOpt.map(_.toInt.asInstanceOf[Integer])
+    val ln       = metaData(ParserKeys.LineStart).numOpt.map(_.toInt)
+    val cn       = metaData(ParserKeys.ColumnStart).numOpt.map(_.toInt)
+    val lnEnd    = metaData(ParserKeys.LineEnd).numOpt.map(_.toInt)
+    val cnEnd    = metaData(ParserKeys.ColumnEnd).numOpt.map(_.toInt)
     val node     = nodeType(metaData, relativeFileName)
     val c = node.toString match
       case "Attribute" =>

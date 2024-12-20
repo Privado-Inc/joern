@@ -7,10 +7,18 @@ import io.joern.dataflowengineoss.queryengine.EngineContext
 import io.joern.dataflowengineoss.semanticsloader.{FlowSemantic, Semantics}
 import io.joern.dataflowengineoss.testfixtures.{SemanticCpgTestFixture, SemanticTestCpg}
 import io.joern.x2cpg.X2Cpg
+import io.joern.x2cpg.frontendspecific.pysrc2cpg.{
+  DynamicTypeHintFullNamePass,
+  ImportsPass,
+  PythonImportResolverPass,
+  PythonInheritanceNamePass,
+  PythonTypeHintCallLinker,
+  PythonTypeRecoveryPassGenerator
+}
 import io.joern.x2cpg.passes.base.AstLinkerPass
 import io.joern.x2cpg.passes.callgraph.NaiveCallLinker
 import io.joern.x2cpg.testfixtures.{Code2CpgFixture, DefaultTestCpg, LanguageFrontend, TestCpg}
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.language.{ICallResolver, NoResolve}
 import io.shiftleft.semanticcpg.layers.LayerCreatorContext
 
@@ -63,7 +71,7 @@ class PySrc2CpgFixture(
   implicit val resolver: ICallResolver = NoResolve
 
   protected def flowToResultPairs(path: Path): List[(String, Integer)] =
-    path.resultPairs().collect { case (firstElement: String, secondElement: Option[Integer]) =>
+    path.resultPairs().collect { case (firstElement: String, secondElement) =>
       (firstElement, secondElement.getOrElse(-1))
     }
 }

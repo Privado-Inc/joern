@@ -60,8 +60,8 @@ astGenBinaryNames := {
       case Environment.OperatingSystemType.Windows => Seq(AstgenWin)
       case Environment.OperatingSystemType.Linux =>
         Environment.architecture match {
-          case Environment.ArchitectureType.X86 => Seq(AstgenLinux)
-          case Environment.ArchitectureType.ARM => Seq(AstgenLinuxArm)
+          case Environment.ArchitectureType.X86   => Seq(AstgenLinux)
+          case Environment.ArchitectureType.ARMv8 => Seq(AstgenLinuxArm)
         }
       case Environment.OperatingSystemType.Mac => Seq(AstgenMac)
       case Environment.OperatingSystemType.Unknown =>

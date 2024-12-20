@@ -3,7 +3,7 @@ package io.joern.jimple2cpg.unpacking
 import better.files.File
 import io.joern.jimple2cpg.{Config, Jimple2Cpg}
 import io.joern.jimple2cpg.util.ProgramHandlingUtil
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.utils.ProjectRoot
 import org.scalatest.BeforeAndAfterAll
@@ -12,14 +12,15 @@ import org.scalatest.matchers.should.Matchers.*
 import org.scalatest.wordspec.AnyWordSpec
 
 import java.nio.file.{Files, Path, Paths}
+import scala.compiletime.uninitialized
 import scala.util.{Failure, Success, Try}
 
 class JarUnpackingTests extends AnyWordSpec with Matchers with BeforeAndAfterAll {
 
-  var recurseCpgs: Map[String, Cpg]   = scala.compiletime.uninitialized
-  var noRecurseCpgs: Map[String, Cpg] = scala.compiletime.uninitialized
-  var depthsCpgs: Map[String, Cpg]    = scala.compiletime.uninitialized
-  var slippyCpg: Cpg                  = scala.compiletime.uninitialized
+  var recurseCpgs: Map[String, Cpg]   = uninitialized
+  var noRecurseCpgs: Map[String, Cpg] = uninitialized
+  var depthsCpgs: Map[String, Cpg]    = uninitialized
+  var slippyCpg: Cpg                  = uninitialized
 
   override protected def beforeAll(): Unit = {
     super.beforeAll()
