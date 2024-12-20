@@ -1,11 +1,14 @@
 name: pr
-on: pull_request
+on:
+  pull_request:
+  workflow_dispatch:
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-22.04, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,7 +58,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   formatting:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,7 +84,7 @@ jobs:
         uses: dieghernan/cff-validator@v3
 
   test-scripts:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
