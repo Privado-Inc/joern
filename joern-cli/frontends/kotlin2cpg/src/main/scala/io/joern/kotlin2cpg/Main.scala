@@ -2,6 +2,7 @@ package io.joern.kotlin2cpg
 
 import io.joern.kotlin2cpg.Frontend.*
 import io.joern.x2cpg.{DependencyDownloadConfig, X2CpgConfig, X2CpgMain}
+import io.joern.x2cpg.utils.server.FrontendHTTPServer
 import scopt.OParser
 
 case class DefaultContentRootJarPath(path: String, isResource: Boolean)
@@ -55,10 +56,6 @@ final case class Config(
   def withKeepTypeArguments(value: Boolean): Config = {
     copy(keepTypeArguments = value).withInheritedFields(this)
   }
-
-  def withResolveTypes(value: Boolean): Config = {
-    copy(resolveTypes = value).withInheritedFields(this)
-  }
 }
 
 private object Frontend {
@@ -96,7 +93,7 @@ private object Frontend {
       opt[Unit]("keep-type-arguments")
         .hidden()
         .action((_, c) => c.withKeepTypeArguments(true))
-        .text("Type full names of variables keep their type arguments."),
+        .text("Type full names of variables keep their type arguments. (Deprecated, no effect."),
       opt[Unit]("no-resolve-types")
         .action((_, c) => c.withResolveTypes(false))
         .text("Skip generating types")
@@ -104,8 +101,12 @@ private object Frontend {
   }
 }
 
-object Main extends X2CpgMain(cmdLineParser, new Kotlin2Cpg()) {
+object Main extends X2CpgMain(cmdLineParser, new Kotlin2Cpg()) with FrontendHTTPServer[Config, Kotlin2Cpg] {
+
+  override protected def newDefaultConfig(): Config = Config()
+
   def run(config: Config, kotlin2cpg: Kotlin2Cpg): Unit = {
-    kotlin2cpg.run(config)
+    if (config.serverMode) { startup() }
+    else { kotlin2cpg.run(config) }
   }
 }

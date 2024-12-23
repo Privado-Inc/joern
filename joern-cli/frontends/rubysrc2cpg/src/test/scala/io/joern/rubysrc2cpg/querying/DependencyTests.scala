@@ -1,11 +1,11 @@
 package io.joern.rubysrc2cpg.querying
 
+import io.joern.rubysrc2cpg.passes.Defines.Main
+import io.joern.rubysrc2cpg.passes.{DependencyPass, Defines as RubyDefines}
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.joern.x2cpg.Defines
-import io.joern.rubysrc2cpg.passes.Defines as RubyDefines
 import io.shiftleft.codepropertygraph.generated.nodes.{Block, Identifier}
 import io.shiftleft.semanticcpg.language.*
-import io.joern.rubysrc2cpg.passes.Defines.Main
 
 class DependencyTests extends RubyCode2CpgFixture {
 
@@ -14,7 +14,7 @@ class DependencyTests extends RubyCode2CpgFixture {
     val cpg = code(DependencyTests.GEMFILELOCK, "Gemfile.lock")
 
     "result in dependency nodes of the set packages" in {
-      inside(cpg.dependency.nameNot(RubyDefines.Resolver).l) {
+      inside(cpg.dependency.nameNot(RubyDefines.Resolver).versionNot(DependencyPass.CORE_GEM_VERSION).l) {
         case aruba :: bcrypt :: betterErrors :: Nil =>
           aruba.name shouldBe "aruba"
           aruba.version shouldBe "0.14.12"
@@ -36,7 +36,7 @@ class DependencyTests extends RubyCode2CpgFixture {
     val cpg = code(DependencyTests.GEMFILE, "Gemfile")
 
     "result in dependency nodes of the set packages" in {
-      inside(cpg.dependency.nameNot(RubyDefines.Resolver).l) {
+      inside(cpg.dependency.nameNot(RubyDefines.Resolver).versionNot(DependencyPass.CORE_GEM_VERSION).l) {
         case aruba :: bcrypt :: coffeeRails :: Nil =>
           aruba.name shouldBe "aruba"
           aruba.version shouldBe "2.5.1"
@@ -59,7 +59,10 @@ class DependencyTests extends RubyCode2CpgFixture {
 
     "be preferred over a normal Gemfile" in {
       // Our Gemfile.lock specifies exact versions whereas the Gemfile does not
-      cpg.dependency.nameNot(RubyDefines.Resolver).forall(d => !d.version.isBlank) shouldBe true
+      cpg.dependency
+        .nameNot(RubyDefines.Resolver)
+        .versionNot(DependencyPass.CORE_GEM_VERSION)
+        .forall(d => !d.version.isBlank) shouldBe true
     }
 
   }
@@ -95,9 +98,9 @@ class DownloadDependencyTest extends RubyCode2CpgFixture(downloadDependencies = 
         case (v: Identifier) :: (block: Block) :: Nil =>
           v.dynamicTypeHintFullName should contain("dummy_logger.Main_module.Main_outer_class")
 
-          inside(block.astChildren.isCall.nameExact("new").headOption) {
+          inside(block.astChildren.isCall.nameExact(RubyDefines.Initialize).headOption) {
             case Some(constructorCall) =>
-              constructorCall.methodFullName shouldBe s"dummy_logger.Main_module.Main_outer_class.${RubyDefines.Initialize}"
+              constructorCall.methodFullName shouldBe Defines.DynamicCallUnknownFullName
             case None => fail(s"Expected constructor call, did not find one")
           }
         case xs => fail(s"Expected two arguments under the constructor assignment, got [${xs.code.mkString(", ")}]")
@@ -109,9 +112,9 @@ class DownloadDependencyTest extends RubyCode2CpgFixture(downloadDependencies = 
         case (g: Identifier) :: (block: Block) :: Nil =>
           g.dynamicTypeHintFullName should contain("dummy_logger.Help")
 
-          inside(block.astChildren.isCall.name("new").headOption) {
+          inside(block.astChildren.isCall.name(RubyDefines.Initialize).headOption) {
             case Some(constructorCall) =>
-              constructorCall.methodFullName shouldBe s"dummy_logger.Help.${RubyDefines.Initialize}"
+              constructorCall.methodFullName shouldBe Defines.DynamicCallUnknownFullName
             case None => fail(s"Expected constructor call, did not find one")
           }
         case xs => fail(s"Expected two arguments under the constructor assignment, got [${xs.code.mkString(", ")}]")

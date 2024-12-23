@@ -1,4 +1,10 @@
+import better.files
 import com.typesafe.config.{Config, ConfigFactory}
+import versionsort.VersionHelper
+
+import java.net.URI
+import scala.sys.process.stringToProcess
+import scala.util.{Failure, Success, Try}
 
 name := "rubysrc2cpg"
 
@@ -18,7 +24,15 @@ libraryDependencies ++= Seq(
   "io.shiftleft" %% "codepropertygraph" % Versions.cpg,
   "org.apache.commons" % "commons-compress" % Versions.commonsCompress, // For unpacking Gems with `--download-dependencies`
   "org.scalatest" %% "scalatest"      % Versions.scalatest % Test,
-  "org.antlr"      % "antlr4-runtime" % Versions.antlr
+  "org.antlr"      % "antlr4-runtime" % Versions.antlr,
+  "org.jruby"      % "jruby-complete" % Versions.jRuby
+)
+
+enablePlugins(JavaAppPackaging, LauncherJarPlugin)
+
+libraryDependencies ++= Seq(
+  "io.shiftleft"  %% "codepropertygraph" % Versions.cpg,
+  "org.scalatest" %% "scalatest"         % Versions.scalatest % Test
 )
 
 enablePlugins(JavaAppPackaging, LauncherJarPlugin, Antlr4Plugin)

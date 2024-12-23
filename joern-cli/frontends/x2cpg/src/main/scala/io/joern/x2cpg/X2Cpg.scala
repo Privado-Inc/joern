@@ -2,6 +2,7 @@ package io.joern.x2cpg
 
 import better.files.File
 import io.joern.x2cpg.X2Cpg.{applyDefaultOverlays, withErrorsToConsole}
+import io.joern.x2cpg.frontendspecific.FrontendArgsDelimitor
 import io.joern.x2cpg.layers.{Base, CallGraph, ControlFlow, TypeRelations}
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext}
@@ -14,12 +15,14 @@ import scala.util.matching.Regex
 import scala.util.{Failure, Success, Try}
 
 object X2CpgConfig {
+  def defaultInputPath: String  = ""
   def defaultOutputPath: String = "cpg.bin"
 }
 
 trait X2CpgConfig[R <: X2CpgConfig[R]] {
-  var inputPath: String  = ""
-  var outputPath: String = X2CpgConfig.defaultOutputPath
+  var inputPath: String   = X2CpgConfig.defaultInputPath
+  var outputPath: String  = X2CpgConfig.defaultOutputPath
+  var serverMode: Boolean = false
 
   def withInputPath(inputPath: String): R = {
     this.inputPath = Paths.get(inputPath).toAbsolutePath.normalize().toString
@@ -28,6 +31,11 @@ trait X2CpgConfig[R <: X2CpgConfig[R]] {
 
   def withOutputPath(x: String): R = {
     this.outputPath = x
+    this.asInstanceOf[R]
+  }
+
+  def withServerMode(x: Boolean): R = {
+    this.serverMode = x
     this.asInstanceOf[R]
   }
 
@@ -73,6 +81,7 @@ trait X2CpgConfig[R <: X2CpgConfig[R]] {
   def withInheritedFields(config: R): R = {
     this.inputPath = config.inputPath
     this.outputPath = config.outputPath
+    this.serverMode = config.serverMode
     this.defaultIgnoredFilesRegex = config.defaultIgnoredFilesRegex
     this.ignoredFilesRegex = config.ignoredFilesRegex
     this.ignoredFiles = config.ignoredFiles
@@ -112,9 +121,10 @@ object DependencyDownloadConfig {
   * @param frontend
   *   the frontend to use for CPG creation
   */
-abstract class X2CpgMain[T <: X2CpgConfig[T], X <: X2CpgFrontend[?]](val cmdLineParser: OParser[Unit, T], frontend: X)(
-  implicit defaultConfig: T
-) {
+abstract class X2CpgMain[T <: X2CpgConfig[T], X <: X2CpgFrontend[T]](
+  val cmdLineParser: OParser[Unit, T],
+  val frontend: X
+)(implicit defaultConfig: T) {
 
   private val logger = LoggerFactory.getLogger(classOf[X2CpgMain[T, X]])
 
@@ -148,7 +158,6 @@ abstract class X2CpgMain[T <: X2CpgConfig[T], X <: X2CpgFrontend[?]](val cmdLine
           run(config, frontend)
         } catch {
           case ex: Throwable =>
-            println(ex.getMessage)
             ex.printStackTrace()
             System.exit(1)
         }
@@ -162,7 +171,7 @@ abstract class X2CpgMain[T <: X2CpgConfig[T], X <: X2CpgFrontend[?]](val cmdLine
 
 /** Trait that represents a CPG generator, where T is the frontend configuration class.
   */
-trait X2CpgFrontend[T <: X2CpgConfig[?]] {
+trait X2CpgFrontend[T <: X2CpgConfig[T]] {
 
   /** Create a CPG according to given configuration. Returns CPG wrapped in a `Try`, making it possible to detect and
     * inspect exceptions in CPG generation. To be provided by the frontend.
@@ -182,12 +191,14 @@ trait X2CpgFrontend[T <: X2CpgConfig[?]] {
         case Failure(exception) =>
           Failure(exception)
       }
-    }.recover { exception =>
-      // We explicitly rethrow the exception so that every frontend will
-      // terminate with exit code 1 if there was an exception during createCpg.
-      // Frontend maintainer may want to catch that RuntimeException on their end
-      // to add custom error handling.
-      throw exception
+    } match {
+      case Failure(exception) =>
+        // We explicitly rethrow the exception so that every frontend will
+        // terminate with exit code 1 if there was an exception during createCpg.
+        // Frontend maintainer may want to catch that RuntimeException on their end
+        // to add custom error handling.
+        throw exception
+      case Success(_) => // this is fine
     }
   }
 
@@ -215,12 +226,12 @@ trait X2CpgFrontend[T <: X2CpgConfig[?]] {
     * exists, it is the file name of the resulting CPG. Otherwise, the CPG is held in memory.
     */
   def createCpg(inputName: String, outputName: Option[String])(implicit defaultConfig: T): Try[Cpg] = {
-    val defaultWithInputPath = defaultConfig.withInputPath(inputName).asInstanceOf[T]
+    val defaultWithInputPath = defaultConfig.withInputPath(inputName)
     val config = if (!outputName.contains(X2CpgConfig.defaultOutputPath)) {
       if (outputName.isEmpty) {
-        defaultWithInputPath.withOutputPath("").asInstanceOf[T]
+        defaultWithInputPath.withOutputPath("")
       } else {
-        defaultWithInputPath.withOutputPath(outputName.get).asInstanceOf[T]
+        defaultWithInputPath.withOutputPath(outputName.get)
       }
     } else {
       defaultWithInputPath
@@ -266,8 +277,14 @@ object X2Cpg {
         .action { (x, c) =>
           c.withOutputPath(x)
         },
+
+      // previously this was supposed to be called with `,` as a separator,
+      // e.g. `--exclude foo,bar` - which (among others) has the disadvantage
+      // that under windows a `,` is treated as an argument separator
+      // better: provide this argument multiple times, i.e. `--exclude foo --exclude bar`
       opt[Seq[String]]("exclude")
-        .valueName("<file1>,<file2>,...")
+        .valueName("<file1>")
+        .unbounded()
         .action { (x, c) =>
           c.ignoredFiles = c.ignoredFiles ++ x.map(c.createPathForIgnore)
           c
@@ -287,6 +304,10 @@ object X2Cpg {
         .text(
           "add the raw source code to the content field of FILE nodes to allow for method source retrieval via offset fields (disabled by default)"
         ),
+      opt[Unit]("server")
+        .action((_, c) => c.withServerMode(true))
+        .hidden()
+        .text("runs this frontend in server mode (disabled by default)"),
       opt[Unit]("disable-file-content")
         .action((_, c) => c.withDisableFileContent(true))
         .hidden()
@@ -371,7 +392,7 @@ object X2Cpg {
   }
 
   /** Strips surrounding quotation characters from a string.
-    * @param s
+    * @param str
     *   the target string.
     * @return
     *   the stripped string.

@@ -4,30 +4,39 @@ import io.joern.c2cpg.C2Cpg.DefaultIgnoredFolders
 import io.joern.c2cpg.Config
 import io.joern.c2cpg.astcreation.AstCreator
 import io.joern.c2cpg.astcreation.CGlobal
-import io.joern.c2cpg.parser.{CdtParser, FileDefaults}
-import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.passes.ForkJoinParallelCpgPass
+import io.joern.c2cpg.parser.CdtParser
+import io.joern.c2cpg.parser.FileDefaults
+import io.joern.c2cpg.parser.JSONCompilationDatabaseParser
+import io.joern.c2cpg.parser.JSONCompilationDatabaseParser.CommandObject
 import io.joern.x2cpg.SourceFiles
 import io.joern.x2cpg.utils.Report
 import io.joern.x2cpg.utils.TimeUtils
+import io.shiftleft.codepropertygraph.generated.Cpg
+import io.shiftleft.passes.ForkJoinParallelCpgPass
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 
 import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
-import org.slf4j.{Logger, LoggerFactory}
-
-import scala.util.matching.Regex
-import scala.util.{Failure, Success, Try}
+import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
+import scala.util.matching.Regex
 
 class AstCreationPass(cpg: Cpg, config: Config, report: Report = new Report())
     extends ForkJoinParallelCpgPass[String](cpg) {
 
   private val logger: Logger = LoggerFactory.getLogger(classOf[AstCreationPass])
 
+  private val global                                                  = new CGlobal()
   private val file2OffsetTable: ConcurrentHashMap[String, Array[Int]] = new ConcurrentHashMap()
-  private val parser: CdtParser                                       = new CdtParser(config)
 
-  private val global = new CGlobal()
+  private val compilationDatabase: mutable.LinkedHashSet[CommandObject] =
+    config.compilationDatabase.map(JSONCompilationDatabaseParser.parse).getOrElse(mutable.LinkedHashSet.empty)
+
+  private val parser: CdtParser = new CdtParser(config, compilationDatabase)
 
   def typesSeen(): List[String] = global.usedTypes.keys().asScala.toList
 
@@ -35,10 +44,11 @@ class AstCreationPass(cpg: Cpg, config: Config, report: Report = new Report())
     global.methodDeclarations.asScala.toMap -- global.methodDefinitions.asScala.keys
   }
 
-  override def generateParts(): Array[String] = {
-    val sourceFileExtensions = FileDefaults.SOURCE_FILE_EXTENSIONS
-      ++ FileDefaults.HEADER_FILE_EXTENSIONS
-      ++ Option.when(config.withPreprocessedFiles)(FileDefaults.PREPROCESSED_EXT).toList
+  private def sourceFilesFromDirectory(): Array[String] = {
+    val sourceFileExtensions =
+      FileDefaults.SourceFileExtensions ++
+        FileDefaults.HeaderFileExtensions ++
+        Option.when(config.withPreprocessedFiles)(FileDefaults.PreprocessedExt).toList
     val allSourceFiles = SourceFiles
       .determine(
         config.inputPath,
@@ -50,13 +60,36 @@ class AstCreationPass(cpg: Cpg, config: Config, report: Report = new Report())
       .toArray
     if (config.withPreprocessedFiles) {
       allSourceFiles.filter {
-        case f if !f.endsWith(FileDefaults.PREPROCESSED_EXT) =>
-          val fAsPreprocessedFile = s"${f.substring(0, f.lastIndexOf("."))}${FileDefaults.PREPROCESSED_EXT}"
+        case f if !FileDefaults.hasPreprocessedFileExtension(f) =>
+          val fAsPreprocessedFile = s"${f.substring(0, f.lastIndexOf("."))}${FileDefaults.PreprocessedExt}"
           !allSourceFiles.exists { sourceFile => f != sourceFile && sourceFile == fAsPreprocessedFile }
         case _ => true
       }
     } else {
       allSourceFiles
+    }
+  }
+
+  private def sourceFilesFromCompilationDatabase(compilationDatabaseFile: String): Array[String] = {
+    if (compilationDatabase.isEmpty) {
+      logger.warn(s"'$compilationDatabaseFile' contains no source files. CPG will be empty.")
+    }
+    SourceFiles
+      .filterFiles(
+        compilationDatabase.map(_.compiledFile()).toList,
+        config.inputPath,
+        ignoredDefaultRegex = Option(DefaultIgnoredFolders),
+        ignoredFilesRegex = Option(config.ignoredFilesRegex),
+        ignoredFilesPath = Option(config.ignoredFiles)
+      )
+      .toArray
+  }
+
+  override def generateParts(): Array[String] = {
+    if (config.compilationDatabase.isEmpty) {
+      sourceFilesFromDirectory()
+    } else {
+      sourceFilesFromCompilationDatabase(config.compilationDatabase.get)
     }
   }
 

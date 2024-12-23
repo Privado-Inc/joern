@@ -52,16 +52,14 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
 
   private val logger = LoggerFactory.getLogger(this.getClass)
 
-  private var tempConstCount = 0
-
   private[expressions] def astForMethodCall(call: MethodCallExpr, expectedReturnType: ExpectedType): Ast = {
     val maybeResolvedCall = tryWithSafeStackOverflow(call.resolve())
     val argumentAsts      = argAstsForCall(call, maybeResolvedCall, call.getArguments)
 
     val expressionTypeFullName =
-      expressionReturnTypeFullName(call).orElse(expectedReturnType.fullName).map(typeInfoCalc.registerType)
+      expressionReturnTypeFullName(call).orElse(getTypeFullName(expectedReturnType)).map(typeInfoCalc.registerType)
 
-    val argumentTypes = argumentTypesForMethodLike(maybeResolvedCall)
+    val argumentTypes = argumentTypesForMethodLike(maybeResolvedCall.toOption)
     val returnType = maybeResolvedCall
       .map { resolvedCall =>
         typeInfoCalc.fullName(resolvedCall.getReturnType, ResolvedTypeParametersMap.empty())
@@ -105,13 +103,13 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
       .dispatchType(dispatchType)
       .lineNumber(line(call))
       .columnNumber(column(call))
-      .typeFullName(expressionTypeFullName.getOrElse(TypeConstants.Any))
+      .typeFullName(expressionTypeFullName.getOrElse(defaultTypeFallback()))
 
     callAst(callRoot, argumentAsts, scopeAsts.headOption)
   }
 
   private def astForImplicitCallReceiver(declaringType: Option[String], call: MethodCallExpr): Ast = {
-    val typeFullName = scope.lookupVariable(NameConstants.This).typeFullName.getOrElse(TypeConstants.Any)
+    val typeFullName = scope.lookupVariable(NameConstants.This).typeFullName.getOrElse(defaultTypeFallback())
     val thisIdentifier =
       identifierNode(call, NameConstants.This, NameConstants.This, typeFullName)
     scope.lookupVariable(NameConstants.This) match {
@@ -143,16 +141,15 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
   }
 
   private[expressions] def blockAstForObjectCreationExpr(expr: ObjectCreationExpr, expectedType: ExpectedType): Ast = {
-    val tmpName = "$obj" ++ tempConstCount.toString
-    tempConstCount += 1
+    val tmpName = tempNameProvider.next
 
     // Use an untyped identifier for receiver here, create the alloc and init ASTs,
     // then use the types of those to fix the local type.
-    val assignTarget = identifierNode(expr, tmpName, tmpName, TypeConstants.Any)
+    val assignTarget = identifierNode(expr, tmpName, tmpName, defaultTypeFallback())
     val allocAndInitAst =
       inlinedAstsForObjectCreationExpr(expr, Ast(assignTarget.copy), expectedType, resetAssignmentTargetType = true)
 
-    assignTarget.typeFullName(allocAndInitAst.allocAst.rootType.getOrElse(TypeConstants.Any))
+    assignTarget.typeFullName(allocAndInitAst.allocAst.rootType.getOrElse(defaultTypeFallback()))
     val tmpLocal = localNode(expr, tmpName, tmpName, assignTarget.typeFullName)
 
     val allocAssignCode = s"$tmpName = ${allocAndInitAst.allocAst.rootCodeOrEmpty}"
@@ -204,9 +201,12 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
     val baseTypeFullName =
       baseTypeFromScope
         .map(_.typeFullName)
-        .orElse(
-          tryWithSafeStackOverflow(typeInfoCalc.fullName(expr.getType)).toOption.flatten.orElse(expectedType.fullName)
-        )
+        .orElse(tryWithSafeStackOverflow(expr.getType).toOption.map { typ =>
+          typeInfoCalc
+            .fullName(typ)
+            .orElse(getTypeFullName(expectedType))
+            .getOrElse(defaultTypeFallback(typ))
+        })
     val typeFullName =
       if (anonymousClassBody.isEmpty)
         baseTypeFullName.map(typeFullName => s"$typeFullName$nameSuffix")
@@ -224,7 +224,7 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
       case Some(TypeConstants.Any)             => typeFullName
       case Some(PropertyDefaults.TypeFullName) => typeFullName
       case Some(typ)                           => Option(typ)
-      case None                                => TypeConstants.Any
+      case None                                => defaultTypeFallback()
     }
 
     anonymousClassBody.foreach { bodyStmts =>
@@ -232,18 +232,18 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
       scope.addLocalDecl(anonymousClassDecl)
     }
 
-    val argumentTypes = argumentTypesForMethodLike(maybeResolvedExpr)
+    val argumentTypes = argumentTypesForMethodLike(maybeResolvedExpr.toOption)
 
     val allocNode = newOperatorCallNode(
       Operators.alloc,
       expr.toString,
-      typeFullName.orElse(Some(TypeConstants.Any)),
+      typeFullName.orElse(Some(defaultTypeFallback())),
       line(expr),
       column(expr)
     )
 
     val initCall = initNode(
-      typeFullName.orElse(Some(TypeConstants.Any)),
+      typeFullName.orElse(Some(defaultTypeFallback())),
       argumentTypes,
       argumentAsts.size,
       expr.toString,
@@ -294,7 +294,7 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
 
     tryResolvedDecl match {
       case Success(_) if hasVariadicParameter =>
-        val expectedVariadicTypeFullName = getExpectedParamType(tryResolvedDecl, paramCount - 1).fullName
+        val expectedVariadicTypeFullName = getTypeFullName(getExpectedParamType(tryResolvedDecl, paramCount - 1))
         val (regularArgs, varargs)       = argsAsts.splitAt(paramCount - 1)
         val arrayInitializer = newOperatorCallNode(
           Operators.arrayInitializer,

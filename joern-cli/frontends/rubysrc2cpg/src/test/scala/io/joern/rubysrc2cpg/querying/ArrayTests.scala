@@ -1,12 +1,13 @@
 package io.joern.rubysrc2cpg.querying
 
+import io.joern.rubysrc2cpg.passes.Defines
+import io.joern.rubysrc2cpg.passes.Defines.RubyOperators
 import io.joern.rubysrc2cpg.passes.GlobalTypes.{builtinPrefix, kernelPrefix}
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
-import io.shiftleft.codepropertygraph.generated.Operators
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Literal}
+import io.joern.x2cpg.Defines as XDefines
+import io.shiftleft.codepropertygraph.generated.nodes.{Block, Call, Identifier, Literal}
+import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
 import io.shiftleft.semanticcpg.language.*
-import io.joern.rubysrc2cpg.passes.Defines
-import io.shiftleft.codepropertygraph.generated.nodes.Literal
 
 class ArrayTests extends RubyCode2CpgFixture {
 
@@ -94,10 +95,10 @@ class ArrayTests extends RubyCode2CpgFixture {
     arrayCall.lineNumber shouldBe Some(2)
 
     val List(x, y) = arrayCall.argument.isLiteral.l
-    x.code shouldBe "x"
+    x.code shouldBe ":x"
     x.typeFullName shouldBe y.typeFullName
 
-    y.code shouldBe "y"
+    y.code shouldBe ":y"
     y.typeFullName shouldBe s"$kernelPrefix.Symbol"
   }
 
@@ -117,20 +118,22 @@ class ArrayTests extends RubyCode2CpgFixture {
     yFmt.name shouldBe Operators.formatString
     yFmt.typeFullName shouldBe Defines.getBuiltInType(Defines.String)
 
-    val List(xFmtStr) = xFmt.astChildren.isCall.l
+    val List(xFmtStr, xAddFmtStr) = xFmt.astChildren.isCall.l
     xFmtStr.name shouldBe Operators.formattedValue
+    xAddFmtStr.name shouldBe Operators.formattedValue
 
-    val List(xFmtStrAdd) = xFmtStr.astChildren.isCall.l
+    val List(xFmtStrAdd) = xAddFmtStr.astChildren.isCall.l
     xFmtStrAdd.name shouldBe Operators.addition
 
     val List(lhs, rhs) = xFmtStrAdd.argument.l
     lhs.code shouldBe "1"
     rhs.code shouldBe "3"
 
-    val List(yFmtStr) = yFmt.astChildren.isCall.l
+    val List(yFmtStr, yFmt23) = yFmt.astChildren.isCall.l
     yFmtStr.name shouldBe Operators.formattedValue
+    yFmt23.name shouldBe Operators.formattedValue
 
-    val List(yFmtStrLit: Literal) = yFmtStr.argument.l: @unchecked
+    val List(yFmtStrLit: Literal) = yFmt23.argument.l: @unchecked
     yFmtStrLit.code shouldBe "23"
 
     val List(zLit) = arrayCall.argument.isLiteral.l
@@ -173,15 +176,89 @@ class ArrayTests extends RubyCode2CpgFixture {
     test1Fmt.typeFullName shouldBe Defines.getBuiltInType(Defines.Symbol)
     test1Fmt.code shouldBe "test_#{1}"
 
-    val List(test1FmtSymbol) = test1Fmt.astChildren.isCall.l
+    val List(test1FmtLit, test1FmtSymbol) = test1Fmt.astChildren.isCall.l
     test1FmtSymbol.name shouldBe Operators.formattedValue
     test1FmtSymbol.typeFullName shouldBe Defines.getBuiltInType(Defines.Symbol)
+    test1FmtSymbol.code shouldBe "#{1}"
 
-    val List(test1FmtFinal: Literal) = test1FmtSymbol.argument.l: @unchecked
-    test1FmtFinal.code shouldBe "1"
+    test1FmtLit.name shouldBe Operators.formattedValue
+
+    val List(test1FmtFinal: Literal) = test1FmtLit.argument.l: @unchecked
+    test1FmtFinal.code shouldBe "test_"
 
     val List(test2) = arrayCall.argument.isLiteral.l
-    test2.code shouldBe "test_2"
+    test2.code shouldBe ":test_2"
     test2.typeFullName shouldBe Defines.getBuiltInType(Defines.Symbol)
+  }
+
+  "shift-left operator interpreted as a call (append)" in {
+    val cpg = code("[1, 2, 3] << 4")
+
+    inside(cpg.call("<<").headOption) {
+      case Some(append) =>
+        append.name shouldBe "<<"
+        append.methodFullName shouldBe XDefines.DynamicCallUnknownFullName
+        append.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
+        append.argument(0).code shouldBe "[1, 2, 3]"
+        append.argument(1).code shouldBe "4"
+      case None => fail(s"Expected call `<<`")
+    }
+  }
+
+  "Array bodies with mixed elements" in {
+    val cpg = code("[1, 2 => 1, 2 => 3]")
+
+    inside(cpg.call.name(Operators.arrayInitializer).argument.l) {
+      case (argLit: Literal) :: (argAssoc: Call) :: (argAssoc2: Call) :: Nil =>
+        argLit.code shouldBe "1"
+
+        argAssoc.code shouldBe "2 => 1"
+        argAssoc.methodFullName shouldBe Defines.RubyOperators.association
+
+        argAssoc2.code shouldBe "2 => 3"
+        argAssoc2.methodFullName shouldBe Defines.RubyOperators.association
+      case xs => fail(s"Expected two elements for array init, got ${xs.code.mkString(",")}")
+    }
+  }
+
+  "Array with mixed elements" in {
+    val cpg = code("""
+                     |[
+                     |   *::ApplicationSettingsHelper.visible_attributes,
+                     |   { default_branch_protection_defaults: [
+                     |     :allow_force_push,
+                     |     :developer_can_initial_push,
+                     |     {
+                     |       allowed_to_merge: [:access_level],
+                     |       allowed_to_push: [:access_level]
+                     |      }
+                     |   ] },
+                     |   :can_create_organization,
+                     |   *::ApplicationSettingsHelper.some_other_attributes,
+                     |]
+                     |""".stripMargin)
+
+    cpg.call.name(Operators.arrayInitializer).headOption match {
+      case Some(arrayInit) =>
+        inside(arrayInit.argument.l) {
+          case (splatArgOne: Call) :: (hashLiteralArg: Block) :: (symbolArg: Literal) :: (splatArgTwo: Call) :: Nil =>
+            splatArgOne.methodFullName shouldBe RubyOperators.splat
+            splatArgOne.code shouldBe "*::ApplicationSettingsHelper.visible_attributes"
+
+            symbolArg.code shouldBe ":can_create_organization"
+            symbolArg.typeFullName shouldBe Defines.getBuiltInType(Defines.Symbol)
+
+            splatArgTwo.methodFullName shouldBe RubyOperators.splat
+            splatArgTwo.code shouldBe "*::ApplicationSettingsHelper.some_other_attributes"
+
+            val List(hashInitAssignment: Call, _) =
+              hashLiteralArg.astChildren.isCall.name(Operators.assignment).l: @unchecked
+            val List(_: Identifier, hashInitCall: Call) = hashInitAssignment.argument.l: @unchecked
+            hashInitCall.methodFullName shouldBe RubyOperators.hashInitializer
+
+          case xs => fail(s"Expected 4 arguments, got [${xs.code.mkString(",")}]")
+        }
+      case None => fail("Expected one call for head arrayInit")
+    }
   }
 }

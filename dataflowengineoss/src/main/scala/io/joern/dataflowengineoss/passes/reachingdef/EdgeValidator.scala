@@ -1,8 +1,15 @@
 package io.joern.dataflowengineoss.passes.reachingdef
 
-import io.joern.dataflowengineoss.language._
-import io.joern.dataflowengineoss.queryengine.Engine.isOutputArgOfInternalMethod
-import io.joern.dataflowengineoss.semanticsloader.{FlowMapping, ParameterNode, PassThroughMapping, Semantics}
+import io.joern.dataflowengineoss.language.*
+import io.joern.dataflowengineoss.queryengine.Engine.{isOutputArgOfInternalMethod, semanticsForCall}
+import io.joern.dataflowengineoss.semanticsloader.{
+  FlowMapping,
+  FlowPath,
+  FlowSemantic,
+  ParameterNode,
+  PassThroughMapping,
+  Semantics
+}
 import io.shiftleft.codepropertygraph.generated.nodes.{Call, CfgNode, Expression, StoredNode}
 import io.shiftleft.semanticcpg.language._
 
@@ -14,6 +21,11 @@ object EdgeValidator {
     (childNode, parentNode) match {
       case (childNode: Expression, parentNode)
           if isCallRetval(parentNode) || !isValidEdgeToExpression(parentNode, childNode) =>
+        false
+      case (childNode: Call, parentNode: Expression)
+          if isCallRetval(childNode) && childNode.argument.contains(parentNode) =>
+        // e.g. foo(x), but there are semantics for `foo` that don't taint its return value
+        // in which case we don't want `x` to taint `foo(x)`.
         false
       case (childNode: Expression, parentNode: Expression)
           if parentNode.isArgToSameCallWith(childNode) && childNode.isDefined && parentNode.isUsed =>
@@ -34,17 +46,22 @@ object EdgeValidator {
         curNode.isUsed
     }
 
+  /** Is it a CALL for which semantics exist but don't taint its return value?
+    */
   private def isCallRetval(parentNode: StoredNode)(implicit semantics: Semantics): Boolean =
     parentNode match {
-      case call: Call =>
-        val sem = semantics.forMethod(call.methodFullName)
-        sem.isDefined && !sem.get.mappings.exists {
-          case FlowMapping(_, ParameterNode(dst, _)) => dst == -1
-          case PassThroughMapping                    => true
-          case _                                     => false
-        }
-      case _ =>
-        false
+      case call: Call => semanticsForCall(call).exists(!explicitlyFlowsToReturnValue(_))
+      case _          => false
     }
 
+  private def explicitlyFlowsToReturnValue(flowSemantic: FlowSemantic): Boolean =
+    flowSemantic.mappings.exists(explicitlyFlowsToReturnValue)
+
+  private def explicitlyFlowsToReturnValue(flowPath: FlowPath): Boolean = flowPath match {
+    // Some frontends (e.g. python) denote named arguments using `-1` as the argument index. As such
+    // `-1` denotes the return value only if there's no argument name.
+    case FlowMapping(_, ParameterNode(-1, None)) => true
+    case PassThroughMapping                      => true
+    case _                                       => false
+  }
 }

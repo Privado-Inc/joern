@@ -1,6 +1,6 @@
 package io.joern.pysrc2cpg.passes
 
-import io.joern.pysrc2cpg.PySrc2CpgFixture
+import io.joern.pysrc2cpg.testfixtures.PySrc2CpgFixture
 import io.joern.x2cpg.passes.frontend.XTypeHintCallLinker
 import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.codepropertygraph.generated.nodes.{Call, Identifier, Member}
@@ -1635,6 +1635,30 @@ class TypeRecoveryPassTests extends PySrc2CpgFixture(withOssDataflow = false) {
       cpg.assignment.target.isIdentifier.name("queue").l match {
         case List(queue) => queue.typeFullName shouldBe "boto3.py:<module>.resource.<returnValue>.Queue"
         case result      => fail(s"Expected single assignment to queue, but got $result")
+      }
+    }
+  }
+
+  "external method named `import_table`" should {
+    val cpg = code("""
+        |import boto3
+        |client = boto3.client("s3")
+        |response = client.import_table()
+        |""".stripMargin)
+
+    "have correct methodFullName for `import_table" in {
+      cpg.call("import_table").l match {
+        case List(importTable) =>
+          importTable.methodFullName shouldBe "boto3.py:<module>.client.<returnValue>.import_table"
+        case result => fail(s"Expected single call to import_table, but got $result")
+      }
+    }
+
+    "provide meaningful typeFullName for `response`" in {
+      cpg.assignment.target.isIdentifier.name("response").l match {
+        case List(response) =>
+          response.typeFullName shouldBe "boto3.py:<module>.client.<returnValue>.import_table.<returnValue>"
+        case result => fail(s"Expected single assignment to response, but got $result")
       }
     }
   }
