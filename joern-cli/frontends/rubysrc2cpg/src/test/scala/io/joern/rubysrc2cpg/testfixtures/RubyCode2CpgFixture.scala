@@ -1,5 +1,6 @@
 package io.joern.rubysrc2cpg.testfixtures
 
+import java.io.File
 import io.joern.dataflowengineoss.DefaultSemantics
 import io.joern.dataflowengineoss.language.Path
 import io.joern.dataflowengineoss.semanticsloader.{FlowSemantic, Semantics}
@@ -10,7 +11,7 @@ import io.joern.x2cpg.ValidationMode
 import io.joern.x2cpg.testfixtures.*
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.language.{ICallResolver, NoResolve}
-import org.scalatest.Inside
+import org.scalatest.{Inside, Tag}
 
 import java.nio.file.Files
 import scala.jdk.CollectionConverters.*

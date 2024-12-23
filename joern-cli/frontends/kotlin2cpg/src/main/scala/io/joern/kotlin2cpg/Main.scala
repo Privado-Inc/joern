@@ -56,6 +56,10 @@ final case class Config(
   def withKeepTypeArguments(value: Boolean): Config = {
     copy(keepTypeArguments = value).withInheritedFields(this)
   }
+
+  def withResolveTypes(value: Boolean): Config = {
+    copy(resolveTypes = value).withInheritedFields(this)
+  }
 }
 
 private object Frontend {
