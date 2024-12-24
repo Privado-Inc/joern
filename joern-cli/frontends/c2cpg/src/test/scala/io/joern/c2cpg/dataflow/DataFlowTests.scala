@@ -50,7 +50,7 @@ class DataFlowTests extends DataFlowCodeToCpgSuite {
 
     "find flows to `free`" in {
       val source = cpg.identifier
-      val sink   = cpg.call.name("free")
+      val sink   = cpg.call.name("free").argument
       sink.reachableByFlows(source).l.map(flowToResultPairs).distinct.size shouldBe 6
     }
 
@@ -1312,7 +1312,7 @@ class DataFlowTests extends DataFlowCodeToCpgSuite {
 
     "find flows to `free`" in {
       val source = cpg.identifier
-      val sink   = cpg.call.name("free")
+      val sink   = cpg.call.name("free").argument
       sink.reachableByFlows(source).l.map(flowToResultPairs).distinct.toSet.size shouldBe 6
     }
 
