@@ -538,7 +538,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
   protected def fullNameByImportPath(typeRef: KtTypeReference, file: KtFile): Option[String] = {
     if (typeRef == null) { None }
     else {
-      val typeRefText = typeRef.getText.stripSuffix("?")
+      val typeRefText = typeRef.getText.split("<").headOption.getOrElse(typeRef.getText).stripSuffix("?")
       file.getImportList.getImports.asScala.collectFirst {
         case directive if directive.getImportedName != null && directive.getImportedName.toString == typeRefText =>
           directive.getImportPath.getPathStr
