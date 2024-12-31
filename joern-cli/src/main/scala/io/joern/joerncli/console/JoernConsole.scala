@@ -1,13 +1,13 @@
 package io.joern.joerncli.console
 
-import better.files._
+import better.files.*
 import io.joern.console.defaultAvailableWidthProvider
 import io.joern.console.workspacehandling.{ProjectFile, WorkspaceLoader}
 import io.joern.console.{Console, ConsoleConfig, InstallConfig}
 import io.joern.dataflowengineoss.layers.dataflows.{OssDataFlow, OssDataFlowOptions}
 import io.joern.dataflowengineoss.queryengine.EngineContext
 import io.joern.dataflowengineoss.semanticsloader.Semantics
-import io.shiftleft.codepropertygraph.Cpg
+import io.shiftleft.codepropertygraph.generated.Cpg
 
 import java.nio.file.Path
 

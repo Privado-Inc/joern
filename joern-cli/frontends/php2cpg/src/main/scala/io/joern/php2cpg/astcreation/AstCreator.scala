@@ -8,16 +8,16 @@ import io.joern.php2cpg.utils.Scope
 import io.joern.x2cpg.Ast.storeInDiffGraph
 import io.joern.x2cpg.Defines.{StaticInitMethodName, UnresolvedNamespace, UnresolvedSignature}
 import io.joern.x2cpg.utils.AstPropertiesUtil.RootProperties
+import io.joern.x2cpg.utils.IntervalKeyPool
 import io.joern.x2cpg.utils.NodeBuilders.*
 import io.joern.x2cpg.{Ast, AstCreatorBase, AstNodeBuilder, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.passes.IntervalKeyPool
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import org.slf4j.LoggerFactory
-import overflowdb.BatchedUpdate
 
 import java.nio.charset.StandardCharsets
+import scala.collection.mutable
 
 class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String], disableFileContent: Boolean)(implicit
   withSchemaValidation: ValidationMode
@@ -31,7 +31,7 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
 
   private def getNewTmpName(prefix: String = "tmp"): String = s"$prefix${tmpKeyPool.next.toString}"
 
-  override def createAst(): BatchedUpdate.DiffGraphBuilder = {
+  override def createAst(): DiffGraphBuilder = {
     val ast = astForPhpFile(phpAst)
     storeInDiffGraph(ast, diffGraph)
     diffGraph
@@ -166,7 +166,7 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
     Ast(thisNode)
   }
 
-  private def thisIdentifier(lineNumber: Option[Integer]): NewIdentifier = {
+  private def thisIdentifier(lineNumber: Option[Int]): NewIdentifier = {
     val typ = scope.getEnclosingTypeDeclTypeName
     newIdentifierNode(NameConstants.This, typ.getOrElse("ANY"), typ.toList, lineNumber)
       .code(s"$$${NameConstants.This}")
@@ -431,7 +431,6 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
     }
 
     val tryNode = controlStructureNode(stmt, ControlStructureTypes.TRY, "try { ... }")
-    setArgumentIndices(tryBody +: (catches ++ finallyBody.toSeq))
     tryCatchAst(tryNode, tryBody, catches, finallyBody)
   }
 
@@ -563,7 +562,7 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
     wrapMultipleInBlock(imports, line(stmt))
   }
 
-  private def astForKeyValPair(key: PhpExpr, value: PhpExpr, lineNo: Option[Integer]): Ast = {
+  private def astForKeyValPair(key: PhpExpr, value: PhpExpr, lineNo: Option[Int]): Ast = {
     val keyAst   = astForExpr(key)
     val valueAst = astForExpr(value)
 
@@ -575,6 +574,7 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
   private def astForForeachStmt(stmt: PhpForeachStmt): Ast = {
     val iterIdentifier = getTmpIdentifier(stmt, maybeTypeFullName = None, prefix = "iter_")
 
+    // keep this just used to construct the `code` field
     val assignItemTargetAst = stmt.keyVar match {
       case Some(key) => astForKeyValPair(key, stmt.valueVar, line(stmt))
       case None      => astForExpr(stmt.valueVar)
@@ -586,7 +586,7 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
     val iteratorAssignAst = simpleAssignAst(Ast(iterIdentifier), iterValue, line(stmt))
 
     // - Assigned item assign
-    val itemInitAst = getItemAssignAstForForeach(stmt, assignItemTargetAst, iterIdentifier.copy)
+    val itemInitAst = getItemAssignAstForForeach(stmt, iterIdentifier.copy)
 
     // Condition ast
     val isNullName = PhpOperators.isNull
@@ -632,37 +632,66 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
       .withConditionEdges(foreachNode, conditionAst.root.toList)
   }
 
-  private def getItemAssignAstForForeach(
-    stmt: PhpForeachStmt,
-    assignItemTargetAst: Ast,
-    iteratorIdentifier: NewIdentifier
-  ): Ast = {
-    val iteratorIdentifierAst = Ast(iteratorIdentifier)
-    val currentCallSignature  = s"$UnresolvedSignature(0)"
-    val currentCallCode       = s"${iteratorIdentifierAst.rootCodeOrEmpty}->current()"
-    val currentCallNode = callNode(
-      stmt,
-      currentCallCode,
-      "current",
-      "Iterator.current",
-      DispatchTypes.DYNAMIC_DISPATCH,
-      Some(currentCallSignature),
-      Some(TypeConstants.Any)
-    )
-    val currentCallAst = callAst(currentCallNode, base = Option(iteratorIdentifierAst))
+  private def getItemAssignAstForForeach(stmt: PhpForeachStmt, iteratorIdentifier: NewIdentifier): Ast = {
+    // create assignment for value-part
+    val valueAssign = {
+      val iteratorIdentifierAst = Ast(iteratorIdentifier)
+      val currentCallSignature  = s"$UnresolvedSignature(0)"
+      val currentCallCode       = s"${iteratorIdentifierAst.rootCodeOrEmpty}->current()"
+      // `current` function is used to get the current element of given array
+      // see https://www.php.net/manual/en/function.current.php & https://www.php.net/manual/en/iterator.current.php
+      val currentCallNode = callNode(
+        stmt,
+        currentCallCode,
+        "current",
+        "Iterator.current",
+        DispatchTypes.DYNAMIC_DISPATCH,
+        Some(currentCallSignature),
+        Some(TypeConstants.Any)
+      )
+      val currentCallAst = callAst(currentCallNode, base = Option(iteratorIdentifierAst))
 
-    val valueAst = if (stmt.assignByRef) {
-      val addressOfCode = s"&${currentCallAst.rootCodeOrEmpty}"
-      val addressOfCall = newOperatorCallNode(Operators.addressOf, addressOfCode, line = line(stmt))
-      callAst(addressOfCall, currentCallAst :: Nil)
-    } else {
-      currentCallAst
+      val valueAst = if (stmt.assignByRef) {
+        val addressOfCode = s"&${currentCallAst.rootCodeOrEmpty}"
+        val addressOfCall = newOperatorCallNode(Operators.addressOf, addressOfCode, line = line(stmt))
+        callAst(addressOfCall, currentCallAst :: Nil)
+      } else {
+        currentCallAst
+      }
+      simpleAssignAst(astForExpr(stmt.valueVar), valueAst, line(stmt))
     }
 
-    simpleAssignAst(assignItemTargetAst, valueAst, line(stmt))
+    // try to create assignment for key-part
+    val keyAssignOption = stmt.keyVar.map(keyVar =>
+      val iteratorIdentifierAst = Ast(iteratorIdentifier.copy)
+      val keyCallSignature      = s"$UnresolvedSignature(0)"
+      val keyCallCode           = s"${iteratorIdentifierAst.rootCodeOrEmpty}->key()"
+      // `key` function is used to get the key of the current element
+      // see https://www.php.net/manual/en/function.key.php & https://www.php.net/manual/en/iterator.key.php
+      val keyCallNode = callNode(
+        stmt,
+        keyCallCode,
+        "key",
+        "Iterator.key",
+        DispatchTypes.DYNAMIC_DISPATCH,
+        Some(keyCallSignature),
+        Some(TypeConstants.Any)
+      )
+      val keyCallAst = callAst(keyCallNode, base = Option(iteratorIdentifierAst))
+      simpleAssignAst(astForExpr(keyVar), keyCallAst, line(stmt))
+    )
+
+    keyAssignOption match {
+      case Some(keyAssign) =>
+        Ast(blockNode(stmt))
+          .withChild(keyAssign)
+          .withChild(valueAssign)
+      case None =>
+        valueAssign
+    }
   }
 
-  private def simpleAssignAst(target: Ast, source: Ast, lineNo: Option[Integer]): Ast = {
+  private def simpleAssignAst(target: Ast, source: Ast, lineNo: Option[Int]): Ast = {
     val code     = s"${target.rootCodeOrEmpty} = ${source.rootCodeOrEmpty}"
     val callNode = newOperatorCallNode(Operators.assignment, code, line = lineNo)
     callAst(callNode, target :: source :: Nil)
@@ -1098,12 +1127,103 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
     arrayPushAst
   }
 
+  /** Lower the array/list unpack. For example `[$a, $b] = $arr;` will be lowered to `$a = $arr[0]; $b = $arr[1];`
+    */
+  private def astForArrayUnpack(assignment: PhpAssignment, target: PhpArrayExpr | PhpListExpr): Ast = {
+    val loweredAssignNodes = mutable.ListBuffer.empty[Ast]
+
+    // create a Identifier ast for given name
+    def createIdentifier(name: String): Ast = Ast(identifierNode(assignment, name, s"$$$name", TypeConstants.Any))
+
+    def createIndexAccessChain(
+      targetAst: Ast,
+      sourceAst: Ast,
+      idxTracker: ArrayIndexTracker,
+      item: PhpArrayItem
+    ): Ast = {
+      // copy from `assignForArrayItem` to handle the case where key exists, such as `list("id" => $a, "name" => $b) = $arr;`
+      val dimension = item.key match {
+        case Some(key: PhpSimpleScalar) => dimensionFromSimpleScalar(key, idxTracker)
+        case Some(key)                  => key
+        case None                       => PhpInt(idxTracker.next, item.attributes)
+      }
+      val dimensionAst    = astForExpr(dimension)
+      val indexAccessCode = s"${sourceAst.rootCodeOrEmpty}[${dimensionAst.rootCodeOrEmpty}]"
+      // <operator>.indexAccess(sourceAst, index)
+      val indexAccessNode = callAst(
+        newOperatorCallNode(Operators.indexAccess, indexAccessCode, line = line(item)),
+        sourceAst :: dimensionAst :: Nil
+      )
+      val assignCode = s"${targetAst.rootCodeOrEmpty} = $indexAccessCode"
+      val assignNode = newOperatorCallNode(Operators.assignment, assignCode, line = line(item))
+      // targetAst = <operator>.indexAccess(sourceAst, index)
+      callAst(assignNode, targetAst :: indexAccessNode :: Nil)
+    }
+
+    // Take `[[$a, $b], $c] = $arr;` as an example
+    def handleUnpackLowering(
+      target: PhpArrayExpr | PhpListExpr,
+      itemsOf: PhpArrayExpr | PhpListExpr => List[Option[PhpArrayItem]],
+      sourceAst: Ast
+    ): Unit = {
+      val idxTracker = new ArrayIndexTracker
+
+      // create an alias identifier of $arr
+      val sourceAliasName       = getNewTmpName()
+      val sourceAliasIdentifier = createIdentifier(sourceAliasName)
+      val assignCode            = s"${sourceAliasIdentifier.rootCodeOrEmpty} = ${sourceAst.rootCodeOrEmpty}"
+      val assignNode            = newOperatorCallNode(Operators.assignment, assignCode, line = line(assignment))
+      loweredAssignNodes += callAst(assignNode, sourceAliasIdentifier :: sourceAst :: Nil)
+
+      itemsOf(target).foreach {
+        case Some(item) =>
+          item.value match {
+            case nested: (PhpArrayExpr | PhpListExpr) => // item is [$a, $b]
+              // create tmp variable for [$a, $b] to receive the result of <operator>.indexAccess($arr, 0)
+              val tmpIdentifierName = getNewTmpName()
+              // tmpVar = <operator>.indexAccess($arr, 0)
+              val targetAssignNode =
+                createIndexAccessChain(
+                  createIdentifier(tmpIdentifierName),
+                  createIdentifier(sourceAliasName),
+                  idxTracker,
+                  item
+                )
+              loweredAssignNodes += targetAssignNode
+              handleUnpackLowering(nested, itemsOf, createIdentifier(tmpIdentifierName))
+            case phpVar: PhpVariable => // item is $c
+              val identifier = astForExpr(phpVar)
+              // $c = <operator>.indexAccess($arr, 1)
+              val targetAssignNode =
+                createIndexAccessChain(identifier, createIdentifier(sourceAliasName), idxTracker, item)
+              loweredAssignNodes += targetAssignNode
+            case _ =>
+              // unknown case
+              idxTracker.next
+          }
+        case None =>
+          idxTracker.next
+      }
+    }
+
+    val sourceAst = astForExpr(assignment.source)
+    val itemsOf = (exp: PhpArrayExpr | PhpListExpr) =>
+      exp match {
+        case x: PhpArrayExpr => x.items
+        case x: PhpListExpr  => x.items
+      }
+    handleUnpackLowering(target, itemsOf, sourceAst)
+    Ast(blockNode(assignment))
+      .withChildren(loweredAssignNodes.toList)
+  }
+
   private def astForAssignment(assignment: PhpAssignment): Ast = {
     assignment.target match {
       case arrayDimFetch: PhpArrayDimFetchExpr if arrayDimFetch.dimension.isEmpty =>
         // Rewrite `$xs[] = <value_expr>` as `array_push($xs, <value_expr>)` to simplify finding dataflows.
         astForEmptyArrayDimAssign(assignment, arrayDimFetch)
-
+      case arrayExpr: (PhpArrayExpr | PhpListExpr) =>
+        astForArrayUnpack(assignment, arrayExpr)
       case _ =>
         val operatorName = assignment.assignOp
 
@@ -1294,10 +1414,30 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
   private def astForArrayExpr(expr: PhpArrayExpr): Ast = {
     val idxTracker = new ArrayIndexTracker
 
-    val tmpIdentifier = getTmpIdentifier(expr, Some(TypeConstants.Array))
+    val tmpName = getNewTmpName()
+
+    def newTmpIdentifier: Ast = Ast(identifierNode(expr, tmpName, s"$$$tmpName", TypeConstants.Array))
+
+    val tmpIdentifierAssignNode = {
+      // use array() function to create an empty array. see https://www.php.net/manual/zh/function.array.php
+      val initArrayNode = callNode(
+        expr,
+        "array()",
+        "array",
+        "array",
+        DispatchTypes.STATIC_DISPATCH,
+        Some("array()"),
+        Some(TypeConstants.Array)
+      )
+      val initArrayCallAst = callAst(initArrayNode)
+
+      val assignCode = s"$$$tmpName = ${initArrayCallAst.rootCodeOrEmpty}"
+      val assignNode = newOperatorCallNode(Operators.assignment, assignCode, line = line(expr))
+      callAst(assignNode, newTmpIdentifier :: initArrayCallAst :: Nil)
+    }
 
     val itemAssignments = expr.items.flatMap {
-      case Some(item) => Option(assignForArrayItem(item, tmpIdentifier.name, idxTracker))
+      case Some(item) => Option(assignForArrayItem(item, tmpName, idxTracker))
       case None =>
         idxTracker.next // Skip an index
         None
@@ -1305,8 +1445,9 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
     val arrayBlock = blockNode(expr)
 
     Ast(arrayBlock)
+      .withChild(tmpIdentifierAssignNode)
       .withChildren(itemAssignments)
-      .withChild(Ast(tmpIdentifier))
+      .withChild(newTmpIdentifier)
   }
 
   private def astForListExpr(expr: PhpListExpr): Ast = {
@@ -1724,11 +1865,11 @@ class AstCreator(filename: String, phpAst: PhpFile, fileContent: Option[String],
     }
   }
 
-  protected def line(phpNode: PhpNode): Option[Integer]      = phpNode.attributes.lineNumber
-  protected def column(phpNode: PhpNode): Option[Integer]    = None
-  protected def lineEnd(phpNode: PhpNode): Option[Integer]   = None
-  protected def columnEnd(phpNode: PhpNode): Option[Integer] = None
-  protected def code(phpNode: PhpNode): String               = "" // Sadly, the Php AST does not carry any code fields
+  protected def line(phpNode: PhpNode): Option[Int]      = phpNode.attributes.lineNumber
+  protected def column(phpNode: PhpNode): Option[Int]    = None
+  protected def lineEnd(phpNode: PhpNode): Option[Int]   = None
+  protected def columnEnd(phpNode: PhpNode): Option[Int] = None
+  protected def code(phpNode: PhpNode): String           = "" // Sadly, the Php AST does not carry any code fields
 
   override protected def offset(phpNode: PhpNode): Option[(Int, Int)] = {
     Option.when(!disableFileContent) {

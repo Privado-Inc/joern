@@ -1,15 +1,22 @@
 package io.joern.rubysrc2cpg.parser
 
-import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.*
+import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.{Block, *}
 import io.joern.rubysrc2cpg.parser.AntlrContextHelpers.*
-import io.joern.rubysrc2cpg.parser.RubyParser.{CommandWithDoBlockContext, ConstantVariableReferenceContext}
+import io.joern.rubysrc2cpg.parser.RubyParser.{
+  CommandWithDoBlockContext,
+  ConstantVariableReferenceContext,
+  QuotedExpandedStringArrayLiteralContext,
+  QuotedExpandedSymbolArrayLiteralContext
+}
 import io.joern.rubysrc2cpg.passes.Defines
 import io.joern.rubysrc2cpg.passes.Defines.getBuiltInType
 import io.joern.rubysrc2cpg.utils.FreshNameGenerator
 import io.joern.x2cpg.Defines as XDefines
+import org.antlr.v4.runtime.ParserRuleContext
 import org.antlr.v4.runtime.tree.{ParseTree, RuleNode}
 import org.slf4j.LoggerFactory
 
+import scala.annotation.tailrec
 import scala.jdk.CollectionConverters.*
 
 /** Converts an ANTLR Ruby Parse Tree into the intermediate Ruby AST.
@@ -23,7 +30,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     SimpleIdentifier(None)(span.spanStart(classNameGen.fresh))
   }
 
-  private def defaultTextSpan(code: String = ""): TextSpan = TextSpan(None, None, None, None, code)
+  private def defaultTextSpan(code: String = ""): TextSpan = TextSpan(None, None, None, None, None, code)
 
   override def defaultResult(): RubyNode = Unknown()(defaultTextSpan())
 
@@ -40,6 +47,10 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
 
   override def visitCompoundStatement(ctx: RubyParser.CompoundStatementContext): RubyNode = {
     StatementList(ctx.getStatements.map(visit))(ctx.toTextSpan)
+  }
+
+  override def visitNextWithoutArguments(ctx: RubyParser.NextWithoutArgumentsContext): RubyNode = {
+    NextExpression()(ctx.toTextSpan)
   }
 
   override def visitGroupingStatement(ctx: RubyParser.GroupingStatementContext): RubyNode = {
@@ -160,6 +171,10 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     ReturnExpression(expressions)(ctx.toTextSpan)
   }
 
+  override def visitReturnWithoutArguments(ctx: RubyParser.ReturnWithoutArgumentsContext): RubyNode = {
+    ReturnExpression(Nil)(ctx.toTextSpan)
+  }
+
   override def visitNumericLiteral(ctx: RubyParser.NumericLiteralContext): RubyNode = {
     if (ctx.hasSign) {
       UnaryExpression(ctx.sign.getText, visit(ctx.unsignedNumericLiteral()))(ctx.toTextSpan)
@@ -202,21 +217,13 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
 
   override def visitPrimaryOperatorExpression(ctx: RubyParser.PrimaryOperatorExpressionContext): RubyNode = {
     super.visitPrimaryOperatorExpression(ctx) match {
-      case x: BinaryExpression if x.lhs.text.endsWith("=") && x.op == "*" =>
+      case expr @ BinaryExpression(SimpleCall(lhs: SimpleIdentifier, Nil), "*", rhs) if lhs.text.endsWith("=") =>
         // fixme: This workaround handles a parser ambiguity with method identifiers having `=` and assignments with
         //  splatting on the RHS. The Ruby parser gives precedence to assignments over methods called with this suffix
-        //  however
-        val newLhs = x.lhs match {
-          case call: SimpleCall => SimpleIdentifier(None)(call.span.spanStart(call.span.text.stripSuffix("=")))
-          case y =>
-            logger.warn(s"Unhandled class in repacking of primary operator expression ${y.getClass}")
-            y
-        }
-        val newRhs = {
-          val oldRhsSpan = x.rhs.span
-          SplattingRubyNode(x.rhs)(oldRhsSpan.spanStart(s"*${oldRhsSpan.text}"))
-        }
-        SingleAssignment(newLhs, "=", newRhs)(x.span)
+        //  however. See https://github.com/joernio/joern/issues/4775
+        val newLhs = SimpleIdentifier(None)(lhs.span.spanStart(lhs.span.text.stripSuffix("=")))
+        val newRhs = SplattingRubyNode(rhs)(rhs.span.spanStart(s"*${rhs.span.text}"))
+        SingleAssignment(newLhs, "=", newRhs)(expr.span)
       case x => x
     }
   }
@@ -341,6 +348,17 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     StaticLiteral(getBuiltInType(Defines.String))(ctx.toTextSpan)
   }
 
+  override def visitQuotedExpandedStringArrayLiteral(
+    ctx: RubyParser.QuotedExpandedStringArrayLiteralContext
+  ): RubyNode = {
+    val elements =
+      if Option(ctx.quotedExpandedArrayElementList()).isDefined then
+        ctx.quotedExpandedArrayElementList().elements.map(visit)
+      else List.empty
+
+    ArrayLiteral(elements)(ctx.toTextSpan)
+  }
+
   override def visitDoubleQuotedStringExpression(ctx: RubyParser.DoubleQuotedStringExpressionContext): RubyNode = {
     if (!ctx.isInterpolated) {
       StaticLiteral(getBuiltInType(Defines.String))(ctx.toTextSpan)
@@ -381,6 +399,17 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     } else {
       DynamicLiteral(getBuiltInType(Defines.Regexp), ctx.interpolations.map(visit))(ctx.toTextSpan)
     }
+  }
+
+  override def visitQuotedExpandedExternalCommandLiteral(
+    ctx: RubyParser.QuotedExpandedExternalCommandLiteralContext
+  ): RubyNode = {
+    val commandLiteral =
+      if ctx.quotedExpandedLiteralStringContent.asScala.nonEmpty then
+        StaticLiteral(Defines.String)(ctx.quotedExpandedLiteralStringContent.asScala.toList.map(_.toTextSpan).head)
+      else StaticLiteral(Defines.String)(ctx.toTextSpan.spanStart())
+
+    SimpleCall(SimpleIdentifier()(ctx.toTextSpan.spanStart("exec")), List(commandLiteral))(ctx.toTextSpan)
   }
 
   override def visitCurlyBracesBlock(ctx: RubyParser.CurlyBracesBlockContext): RubyNode = {
@@ -540,7 +569,11 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   override def visitSimpleCommand(ctx: RubyParser.SimpleCommandContext): RubyNode = {
     if (Option(ctx.commandArgument()).map(_.getText).exists(_.startsWith("::"))) {
       val memberName = ctx.commandArgument().getText.stripPrefix("::")
-      MemberAccess(visit(ctx.methodIdentifier()), "::", memberName)(ctx.toTextSpan)
+      if (memberName.headOption.exists(_.isUpper)) { // Constant accesses are upper-case 1st letter
+        MemberAccess(visit(ctx.methodIdentifier()), "::", memberName)(ctx.toTextSpan)
+      } else {
+        MemberCall(visit(ctx.methodIdentifier()), "::", memberName, Nil)(ctx.toTextSpan)
+      }
     } else if (!ctx.methodIdentifier().isAttrDeclaration) {
       val identifierCtx = ctx.methodIdentifier()
       val arguments     = ctx.commandArgument().arguments.map(visit)
@@ -567,6 +600,26 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
       }
     } else {
       FieldsDeclaration(ctx.commandArgument().arguments.map(visit))(ctx.toTextSpan)
+    }
+  }
+
+  override def visitSuperWithParentheses(ctx: RubyParser.SuperWithParenthesesContext): RubyNode = {
+    val block     = Option(ctx.block()).map(visit)
+    val arguments = Option(ctx.argumentWithParentheses()).map(_.arguments.map(visit)).getOrElse(Nil)
+    visitSuperCall(ctx, arguments, block)
+  }
+
+  override def visitSuperWithoutParentheses(ctx: RubyParser.SuperWithoutParenthesesContext): RubyNode = {
+    val block     = Option(ctx.block()).map(visit)
+    val arguments = Option(ctx.argumentList()).map(_.elements.map(visit)).getOrElse(Nil)
+    visitSuperCall(ctx, arguments, block)
+  }
+
+  private def visitSuperCall(ctx: ParserRuleContext, arguments: List[RubyNode], block: Option[RubyNode]): RubyNode = {
+    val callName = SimpleIdentifier()(ctx.toTextSpan.spanStart("super"))
+    block match {
+      case Some(body) => SimpleCallWithBlock(callName, arguments, body.asInstanceOf[Block])(ctx.toTextSpan)
+      case None       => SimpleCall(callName, arguments)(ctx.toTextSpan)
     }
   }
 
@@ -607,7 +660,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
 
   override def visitLambdaExpression(ctx: RubyParser.LambdaExpressionContext): RubyNode = {
     val parameters = Option(ctx.parameterList()).fold(List())(_.parameters).map(visit)
-    val body       = visit(ctx.block())
+    val body       = visit(ctx.block()).asInstanceOf[Block]
     ProcOrLambdaExpr(Block(parameters, body)(ctx.toTextSpan))(ctx.toTextSpan)
   }
 
@@ -635,6 +688,13 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   ): RubyNode = {
     val arguments = ctx.primaryValueList().primaryValue().asScala.map(visit).toList
     YieldExpr(arguments)(ctx.toTextSpan)
+  }
+
+  override def visitMemberAccessCommand(ctx: RubyParser.MemberAccessCommandContext): RubyNode = {
+    val arg        = visit(ctx.commandArgument())
+    val methodName = visit(ctx.methodName())
+    val base       = visit(ctx.primary())
+    MemberCall(base, ".", methodName.text, List(arg))(ctx.toTextSpan)
   }
 
   override def visitConstantIdentifierVariable(ctx: RubyParser.ConstantIdentifierVariableContext): RubyNode = {
@@ -692,9 +752,10 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   override def visitMemberAccessExpression(ctx: RubyParser.MemberAccessExpressionContext): RubyNode = {
     val hasArguments = Option(ctx.argumentWithParentheses()).isDefined
     val hasBlock     = Option(ctx.block()).isDefined
-    val isClassDecl = Option(ctx.primaryValue()).map(_.getText).contains("Class") && Option(ctx.methodName())
-      .map(_.getText)
-      .contains("new")
+    val isClassDecl =
+      Option(ctx.primaryValue()).map(_.getText).contains("Class") && Option(ctx.methodName())
+        .map(_.getText)
+        .contains("new")
     val methodName = ctx.methodName().getText
 
     if (!hasBlock) {
@@ -707,7 +768,13 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
         }
       } else {
         if (!hasArguments) {
-          return MemberAccess(target, ctx.op.getText, methodName)(ctx.toTextSpan)
+          if (methodName.headOption.exists(_.isUpper)) {
+            // This would be a symbol-like member
+            return MemberAccess(target, ctx.op.getText, methodName)(ctx.toTextSpan)
+          } else {
+            // Approximate this as a field-load
+            return MemberAccess(target, ctx.op.getText, methodName)(ctx.toTextSpan)
+          }
         } else {
           return MemberCall(target, ctx.op.getText, methodName, ctx.argumentWithParentheses().arguments.map(visit))(
             ctx.toTextSpan
@@ -758,6 +825,26 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     )(ctx.toTextSpan)
   }
 
+  override def visitBracketAssignmentExpression(ctx: RubyParser.BracketAssignmentExpressionContext): RubyNode = {
+    val op = ctx.assignmentOperator().getText
+
+    if (op != "=") {
+      logger.warn(s"Unsupported assignment operator for bracket assignment expression: $op")
+      defaultResult()
+    }
+
+    val lhsBase = visit(ctx.primaryValue())
+    val lhsArgs = Option(ctx.indexingArgumentList()).map(_.arguments).getOrElse(List()).map(visit)
+
+    val lhs = IndexAccess(lhsBase, lhsArgs)(
+      ctx.toTextSpan.spanStart(s"${lhsBase.span.text}[${lhsArgs.map(_.span.text).mkString(", ")}]")
+    )
+
+    val rhs = visit(ctx.operatorExpression())
+
+    SingleAssignment(lhs, op, rhs)(ctx.toTextSpan)
+  }
+
   override def visitBracketedArrayLiteral(ctx: RubyParser.BracketedArrayLiteralContext): RubyNode = {
     ArrayLiteral(Option(ctx.indexingArgumentList()).map(_.arguments).getOrElse(List()).map(visit))(ctx.toTextSpan)
   }
@@ -782,6 +869,45 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     ArrayLiteral(elements)(ctx.toTextSpan)
   }
 
+  override def visitQuotedExpandedSymbolArrayLiteral(
+    ctx: RubyParser.QuotedExpandedSymbolArrayLiteralContext
+  ): RubyNode = {
+    if (Option(ctx.quotedExpandedArrayElementList).isDefined) {
+      ArrayLiteral(ctx.quotedExpandedArrayElementList().elements.map(visit))(ctx.toTextSpan)
+    } else {
+      ArrayLiteral(List())(ctx.toTextSpan)
+    }
+  }
+
+  override def visitQuotedExpandedArrayElement(ctx: RubyParser.QuotedExpandedArrayElementContext): RubyNode = {
+    val literalType = findParent(ctx) match {
+      case Some(parentCtx) =>
+        parentCtx match
+          case x: QuotedExpandedStringArrayLiteralContext => Defines.String
+          case x: QuotedExpandedSymbolArrayLiteralContext => Defines.Symbol
+          case _ => logger.warn("Cannot determine type, defaulting to String"); Defines.String
+      case _ => logger.warn("Cannot determine type, defaulting to String"); Defines.String
+    }
+
+    if (ctx.hasInterpolation) {
+      DynamicLiteral(literalType, ctx.interpolations.map(visit))(ctx.toTextSpan)
+    } else {
+      StaticLiteral(literalType)(ctx.toTextSpan)
+    }
+  }
+
+  @tailrec
+  private def findParent(ctx: ParserRuleContext): Option[ParserRuleContext] = {
+    ctx match {
+      case x: QuotedExpandedSymbolArrayLiteralContext => Option(ctx)
+      case x: QuotedExpandedStringArrayLiteralContext => Option(ctx)
+      case null                                       => Option(ctx)
+      case _ =>
+        if ctx.parent != null then findParent(ctx.parent.asInstanceOf[ParserRuleContext])
+        else None
+    }
+  }
+
   override def visitRangeExpression(ctx: RubyParser.RangeExpressionContext): RubyNode = {
     RangeExpression(
       visit(ctx.primaryValue(0)),
@@ -798,7 +924,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     HashLiteral(Option(ctx.associationList()).map(_.associations).getOrElse(List()).map(visit))(ctx.toTextSpan)
   }
 
-  override def visitAssociation(ctx: RubyParser.AssociationContext): RubyNode = {
+  override def visitAssociationElement(ctx: RubyParser.AssociationElementContext): RubyNode = {
     ctx.associationKey().getText match {
       case "if" =>
         Association(SimpleIdentifier()(ctx.toTextSpan.spanStart("if")), visit(ctx.operatorExpression()))(ctx.toTextSpan)
@@ -807,16 +933,56 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     }
   }
 
+  override def visitAssociationHashArgument(ctx: RubyParser.AssociationHashArgumentContext): RubyNode = {
+    val identifierName = Option(ctx.LOCAL_VARIABLE_IDENTIFIER()).map(_.getText)
+
+    identifierName match {
+      case Some(identName) =>
+        SplattingRubyNode(SimpleIdentifier()(ctx.toTextSpan.spanStart(identName)))(ctx.toTextSpan)
+      case None =>
+        if ctx.LPAREN() == null then SplattingRubyNode(visit(ctx.methodCallsWithParentheses()))(ctx.toTextSpan)
+        else SplattingRubyNode(visit(ctx.methodInvocationWithoutParentheses()))(ctx.toTextSpan)
+    }
+  }
+
   override def visitModuleDefinition(ctx: RubyParser.ModuleDefinitionContext): RubyNode = {
-    ModuleDeclaration(visit(ctx.classPath()), visit(ctx.bodyStatement()))(ctx.toTextSpan)
+    val (nonFieldStmts, fields) = genInitFieldStmts(ctx.bodyStatement())
+
+    val moduleName = visit(ctx.classPath())
+    val memberCall = createBodyMemberCall(moduleName.span.text, ctx.toTextSpan)
+
+    ModuleDeclaration(visit(ctx.classPath()), nonFieldStmts, fields, Option(memberCall))(ctx.toTextSpan)
   }
 
   override def visitSingletonClassDefinition(ctx: RubyParser.SingletonClassDefinitionContext): RubyNode = {
-    SingletonClassDeclaration(
-      freshClassName(ctx.toTextSpan),
-      Option(ctx.commandOrPrimaryValueClass()).map(visit),
-      visit(ctx.bodyStatement())
-    )(ctx.toTextSpan)
+    val baseClass = Option(ctx.commandOrPrimaryValueClass()).map(visit)
+    val body      = visit(ctx.bodyStatement()).asInstanceOf[StatementList]
+
+    baseClass match {
+      case Some(baseClass) =>
+        baseClass match {
+          case x: SelfIdentifier =>
+            SingletonClassDeclaration(freshClassName(ctx.toTextSpan), Option(baseClass), body)(ctx.toTextSpan)
+          case x =>
+            val stmts = body.statements.map {
+              case x: MethodDeclaration =>
+                val memberAccess =
+                  MemberAccess(baseClass, ".", x.methodName)(
+                    x.span.spanStart(s"${baseClass.span.text}.${x.methodName}")
+                  )
+                val singletonBlockMethod =
+                  SingletonObjectMethodDeclaration(x.methodName, x.parameters, x.body, baseClass)(x.span)
+                SingleAssignment(memberAccess, "=", singletonBlockMethod)(
+                  ctx.toTextSpan.spanStart(s"${memberAccess.span.text} = ${x.span.text}")
+                )
+              case x => x
+            }
+
+            SingletonStatementList(stmts)(ctx.toTextSpan)
+        }
+      case None =>
+        SingletonClassDeclaration(freshClassName(ctx.toTextSpan), baseClass, body)(ctx.toTextSpan)
+    }
   }
 
   private def findFieldsInMethodDecls(methodDecls: List[MethodDeclaration]): List[RubyNode & RubyFieldIdentifier] = {
@@ -836,7 +1002,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
       }
   }
 
-  private def genInitFieldStmts(
+  def genInitFieldStmts(
     ctxBodyStatement: RubyParser.BodyStatementContext
   ): (RubyNode, List[RubyNode & RubyFieldIdentifier]) = {
     val loweredClassDecls = lowerSingletonClassDeclarations(ctxBodyStatement)
@@ -865,10 +1031,23 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
 
     loweredClassDecls match {
       case stmtList: StatementList =>
-        val (rubyFieldIdentifiers, rest) = stmtList.statements.partition {
+        val (rubyFieldIdentifiers, otherStructures) = stmtList.statements.partition {
           case x: (RubyNode & RubyFieldIdentifier) => true
           case _                                   => false
         }
+        val (fieldAssignments, rest) = otherStructures
+          .map {
+            case x @ SingleAssignment(lhs: SimpleIdentifier, op, rhs) =>
+              SingleAssignment(ClassFieldIdentifier()(lhs.span), op, rhs)(x.span)
+            case x @ SingleAssignment(lhs: RubyFieldIdentifier, op, rhs) =>
+              // Perhaps non-intuitive, but @ fields assigned under a type belong to the singleton class
+              SingleAssignment(ClassFieldIdentifier()(lhs.span), op, rhs)(x.span)
+            case x => x
+          }
+          .partition {
+            case x: SingleAssignment => true
+            case _                   => false
+          }
 
         val (instanceFields, classFields) = partitionRubyFields(rubyFieldIdentifiers)
 
@@ -880,42 +1059,28 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
 
         val (instanceFieldsInMethodDecls, classFieldsInMethodDecls) = partitionRubyFields(fieldsInMethodDecls)
 
-        val initializeMethod = methodDecls.collectFirst { x =>
-          x.methodName match
-            case "initialize" => x
-        }
+        val initializeMethod = methodDecls.collectFirst { case x if x.methodName == Defines.Initialize => x }
 
         val initStmtListStatements = genSingleAssignmentStmtList(instanceFields, instanceFieldsInMethodDecls)
-        val clinitStmtList         = genSingleAssignmentStmtList(classFields, classFieldsInMethodDecls)
+        val clinitStmtList = genSingleAssignmentStmtList(classFields, classFieldsInMethodDecls) ++ fieldAssignments
 
-        val clinitMethod =
-          MethodDeclaration(XDefines.StaticInitMethodName, List.empty, StatementList(clinitStmtList)(stmtList.span))(
+        val bodyMethodStmtList =
+          StatementList(initStmtListStatements ++ clinitStmtList)(
             stmtList.span
+              .spanStart(initStmtListStatements.map(_.span.text).concat(clinitStmtList.map(_.span.text)).mkString("\n"))
           )
 
-        val updatedStmtList = initializeMethod match {
-          case Some(initMethod) =>
-            initMethod.body match {
-              // TODO: Filter out instance fields that are assigned an initial value in the constructor method. Current
-              //  implementation leads to "double" assignment happening when the instance field is assigned a value
-              //   where you end up having
-              //   <instanceField> = nil; <instanceField> = ...;
-              case stmtList: StatementList =>
-                val initializers = initStmtListStatements :+ clinitMethod
-                StatementList(initializers ++ rest)(stmtList.span)
-              case x => x
-            }
-          case None =>
-            val newInitMethod =
-              MethodDeclaration("initialize", List.empty, StatementList(initStmtListStatements)(stmtList.span))(
-                stmtList.span
-              )
-            val initializers = newInitMethod :: clinitMethod :: Nil
-            StatementList(initializers ++ rest)(stmtList.span)
-        }
-        val combinedFields = rubyFieldIdentifiers ++ fieldsInMethodDecls
+        val bodyMethod = MethodDeclaration(Defines.TypeDeclBody, List.empty, bodyMethodStmtList)(
+          stmtList.span.spanStart(s"def <body>\n${bodyMethodStmtList.span.text}\nend")
+        )
 
-        (updatedStmtList, combinedFields.asInstanceOf[List[RubyNode & RubyFieldIdentifier]])
+        val combinedFields = rubyFieldIdentifiers ++ fieldsInMethodDecls ++
+          fieldAssignments.collect { case SingleAssignment(lhs: RubyFieldIdentifier, _, _) => lhs }
+
+        (
+          StatementList(bodyMethod +: rest)(bodyMethod.span),
+          combinedFields.asInstanceOf[List[RubyNode & RubyFieldIdentifier]]
+        )
       case decls => (decls, List.empty)
     }
   }
@@ -926,7 +1091,7 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     * @return
     *   the class body as a statement list.
     */
-  private def lowerAliasStatementsToMethods(classBody: RubyNode): StatementList = {
+  def lowerAliasStatementsToMethods(classBody: RubyNode): StatementList = {
 
     val classBodyStmts = classBody match {
       case StatementList(stmts) => stmts
@@ -976,10 +1141,10 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
     *   - `initialize` MethodDeclaration with all non-allowed children nodes added
     *   - list of all nodes allowed directly under type decl
     */
-  private def filterNonAllowedTypeDeclChildren(stmts: StatementList): (RubyNode, List[RubyNode]) = {
+  def filterNonAllowedTypeDeclChildren(stmts: StatementList): RubyNode = {
     val (initMethod, nonInitStmts) = stmts.statements.partition {
-      case x: MethodDeclaration if x.methodName == "initialize" => true
-      case _                                                    => false
+      case x: MethodDeclaration if x.methodName == Defines.Initialize => true
+      case _                                                          => false
     }
 
     val (allowedTypeDeclChildren, nonAllowedTypeDeclChildren) = nonInitStmts.partition {
@@ -987,19 +1152,31 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
       case _                              => false
     }
 
-    val initMethodDecl = initMethod.headOption match {
-      case Some(initMethodOpt) =>
-        val castInitMethod = initMethodOpt.asInstanceOf[MethodDeclaration]
-        val updatedMethodBody = StatementList(
-          castInitMethod.body.asStatementList.statements ++ nonAllowedTypeDeclChildren
-        )(castInitMethod.body.span)
-        MethodDeclaration("initialize", List.empty, updatedMethodBody)(castInitMethod.span)
-      case None =>
-        logger.warn("Could not find initialize method")
-        defaultResult()
+    val (bodyMethod, otherTypeDeclChildren) = allowedTypeDeclChildren.partition {
+      case x: MethodDeclaration if x.methodName == Defines.TypeDeclBody => true
+      case _                                                            => false
     }
 
-    (initMethodDecl, allowedTypeDeclChildren)
+    val updatedBodyMethod = bodyMethod
+      .asInstanceOf[List[MethodDeclaration]]
+      .map { x =>
+        val methodDeclStmts =
+          StatementList(x.body.asInstanceOf[StatementList].statements ++ nonAllowedTypeDeclChildren)(
+            x.span.spanStart(s"${x.body.span.text}${nonAllowedTypeDeclChildren.map(_.span.text).mkString("\n")}")
+          )
+
+        MethodDeclaration(x.methodName, x.parameters, methodDeclStmts)(
+          x.span.spanStart(s"def <body>\n${methodDeclStmts.span.text}\nend")
+        )
+      }
+
+    val otherTypeDeclChildrenSpan =
+      if otherTypeDeclChildren.nonEmpty then "\n" + otherTypeDeclChildren.map(_.span.text).mkString("\n")
+      else ""
+
+    StatementList(initMethod ++ otherTypeDeclChildren ++ updatedBodyMethod)(
+      stmts.span.spanStart(updatedBodyMethod.headOption.map(x => x.span.text).getOrElse("") + otherTypeDeclChildrenSpan)
+    )
   }
 
   override def visitClassDefinition(ctx: RubyParser.ClassDefinitionContext): RubyNode = {
@@ -1007,14 +1184,27 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
 
     val stmts = lowerAliasStatementsToMethods(nonFieldStmts)
 
-    val (initMethodDecl, allowedTypeDeclChildren) = filterNonAllowedTypeDeclChildren(stmts)
+    val classBody = filterNonAllowedTypeDeclChildren(stmts)
+    val className = visit(ctx.classPath())
+
+    val memberCall = createBodyMemberCall(className.span.text, ctx.toTextSpan)
 
     ClassDeclaration(
       visit(ctx.classPath()),
       Option(ctx.commandOrPrimaryValueClass()).map(visit),
-      StatementList(initMethodDecl +: allowedTypeDeclChildren)(stmts.span),
-      fields
+      classBody,
+      fields,
+      Option(memberCall)
     )(ctx.toTextSpan)
+  }
+
+  private def createBodyMemberCall(name: String, textSpan: TextSpan): TypeDeclBodyCall = {
+    TypeDeclBodyCall(
+      MemberAccess(SelfIdentifier()(textSpan.spanStart(Defines.Self)), "::", name)(
+        textSpan.spanStart(s"${Defines.Self}::$name")
+      ),
+      name
+    )(textSpan.spanStart(s"${Defines.Self}::$name::${Defines.TypeDeclBody}"))
   }
 
   /** Lowers all MethodDeclaration found in SingletonClassDeclaration to SingletonMethodDeclaration.
@@ -1050,11 +1240,13 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   }
 
   override def visitMethodDefinition(ctx: RubyParser.MethodDefinitionContext): RubyNode = {
-    MethodDeclaration(
-      ctx.definedMethodName().getText,
-      Option(ctx.methodParameterPart().parameterList()).fold(List())(_.parameters).map(visit),
-      visit(ctx.bodyStatement())
-    )(ctx.toTextSpan)
+    val params =
+      Option(ctx.methodParameterPart().parameterList())
+        .fold(List())(_.parameters)
+        .map(visit)
+        .sortBy(x => (x.span.line, x.span.column))
+
+    MethodDeclaration(ctx.definedMethodName().getText, params, visit(ctx.bodyStatement()))(ctx.toTextSpan)
   }
 
   override def visitEndlessMethodDefinition(ctx: RubyParser.EndlessMethodDefinitionContext): RubyNode = {
@@ -1085,7 +1277,8 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   }
 
   override def visitHashParameter(ctx: RubyParser.HashParameterContext): RubyNode = {
-    HashParameter(Option(ctx.LOCAL_VARIABLE_IDENTIFIER()).map(_.getText).getOrElse(ctx.getText))(ctx.toTextSpan)
+    val identifierName = Option(ctx.LOCAL_VARIABLE_IDENTIFIER()).map(_.getText).getOrElse(ctx.getText)
+    HashParameter(identifierName)(ctx.toTextSpan)
   }
 
   override def visitArrayParameter(ctx: RubyParser.ArrayParameterContext): RubyNode = {
@@ -1165,10 +1358,10 @@ class RubyNodeCreator extends RubyParserBaseVisitor[RubyNode] {
   }
 
   override def visitAssociationKey(ctx: RubyParser.AssociationKeyContext): RubyNode = {
-    if (Option(ctx.operatorExpression()).isDefined) {
-      visit(ctx.operatorExpression())
-    } else {
-      SimpleIdentifier()(ctx.toTextSpan)
+    Option(ctx.operatorExpression()) match {
+      case Some(ctx) if ctx.isKeyword => SimpleIdentifier()(ctx.toTextSpan)
+      case Some(ctx)                  => visit(ctx)
+      case None                       => SimpleIdentifier()(ctx.toTextSpan)
     }
   }
 

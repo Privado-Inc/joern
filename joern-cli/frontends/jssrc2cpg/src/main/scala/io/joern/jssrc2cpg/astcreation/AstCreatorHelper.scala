@@ -3,13 +3,13 @@ package io.joern.jssrc2cpg.astcreation
 import io.joern.jssrc2cpg.datastructures.*
 import io.joern.jssrc2cpg.parser.BabelAst.*
 import io.joern.jssrc2cpg.parser.BabelNodeInfo
-import io.joern.jssrc2cpg.passes.Defines
+import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
+import io.joern.x2cpg.utils.IntervalKeyPool
 import io.joern.x2cpg.utils.NodeBuilders.{newClosureBindingNode, newLocalNode}
 import io.joern.x2cpg.{Ast, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{EdgeTypes, EvaluationStrategies}
 import io.shiftleft.codepropertygraph.generated.nodes.File.PropertyDefaults
-import io.shiftleft.passes.IntervalKeyPool
 import ujson.Value
 
 import scala.collection.{mutable, SortedMap}
@@ -105,13 +105,13 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
 
   protected def pos(node: Value): Option[Int] = Try(node("start").num.toInt).toOption
 
-  protected def line(node: Value): Option[Integer] = start(node).map(getLineOfSource)
+  protected def line(node: Value): Option[Int] = start(node).map(getLineOfSource)
 
-  protected def lineEnd(node: Value): Option[Integer] = end(node).map(getLineOfSource)
+  protected def lineEnd(node: Value): Option[Int] = end(node).map(getLineOfSource)
 
-  protected def column(node: Value): Option[Integer] = start(node).map(getColumnOfSource)
+  protected def column(node: Value): Option[Int] = start(node).map(getColumnOfSource)
 
-  protected def columnEnd(node: Value): Option[Integer] = end(node).map(getColumnOfSource)
+  protected def columnEnd(node: Value): Option[Int] = end(node).map(getColumnOfSource)
 
   // Returns the line number for a given position in the source.
   private def getLineOfSource(position: Int): Int = {

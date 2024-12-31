@@ -1,7 +1,7 @@
 package io.joern.jssrc2cpg
 
 import io.joern.jssrc2cpg.Frontend.*
-import io.joern.x2cpg.passes.frontend.{TypeRecoveryParserConfig, XTypeRecovery}
+import io.joern.x2cpg.passes.frontend.{TypeRecoveryParserConfig, XTypeRecovery, XTypeRecoveryConfig}
 import io.joern.x2cpg.utils.Environment
 import io.joern.x2cpg.{X2CpgConfig, X2CpgMain}
 import scopt.OParser
@@ -38,7 +38,7 @@ object Frontend {
         .hidden()
         .action((nodeOptions, c) => c.withNodeOptions(nodeOptions))
         .text("node options to be used with astGen"),
-      XTypeRecovery.parserOptions
+      XTypeRecoveryConfig.parserOptionsForParserConfig
     )
   }
 
