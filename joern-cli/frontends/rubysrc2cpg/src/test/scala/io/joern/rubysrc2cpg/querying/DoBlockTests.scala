@@ -1,11 +1,13 @@
 package io.joern.rubysrc2cpg.querying
 
+import io.joern.rubysrc2cpg.passes.Defines.{Initialize, Main, RubyOperators}
 import io.joern.rubysrc2cpg.passes.GlobalTypes.builtinPrefix
-import io.joern.rubysrc2cpg.passes.Defines.Main
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.joern.x2cpg.Defines
+import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
+import io.joern.rubysrc2cpg.passes.Defines as RubyDefines
 
 class DoBlockTests extends RubyCode2CpgFixture {
 
@@ -267,10 +269,11 @@ class DoBlockTests extends RubyCode2CpgFixture {
           inside(constrBlock.astChildren.l) {
             case (tmpLocal: Local) :: (tmpAssign: Call) :: (newCall: Call) :: (_: Identifier) :: Nil =>
               tmpLocal.name shouldBe "<tmp-0>"
-              tmpAssign.code shouldBe "<tmp-0> = Array.new(x) { |i| i += 1 }"
+              tmpAssign.code shouldBe s"<tmp-0> = Array.$Initialize"
 
-              newCall.name shouldBe "new"
-              newCall.methodFullName shouldBe s"$builtinPrefix.Array.initialize"
+              newCall.name shouldBe Initialize
+              newCall.methodFullName shouldBe Defines.DynamicCallUnknownFullName
+              newCall.dynamicTypeHintFullName should contain(s"$builtinPrefix.Array.$Initialize")
 
               inside(newCall.argument.l) {
                 case (_: Identifier) :: (x: Identifier) :: (closure: TypeRef) :: Nil =>
@@ -283,7 +286,8 @@ class DoBlockTests extends RubyCode2CpgFixture {
                 s"Expected four nodes under the lowering block of a constructor, instead got [${xs.code.mkString(",")}]"
               )
           }
-        case xs => fail(s"Unexpected `foo` assignment children [${xs.code.mkString(",")}]")
+        case xs =>
+          fail(s"Unexpected `foo` assignment children [${xs.code.mkString(",")}]")
       }
     }
   }
@@ -337,7 +341,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
     "create a lambda method with a `y` parameter" in {
       inside(cpg.method.isLambda.headOption) {
         case Some(lambda) =>
-          lambda.code shouldBe "{ y }"
+          lambda.code shouldBe "->(y) { y }"
           lambda.parameter.name.l shouldBe List("self", "y")
         case xs => fail(s"Expected a lambda method")
       }
@@ -363,7 +367,7 @@ class DoBlockTests extends RubyCode2CpgFixture {
     "create a lambda method with a `y` parameter" in {
       inside(cpg.method.isLambda.headOption) {
         case Some(lambda) =>
-          lambda.code shouldBe "{ |y| y }"
+          lambda.code shouldBe "lambda { |y| y }"
           lambda.parameter.name.l shouldBe List("self", "y")
         case xs => fail(s"Expected a lambda method")
       }
@@ -380,4 +384,165 @@ class DoBlockTests extends RubyCode2CpgFixture {
 
   }
 
+  "One local node for variable in lambda only" in {
+    val cpg = code("""
+                     | def get_pto_schedule
+                     |    begin
+                     |       jfs = []
+                     |       schedules = []
+                     |       schedules.each do |s|
+                     |          hash = Hash.new
+                     |          hash[:id] = s[:id]
+                     |          hash[:title] = s[:event_name]
+                     |          hash[:start] = s[:date_begin]
+                     |          hash[:end] = s[:date_end]
+                     |          jfs << hash
+                     |       end
+                     |    rescue
+                     |    end
+                     |  end
+                     |""".stripMargin)
+
+    inside(cpg.local.l) {
+      case jfsOutsideLocal :: schedules :: hashInsideLocal :: tmp0 :: jfsCapturedLocal :: Nil =>
+        jfsOutsideLocal.closureBindingId shouldBe None
+        hashInsideLocal.closureBindingId shouldBe None
+        jfsCapturedLocal.closureBindingId shouldBe Some("Test0.rb:<main>.get_pto_schedule.jfs")
+
+        tmp0.name shouldBe "<tmp-0>"
+      case xs => fail(s"Expected 6 locals, got ${xs.code.mkString(",")}")
+    }
+
+    inside(cpg.method.isLambda.local.l) {
+      case hashLocal :: _ :: jfsLocal :: Nil =>
+        hashLocal.closureBindingId shouldBe None
+        jfsLocal.closureBindingId shouldBe Some("Test0.rb:<main>.get_pto_schedule.jfs")
+      case xs => fail(s"Expected 3 locals in lambda, got ${xs.code.mkString(",")}")
+    }
+  }
+
+  "Various do-block parameters" should {
+    val cpg = code("""
+        |f { |a, (b, c), *d, e, (f, *g), **h, &i|
+        | puts a
+        |}
+        |""".stripMargin)
+
+    "Generate correct parameters" in {
+      inside(cpg.method.isLambda.parameter.l) {
+        case _ :: aParam :: tmp0Param :: dParam :: eParam :: tmp1Param :: hParam :: iParam :: Nil =>
+          aParam.name shouldBe "a"
+          aParam.code shouldBe "a"
+
+          tmp0Param.name shouldBe "<tmp-0>"
+          tmp0Param.code shouldBe "<tmp-0>"
+
+          dParam.name shouldBe "d"
+          dParam.code shouldBe "*d"
+
+          eParam.name shouldBe "e"
+          eParam.code shouldBe "e"
+
+          tmp1Param.name shouldBe "<tmp-1>"
+          tmp1Param.code shouldBe "<tmp-1>"
+
+          hParam.name shouldBe "h"
+          hParam.code shouldBe "**h"
+
+          iParam.name shouldBe "i"
+          iParam.code shouldBe "&i"
+        case xs => fail(s"Expected 8 parameters, got [${xs.name.mkString(", ")}]")
+      }
+    }
+
+    "Generate required locals" in {
+      inside(cpg.method.isLambda.body.local.l) {
+        case bLocal :: cLocal :: fLocal :: gSplatLocal :: Nil =>
+          bLocal.code shouldBe "b"
+          cLocal.code shouldBe "c"
+
+          fLocal.code shouldBe "f"
+          gSplatLocal.code shouldBe "g"
+        case xs => fail(s"Expected 4 locals, got [${xs.name.mkString(", ")}]")
+      }
+    }
+
+    "Generate required `assignment` calls" in {
+      inside(cpg.method.isLambda.call(Operators.assignment).l) {
+        case bAssign :: cAssign :: fAssign :: gAssign :: Nil =>
+          bAssign.code shouldBe "b = *<tmp-0>"
+          cAssign.code shouldBe "c = *<tmp-0>"
+
+          fAssign.code shouldBe "f = *<tmp-1>"
+          gAssign.code shouldBe "*g = *<tmp-1>"
+        case xs => fail(s"Expected 4 assignments, got [${xs.code.mkString(", ")}]")
+      }
+    }
+
+    "Return nil and not the desugaring" in {
+      val nilLiteral = cpg.method.isLambda.methodReturn.toReturn.astChildren.isLiteral.head
+      nilLiteral.code shouldBe "return nil"
+    }
+  }
+
+  "Nested grouped parameter in block" in {
+    val cpg = code("""
+        |def format_result(result)
+        |  result.each_with_object({}) do |((label_id, date), count), hash|
+        |    label = labels_by_id.fetch(label_id)
+        |  end.values
+        |end
+        |""".stripMargin)
+
+    inside(cpg.method.isLambda.body.astChildren.isCall.name(Operators.assignment).l) {
+      case _ :: groupedParam :: countAssignment :: Nil =>
+        inside(groupedParam.argument.l) {
+          case (labelIdAssign: Call) :: (dateAssign: Call) :: (tmp0Splat: Call) :: Nil =>
+            inside(labelIdAssign.argument.l) {
+              case (lhs: Identifier) :: (rhs: Call) :: Nil =>
+                lhs.code shouldBe "label_id"
+
+                rhs.code shouldBe "*<tmp-1>"
+                rhs.methodFullName shouldBe RubyOperators.splat
+              case xs =>
+                fail(s"Expected lhs and rhs for assignment, got ${xs.code.mkString(",")}")
+            }
+
+            inside(dateAssign.argument.l) {
+              case (lhs: Identifier) :: (rhs: Call) :: Nil =>
+                lhs.code shouldBe "date"
+
+                rhs.code shouldBe "*<tmp-1>"
+                rhs.methodFullName shouldBe RubyOperators.splat
+              case xs =>
+                fail(s"Expected lhs and rhs for assignment, got ${xs.code.mkString(",")}")
+            }
+          case xs => fail(s"Expected four arguments for call, got [${xs.code.mkString(",")}]")
+        }
+
+        inside(countAssignment.argument.l) {
+          case (lhs: Identifier) :: (rhs: Call) :: Nil =>
+            lhs.code shouldBe "count"
+            rhs.code shouldBe "*<tmp-0>"
+            rhs.methodFullName shouldBe RubyOperators.splat
+          case xs => fail(s"Expected LHS and RHS for assignment, got ${xs.code.mkString(",")}")
+        }
+      case xs => fail(s"Expected three assignment calls, got [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "a back reference in a do block should be a field access from `self`" in {
+    val cpg = code("""
+        |def bar()
+        |  foo("something") { urls << $& }
+        |end
+        |""".stripMargin)
+    val backRefCall = cpg.method.isLambda.ast.fieldAccess
+      .and(_.fieldIdentifier.canonicalNameExact("$&"), _.argument(1).isIdentifier.nameExact(RubyDefines.Self))
+      .head
+    backRefCall.name shouldBe Operators.fieldAccess
+    backRefCall.code shouldBe "self.$&"
+    backRefCall.lineNumber shouldBe Option(3)
+    backRefCall.columnNumber shouldBe Option(29)
+  }
 }

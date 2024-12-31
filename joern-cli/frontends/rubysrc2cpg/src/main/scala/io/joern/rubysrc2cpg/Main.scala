@@ -1,24 +1,34 @@
 package io.joern.rubysrc2cpg
 
 import io.joern.rubysrc2cpg.Frontend.*
+import io.joern.x2cpg.astgen.AstGenConfig
 import io.joern.x2cpg.passes.frontend.{TypeRecoveryParserConfig, XTypeRecovery, XTypeRecoveryConfig}
 import io.joern.x2cpg.typestub.TypeStubConfig
+import io.joern.x2cpg.utils.server.FrontendHTTPServer
 import io.joern.x2cpg.{DependencyDownloadConfig, X2CpgConfig, X2CpgMain}
 import scopt.OParser
+import java.nio.file.Paths
 
 final case class Config(
   antlrCacheMemLimit: Double = 0.6d,
   useDeprecatedFrontend: Boolean = false,
   downloadDependencies: Boolean = false,
   useTypeStubs: Boolean = true,
-  antlrDebug: Boolean = false
+  antlrDebug: Boolean = false,
+  antlrProfiling: Boolean = false
 ) extends X2CpgConfig[Config]
     with DependencyDownloadConfig[Config]
     with TypeRecoveryParserConfig[Config]
-    with TypeStubConfig[Config] {
+    with TypeStubConfig[Config]
+    with AstGenConfig[Config] {
 
-  this.defaultIgnoredFilesRegex = List("spec", "test", "tests").flatMap { directory =>
-    List(s"(^|\\\\)$directory($$|\\\\)".r.unanchored, s"(^|/)$directory($$|/)".r.unanchored)
+  override val astGenProgramName: String        = "ruby_ast_gen"
+  override val astGenConfigPrefix: String       = "rubysrc2cpg"
+  override val multiArchitectureBuilds: Boolean = true
+
+  this.defaultIgnoredFilesRegex = List("spec", "tests?", "vendor", "db(\\\\|/)([\\w_]*)migrate([_\\w]*)").flatMap {
+    directory =>
+      List(s"(^|\\\\)$directory($$|\\\\)".r.unanchored, s"(^|/)$directory($$|/)".r.unanchored)
   }
 
   def withAntlrCacheMemoryLimit(value: Double): Config = {
@@ -31,6 +41,10 @@ final case class Config(
 
   def withAntlrDebugging(value: Boolean): Config = {
     copy(antlrDebug = value).withInheritedFields(this)
+  }
+
+  def withAntlrProfiling(value: Boolean): Config = {
+    copy(antlrProfiling = value).withInheritedFields(this)
   }
 
   override def withDownloadDependencies(value: Boolean): Config = {
@@ -69,6 +83,9 @@ private object Frontend {
       opt[Unit]("antlrDebug")
         .hidden()
         .action((_, c) => c.withAntlrDebugging(true)),
+      opt[Unit]("antlrProfile")
+        .hidden()
+        .action((_, c) => c.withAntlrProfiling(true)),
       opt[Unit]("enable-file-content")
         .action((_, c) => c.withDisableFileContent(false))
         .text("Enable file content"),
@@ -79,8 +96,12 @@ private object Frontend {
   }
 }
 
-object Main extends X2CpgMain(cmdLineParser, new RubySrc2Cpg()) {
+object Main extends X2CpgMain(cmdLineParser, new RubySrc2Cpg()) with FrontendHTTPServer[Config, RubySrc2Cpg] {
+
+  override protected def newDefaultConfig(): Config = Config()
+
   def run(config: Config, rubySrc2Cpg: RubySrc2Cpg): Unit = {
-    rubySrc2Cpg.run(config)
+    if (config.serverMode) { startup() }
+    else { rubySrc2Cpg.run(config) }
   }
 }

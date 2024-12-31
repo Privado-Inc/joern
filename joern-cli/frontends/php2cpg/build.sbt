@@ -4,11 +4,10 @@ import better.files.File
 
 name := "php2cpg"
 
-val phpParserVersion       = "4.15.8"
 val upstreamParserBinName  = "php-parser.phar"
-val versionedParserBinName = s"php-parser-$phpParserVersion.phar"
+val versionedParserBinName = s"php-parser-${Versions.phpParser}.phar"
 val phpParserDlUrl =
-  s"https://github.com/joernio/PHP-Parser/releases/download/v$phpParserVersion/$upstreamParserBinName"
+  s"https://github.com/joernio/PHP-Parser/releases/download/v${Versions.phpParser}/$upstreamParserBinName"
 
 dependsOn(Projects.dataflowengineoss % "compile->compile;test->test", Projects.x2cpg % "compile->compile;test->test")
 

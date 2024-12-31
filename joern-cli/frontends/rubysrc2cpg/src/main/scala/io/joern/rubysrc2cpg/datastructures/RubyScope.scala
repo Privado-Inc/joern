@@ -4,7 +4,6 @@ import better.files.File
 import io.joern.rubysrc2cpg.passes.GlobalTypes
 import io.joern.rubysrc2cpg.passes.GlobalTypes.builtinPrefix
 import io.joern.x2cpg.Defines
-import io.joern.rubysrc2cpg.passes.Defines as RDefines
 import io.joern.x2cpg.datastructures.{TypedScopeElement, *}
 import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{DeclarationNew, NewLocal, NewMethodParameterIn}
@@ -126,6 +125,13 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     }
   }
 
+  def lookupVariableInOuterScope(identifier: String): List[DeclarationNew] = {
+    stack.drop(1).collect {
+      case scopeElement if scopeElement.variables.contains(identifier) =>
+        scopeElement.variables(identifier)
+    }
+  }
+
   def addRequire(
     projectRoot: String,
     currentFilePath: String,
@@ -224,17 +230,26 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
   def useProcParam: Option[String] = updateSurrounding {
     case ScopeElement(MethodScope(fullName, param, _), variables) =>
       (ScopeElement(MethodScope(fullName, param, true), variables), param.fold(x => x, x => x))
+    case ScopeElement(ConstructorScope(fullName, param, _), variables) =>
+      (ScopeElement(ConstructorScope(fullName, param, true), variables), param.fold(x => x, x => x))
   }
 
   /** Get the name of the implicit or explicit proc param */
-  def anonProcParam: Option[String] = stack.collectFirst { case ScopeElement(MethodScope(_, Left(param), true), _) =>
-    param
+  def anonProcParam: Option[String] = stack.collectFirst {
+    case ScopeElement(x: MethodLikeScope, _) if x.procParam.isLeft =>
+      x.procParam match {
+        case Left(param) => param
+        case Right(param) =>
+          param // this is just so that we don't get a pattern match warning, but should never be triggered
+      }
   }
 
   /** Set the name of explicit proc param */
   def setProcParam(param: String, paramNode: NewMethodParameterIn): Unit = updateSurrounding {
     case ScopeElement(MethodScope(fullName, _, _), variables) =>
       (ScopeElement(MethodScope(fullName, Right(param), true), variables ++ Map(paramNode.name -> paramNode)), ())
+    case ScopeElement(ConstructorScope(fullName, _, _), variables) =>
+      (ScopeElement(ConstructorScope(fullName, Right(param), true), variables ++ Map(paramNode.name -> paramNode)), ())
   }
 
   /** If a proc param is used, provides the node to add to the AST.
@@ -242,8 +257,11 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
   def procParamName: Option[NewMethodParameterIn] = {
     stack
       .collectFirst {
-        case ScopeElement(MethodScope(_, Left(param), true), _)  => param
-        case ScopeElement(MethodScope(_, Right(param), true), _) => param
+        case ScopeElement(x: MethodLikeScope, _) if x.hasYield =>
+          x.procParam match {
+            case Left(param)  => param
+            case Right(param) => param
+          }
       }
       .flatMap(lookupVariable(_).collect { case p: NewMethodParameterIn => p })
   }

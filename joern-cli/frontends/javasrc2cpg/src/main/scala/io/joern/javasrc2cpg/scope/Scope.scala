@@ -1,11 +1,13 @@
 package io.joern.javasrc2cpg.scope
 
+import com.github.javaparser.ast.body.Parameter
+import com.github.javaparser.ast.expr.TypePatternExpr
 import io.joern.javasrc2cpg.astcreation.ExpectedType
 import io.joern.javasrc2cpg.scope.Scope.*
 import io.joern.javasrc2cpg.scope.JavaScopeElement.*
 import io.joern.javasrc2cpg.util.MultiBindingTableAdapterForJavaparser.JavaparserBindingDeclType
 import io.joern.javasrc2cpg.util.NameConstants
-import io.joern.x2cpg.Ast
+import io.joern.x2cpg.{Ast, ValidationMode}
 import io.joern.x2cpg.utils.ListUtils.*
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import org.slf4j.LoggerFactory
@@ -22,7 +24,7 @@ case class NodeTypeInfo(
   isField: Boolean = false,
   isStatic: Boolean = false
 )
-class Scope {
+class Scope(implicit val withSchemaValidation: ValidationMode, val disableTypeFallback: Boolean) {
   private val logger = LoggerFactory.getLogger(this.getClass)
 
   private var scopeStack: List[JavaScopeElement] = Nil
@@ -39,7 +41,12 @@ class Scope {
     scopeStack = new FieldDeclScope(isStatic, name) :: scopeStack
   }
 
-  def pushTypeDeclScope(typeDecl: NewTypeDecl, isStatic: Boolean, methodNames: Set[String] = Set.empty): Unit = {
+  def pushTypeDeclScope(
+    typeDecl: NewTypeDecl,
+    isStatic: Boolean,
+    methodNames: Set[String] = Set.empty,
+    recordParameters: List[Parameter] = Nil
+  ): Unit = {
     val captures = getCapturesForNewScope(isStatic)
     val outerClassType = scopeStack.takeUntil(_.isInstanceOf[TypeDeclScope]) match {
       case Nil => None
@@ -57,7 +64,8 @@ class Scope {
           }
           .flatten
     }
-    scopeStack = new TypeDeclScope(typeDecl, isStatic, captures, outerClassType, methodNames) :: scopeStack
+    scopeStack =
+      new TypeDeclScope(typeDecl, isStatic, captures, outerClassType, methodNames, recordParameters) :: scopeStack
   }
 
   def pushNamespaceScope(namespace: NewNamespaceBlock): Unit = {
@@ -74,10 +82,10 @@ class Scope {
 
   def popNamespaceScope(): NamespaceScope = popScope[NamespaceScope]()
 
-  private def popScope[ScopeType <: JavaScopeElement](): ScopeType = {
+  private def popScope[ScopeType0 <: JavaScopeElement](): ScopeType0 = {
     val scope = scopeStack.head
     scopeStack = scopeStack.tail
-    scope.asInstanceOf[ScopeType]
+    scope.asInstanceOf[ScopeType0]
   }
 
   def addTopLevelType(name: String, typeFullName: String): Unit = {
@@ -279,6 +287,14 @@ class Scope {
       case _ => None
     }
   }
+
+  def addLocalsForPatternsToEnclosingBlock(patterns: List[TypePatternExpr]): Unit = {
+    patterns.flatMap(enclosingMethod.get.getPatternVariableInfo(_)).foreach {
+      case PatternVariableInfo(typePatternExpr, variableLocal, _, _, _) =>
+        enclosingBlock.get.addPatternLocal(variableLocal, typePatternExpr)
+    }
+  }
+
 }
 
 object Scope {
@@ -335,6 +351,11 @@ object Scope {
     val name: String         = node.name
   }
   final case class ScopeMember(override val node: NewMember, isStatic: Boolean) extends ScopeVariable {
+    val typeFullName: String = node.typeFullName
+    val name: String         = node.name
+  }
+  final case class ScopePatternVariable(override val node: NewLocal, typePatternExpr: TypePatternExpr)
+      extends ScopeVariable {
     val typeFullName: String = node.typeFullName
     val name: String         = node.name
   }

@@ -451,4 +451,21 @@ class TypeDeclTests extends KotlinCode2CpgFixture(withOssDataflow = false) {
       firstCallOfSecondaryCtor.methodFullName shouldBe "mypkg.QClass.<init>:void()"
     }
   }
+
+  "CPG for inheritance having generics" should {
+    val cpg = code("""
+        |import org.apache.flink.streaming.api.functions.sink.RichSinkFunction
+        |
+        |class ApiSink<T>(private val apiUrl: String) : RichSinkFunction<T>() {
+        |    private var httpClient: CloseableHttpClient? = null
+        |
+        |}
+        |""".stripMargin)
+
+    "resolve base types" in {
+      cpg.typeDecl.name("ApiSink").inheritsFromTypeFullName.l shouldBe List(
+        "org.apache.flink.streaming.api.functions.sink.RichSinkFunction"
+      )
+    }
+  }
 }

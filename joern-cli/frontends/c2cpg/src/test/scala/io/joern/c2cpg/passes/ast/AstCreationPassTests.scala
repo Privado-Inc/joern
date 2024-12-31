@@ -500,6 +500,20 @@ class AstCreationPassTests extends AstC2CpgSuite {
       }
     }
 
+    "be correct for decl assignment with references" in {
+      val cpg = code(
+        """
+          |int addrOfLocalRef(struct x **foo) {
+          |  struct x &bar = **foo;
+          |  *foo = &bar;
+          |}""".stripMargin,
+        "foo.cc"
+      )
+      val List(barLocal) = cpg.method.nameExact("addrOfLocalRef").local.l
+      barLocal.name shouldBe "bar"
+      barLocal.code shouldBe "struct x& bar"
+    }
+
     "be correct for decl assignment of multiple locals" in {
       val cpg = code("""
           |void method(int x, int y) {
@@ -1053,6 +1067,13 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |} abc;
       """.stripMargin)
       cpg.typeDecl.nameExact("foo").aliasTypeFullName("abc").size shouldBe 1
+    }
+
+    "be correct for anonymous typedef struct" in {
+      val cpg     = code("typedef struct { int m; } t;", "t.cpp")
+      val List(t) = cpg.typeDecl.nameExact("t").l
+      cpg.typeDecl.nameExact("ANY").size shouldBe 0
+      t.aliasTypeFullName.size shouldBe 0 // no alias for named anonymous typedefs
     }
 
     "be correct for struct with local" in {

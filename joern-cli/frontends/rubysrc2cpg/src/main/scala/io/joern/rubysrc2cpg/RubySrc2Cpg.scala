@@ -2,32 +2,31 @@ package io.joern.rubysrc2cpg
 
 import better.files.File
 import io.joern.rubysrc2cpg.astcreation.AstCreator
+import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.StatementList
 import io.joern.rubysrc2cpg.datastructures.RubyProgramSummary
 import io.joern.rubysrc2cpg.deprecated.parser.DeprecatedRubyParser
 import io.joern.rubysrc2cpg.deprecated.parser.DeprecatedRubyParser.*
-import io.joern.rubysrc2cpg.parser.RubyParser
+import io.joern.rubysrc2cpg.parser.{RubyJsonParser, RubyJsonToNodeCreator, RubyAstGenRunner}
 import io.joern.rubysrc2cpg.passes.{
   AstCreationPass,
   ConfigFileCreationPass,
   DependencyPass,
-  DependencySummarySolverPass,
-  ImplicitRequirePass,
-  ImportsPass,
-  RubyImportResolverPass,
-  RubyTypeHintCallLinker
+  DependencySummarySolverPass
 }
 import io.joern.rubysrc2cpg.utils.DependencyDownloader
 import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
+import io.joern.x2cpg.frontendspecific.rubysrc2cpg.*
 import io.joern.x2cpg.passes.base.AstLinkerPass
 import io.joern.x2cpg.passes.callgraph.NaiveCallLinker
 import io.joern.x2cpg.passes.frontend.{MetaDataPass, TypeNodePass, XTypeRecoveryConfig}
+import io.joern.x2cpg.utils.ExternalCommand.ExternalCommandResult
 import io.joern.x2cpg.utils.{ConcurrentTaskUtil, ExternalCommand}
 import io.joern.x2cpg.{SourceFiles, X2CpgFrontend}
-import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.codepropertygraph.generated.Languages
+import io.shiftleft.codepropertygraph.generated.{Cpg, Languages}
 import io.shiftleft.passes.CpgPassBase
 import io.shiftleft.semanticcpg.language.*
 import org.slf4j.LoggerFactory
+import upickle.default.*
 
 import java.nio.file.{Files, Paths}
 import scala.util.matching.Regex
@@ -51,14 +50,22 @@ class RubySrc2Cpg extends X2CpgFrontend[Config] {
   }
 
   private def newCreateCpgAction(cpg: Cpg, config: Config): Unit = {
-    Using.resource(new parser.ResourceManagedParser(config.antlrCacheMemLimit, config.antlrDebug)) { parser =>
+    File.usingTemporaryDirectory("rubysrc2cpgOut") { tmpDir =>
+      val astGenResult = RubyAstGenRunner(config).execute(tmpDir)
+
       val astCreators = ConcurrentTaskUtil
-        .runUsingThreadPool(RubySrc2Cpg.generateParserTasks(parser, config, cpg.metaData.root.headOption))
+        .runUsingThreadPool(
+          RubySrc2Cpg.processAstGenRunnerResults(astGenResult.parsedFiles, config, cpg.metaData.root.headOption)
+        )
         .flatMap {
-          case Failure(exception)  => logger.warn(s"Could not parse file, skipping - ", exception); None
+          case Failure(exception)  => logger.warn(s"Unable to parse Ruby file, skipping -", exception); None
           case Success(astCreator) => Option(astCreator)
         }
-      // Pre-parse the AST creators for high level structures
+        .filter(x => {
+          if x.fileContent.isBlank then logger.info(s"File content empty, skipping - ${x.fileName}")
+          !x.fileContent.isBlank
+        })
+
       val internalProgramSummary = ConcurrentTaskUtil
         .runUsingThreadPool(astCreators.map(x => () => x.summarize()).iterator)
         .flatMap {
@@ -76,8 +83,6 @@ class RubySrc2Cpg extends X2CpgFrontend[Config] {
       val programSummary = internalProgramSummary ++= dependencySummary
 
       AstCreationPass(cpg, astCreators.map(_.withSummary(programSummary))).createAndApply()
-      if (cpg.dependency.name.contains("zeitwerk")) ImplicitRequirePass(cpg, programSummary).createAndApply()
-      ImportsPass(cpg).createAndApply()
       if config.downloadDependencies then {
         DependencySummarySolverPass(cpg, dependencySummary).createAndApply()
       }
@@ -133,18 +138,18 @@ class RubySrc2Cpg extends X2CpgFrontend[Config] {
 
   private def downloadDependency(inputPath: String, tempPath: String): Unit = {
     if (Files.isRegularFile(Paths.get(s"${inputPath}${java.io.File.separator}Gemfile"))) {
-      ExternalCommand.run(s"bundle config set --local path ${tempPath}", inputPath) match {
-        case Success(configOutput) =>
-          logger.info(s"Gem config successfully done: $configOutput")
-        case Failure(exception) =>
-          logger.error(s"Error while configuring Gem Path: ${exception.getMessage}")
+      ExternalCommand.run(Seq("bundle", "config", "set", "--local", "path", tempPath), inputPath) match {
+        case ExternalCommandResult(0, stdOut, _) =>
+          logger.info(s"Gem config successfully done")
+        case ExternalCommandResult(_, stdOut, _) =>
+          logger.error(s"Error while configuring Gem Path: ${stdOut.mkString(System.lineSeparator())}")
       }
-      val command = s"bundle install"
+      val command = Seq("bundle", "install")
       ExternalCommand.run(command, inputPath) match {
-        case Success(bundleOutput) =>
-          logger.info(s"Dependency installed successfully: $bundleOutput")
-        case Failure(exception) =>
-          logger.error(s"Error while downloading dependency: ${exception.getMessage}")
+        case ExternalCommandResult(0, stdOut, _) =>
+          logger.info(s"Dependency installed successfully")
+        case ExternalCommandResult(_, stdOut, _) =>
+          logger.error(s"Error while downloading dependency: ${stdOut.mkString(System.lineSeparator())}")
       }
     }
   }
@@ -163,45 +168,38 @@ object RubySrc2Cpg {
           new deprecated.passes.RubyTypeHintCallLinker(cpg),
           new NaiveCallLinker(cpg),
 
-          // Some of passes above create new methods, so, we
+          // Some of the passes above create new methods, so, we
           // need to run the ASTLinkerPass one more time
           new AstLinkerPass(cpg)
         )
     } else {
-      List(new RubyImportResolverPass(cpg)) ++
-        new passes.RubyTypeRecoveryPassGenerator(cpg, config = XTypeRecoveryConfig(iterations = 4))
+      val implicitRequirePass = if (cpg.dependency.name.contains("zeitwerk")) ImplicitRequirePass(cpg) :: Nil else Nil
+      implicitRequirePass ++ List(ImportsPass(cpg), RubyImportResolverPass(cpg)) ++
+        new RubyTypeRecoveryPassGenerator(cpg, config = XTypeRecoveryConfig(iterations = 4))
           .generate() ++ List(new RubyTypeHintCallLinker(cpg), new NaiveCallLinker(cpg), new AstLinkerPass(cpg))
     }
   }
 
-  def generateParserTasks(
-    resourceManagedParser: parser.ResourceManagedParser,
+  /** Parses the generated AST Gen files in parallel and produces AstCreators from each.
+    */
+  def processAstGenRunnerResults(
+    astFiles: List[String],
     config: Config,
     projectRoot: Option[String]
   ): Iterator[() => AstCreator] = {
-    SourceFiles
-      .determine(
-        config.inputPath,
-        RubySourceFileExtensions,
-        ignoredDefaultRegex = Option(config.defaultIgnoredFilesRegex),
-        ignoredFilesRegex = Option(config.ignoredFilesRegex),
-        ignoredFilesPath = Option(config.ignoredFiles)
-      )
-      .map { fileName => () =>
-        resourceManagedParser.parse(File(config.inputPath), fileName) match {
-          case Failure(exception) => throw exception
-          case Success(ctx) =>
-            val fileContent = (File(config.inputPath) / fileName).contentAsString
-            new AstCreator(
-              fileName,
-              ctx,
-              projectRoot,
-              enableFileContents = !config.disableFileContent,
-              fileContent = fileContent
-            )(config.schemaValidation)
-        }
-      }
-      .iterator
+    astFiles.map { fileName => () =>
+      val parserResult   = RubyJsonParser.readFile(Paths.get(fileName))
+      val rubyProgram    = new RubyJsonToNodeCreator().visitProgram(parserResult.json)
+      val sourceFileName = parserResult.fullPath
+      val fileContent    = File(sourceFileName).contentAsString
+      new AstCreator(
+        sourceFileName,
+        projectRoot,
+        enableFileContents = !config.disableFileContent,
+        fileContent = fileContent,
+        rootNode = rubyProgram
+      )(config.schemaValidation)
+    }.iterator
   }
 
 }
