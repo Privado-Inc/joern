@@ -9,7 +9,7 @@ import io.joern.x2cpg.{AstCreatorBase, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.codepropertygraph.generated.nodes.{NewCall, NewIdentifier, NewNode, NewTypeDecl}
 import org.slf4j.LoggerFactory
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 import scala.collection.mutable
 
@@ -93,7 +93,7 @@ class PythonAstVisitor(
     edgeBuilder.astEdge(namespaceBlockNode, fileNode, 1)
     contextStack.setFileNamespaceBlock(namespaceBlockNode)
 
-    val methodFullName = calculateFullNameFromContext("<module>")
+    val methodFullName = calculateFullNameFromContext(Constants.moduleName)
 
     val firstLineAndCol = module.stmts.headOption.map(lineAndColOf)
     val lastLineAndCol  = module.stmts.lastOption.map(lineAndColOf)
@@ -106,9 +106,9 @@ class PythonAstVisitor(
 
     val moduleMethodNode =
       createMethod(
-        "<module>",
+        Constants.moduleName,
         methodFullName,
-        Some("<module>"),
+        Some(Constants.moduleName),
         ModifierTypes.VIRTUAL :: ModifierTypes.MODULE :: Nil,
         parameterProvider = () => MethodParameters.empty(),
         bodyProvider = () => createBuiltinIdentifiers(memOpCalculator.names) ++ module.stmts.map(convert),
@@ -403,7 +403,7 @@ class PythonAstVisitor(
 
     // For every method that is a module, the local variables can be imported by other modules. This behaviour is
     // much like fields so they are to be linked as fields to this method type
-    if (name == "<module>") contextStack.createMemberLinks(typeDeclNode, edgeBuilder.astEdge)
+    if (name == Constants.moduleName) contextStack.createMemberLinks(typeDeclNode, edgeBuilder.astEdge)
 
     contextStack.pop()
     edgeBuilder.astEdge(typeDeclNode, contextStack.astParent, contextStack.order.getAndInc)
@@ -473,7 +473,11 @@ class PythonAstVisitor(
     val (_, methodRefNode) = createMethodAndMethodRef(
       classBodyFunctionName,
       scopeName = None,
-      parameterProvider = () => MethodParameters.empty(),
+      parameterProvider = () =>
+        MethodParameters(
+          0,
+          nodeBuilder.methodParameterNode("cls", isVariadic = false, lineAndColOf(classDef), Option(0)) :: Nil
+        ),
       bodyProvider = () => classDef.body.map(convert),
       None,
       isAsync = false,
@@ -488,7 +492,7 @@ class PythonAstVisitor(
     val functions = classDef.body.collect { case func: ast.FunctionDef => func }
 
     // __init__ method has to be in functions because "async def __init__" is invalid.
-    val initFunctionOption = functions.find(_.name == "__init__")
+    val initFunctionOption = functions.find(_.name == Constants.initName)
 
     val initParameters = initFunctionOption.map(_.args).getOrElse {
       // Create arguments of a default __init__ function.
@@ -547,15 +551,17 @@ class PythonAstVisitor(
 
     contextStack.pop()
 
-    // Create call to <body> function and assignment of the meta class object to a identifier named
-    // like the class.
-    val callToClassBodyFunction = createCall(methodRefNode, "", lineAndColOf(classDef), Nil, Nil)
     val metaTypeRefNode =
       createTypeRef(metaTypeDeclName, metaTypeDeclFullName, lineAndColOf(classDef))
     val classIdentifierAssignNode =
       createAssignmentToIdentifier(classDef.name, metaTypeRefNode, lineAndColOf(classDef))
+    // Create call to <body> function and assignment of the meta class object to a identifier named
+    // like the class.
+    val classIdentifierForCall = createIdentifierNode(classDef.name, Load, lineAndColOf(classDef))
+    val callToClassBodyFunction =
+      createInstanceCall(methodRefNode, classIdentifierForCall, "", lineAndColOf(classDef), Nil, Nil)
 
-    val classBlock = createBlock(callToClassBodyFunction :: classIdentifierAssignNode :: Nil, lineAndColOf(classDef))
+    val classBlock = createBlock(classIdentifierAssignNode :: callToClassBodyFunction :: Nil, lineAndColOf(classDef))
 
     classBlock
   }
@@ -774,7 +780,7 @@ class PythonAstVisitor(
 
         val initCall = createXDotYCall(
           () => createIdentifierNode("cls", Load, lineAndColumn),
-          "__init__",
+          Constants.initName,
           xMayHaveSideEffects = false,
           lineAndColumn,
           argumentWithInstance,
@@ -812,11 +818,30 @@ class PythonAstVisitor(
     val loweredNodes =
       createValueToTargetsDecomposition(assign.targets, convert(assign.value), lineAndColOf(assign))
 
-    if (loweredNodes.size == 1) {
+    val assignmentsToMembers =
+      if (contextStack.isClassContext) {
+        // In addition to the left hand side identifier(s) created by createValueToTargetsDecomposition
+        // we here create `cls.<targetName> = <targetName>` if we are in a class body function to
+        // represent the assignment into a member of the same name in the meta class.
+        assign.targets.collect { case nameTarget: ast.Name =>
+          assert(memOpMap.get(nameTarget).get == Store)
+          val lineAndColumn     = lineAndColOf(nameTarget)
+          val classIdentifier   = createIdentifierNode("cls", Load, lineAndColumn)
+          val targetFieldAccess = createFieldAccess(classIdentifier, nameTarget.id, lineAndColumn)
+          val targetIdentifier  = createIdentifierNode(nameTarget.id, Load, lineAndColumn)
+          createAssignment(targetFieldAccess, targetIdentifier, lineAndColumn)
+        }
+      } else {
+        Nil
+      }
+
+    val combinedLoweredNodes = loweredNodes ++ assignmentsToMembers
+
+    if (combinedLoweredNodes.size == 1) {
       // Simple assignment can be returned directly.
-      loweredNodes.head
+      combinedLoweredNodes.head
     } else {
-      createBlock(loweredNodes, lineAndColOf(assign))
+      createBlock(combinedLoweredNodes, lineAndColOf(assign))
     }
   }
 
