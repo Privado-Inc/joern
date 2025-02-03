@@ -14,6 +14,13 @@ class MethodMethods(val method: Method) extends AnyVal with NodeExtension with H
   def local: Iterator[Local] =
     method._blockViaContainsOut.local
 
+  def topLevelExpressions: Iterator[Expression] =
+    method._astOut
+      .collectAll[Block]
+      ._astOut
+      .not(_.collectAll[Local])
+      .cast[Expression]
+
   /** All control structures of this method
     */
   def controlStructure: Iterator[ControlStructure] =
@@ -37,14 +44,14 @@ class MethodMethods(val method: Method) extends AnyVal with NodeExtension with H
   /** List of CFG nodes in reverse post order
     */
   def reversePostOrder: Iterator[CfgNode] = {
-    def expand(x: CfgNode) = { x.cfgNext.iterator }
+    def expand(x: CfgNode) = x.cfgNext.iterator
     NodeOrdering.reverseNodeList(NodeOrdering.postOrderNumbering(method, expand).toList).iterator
   }
 
   /** List of CFG nodes in post order
     */
   def postOrder: Iterator[CfgNode] = {
-    def expand(x: CfgNode) = { x.cfgNext.iterator }
+    def expand(x: CfgNode) = x.cfgNext.iterator
     NodeOrdering.nodeList(NodeOrdering.postOrderNumbering(method, expand).toList).iterator
   }
 
