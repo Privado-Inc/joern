@@ -54,6 +54,7 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
     variablesInScope: Seq[ScopeVariable],
     expectedLambdaType: ExpectedType
   ): (NewMethod, LambdaBody) = {
+
     val implementedMethod    = implementedInfo.implementedMethod
     val implementedInterface = implementedInfo.implementedInterface
 
@@ -61,10 +62,14 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
     // symbol solver returns the erased types when resolving the lambda itself.
     val expectedTypeParamTypes = genericParamTypeMapForLambda(expectedLambdaType)
     val parametersWithoutThis  = buildParamListForLambda(expr, implementedMethod, expectedTypeParamTypes)
+    val returnType             = getLambdaReturnType(implementedInterface, implementedMethod, expectedTypeParamTypes)
 
-    val returnType = getLambdaReturnType(implementedInterface, implementedMethod, expectedTypeParamTypes)
+    val lambdaMethodNode = createLambdaMethodNode(expr, lambdaMethodName, parametersWithoutThis, returnType)
 
-    val lambdaBody = astForLambdaBody(lambdaMethodName, expr.getBody, variablesInScope, returnType)
+    // TODO: lambda method scope can be static if no non-static captures are used
+    scope.pushMethodScope(lambdaMethodNode, expectedLambdaType, isStatic = false)
+
+    val lambdaBody = astForLambdaBody(expr, lambdaMethodName, expr.getBody, variablesInScope, returnType)
 
     val thisParam = lambdaBody.nodes
       .collect { case identifier: NewIdentifier => identifier }
@@ -88,8 +93,6 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
       .collect { case identifier: NewIdentifier => identifier }
       .filter { identifier => lambdaParameterNamesToNodes.contains(identifier.name) }
 
-    val lambdaMethodNode = createLambdaMethodNode(expr, lambdaMethodName, parametersWithoutThis, returnType)
-
     val returnNode = newMethodReturnNode(returnType.getOrElse(defaultTypeFallback()), None, line(expr), column(expr))
     val virtualModifier = Some(newModifierNode(ModifierTypes.VIRTUAL))
     val staticModifier  = Option.when(thisParam.isEmpty)(newModifierNode(ModifierTypes.STATIC))
@@ -109,6 +112,7 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
       ast.withRefEdge(identifier, lambdaParameterNamesToNodes(identifier.name))
     )
 
+    scope.popMethodScope()
     scope.addLambdaMethod(lambdaMethodAst)
 
     lambdaMethodNode -> lambdaBody
@@ -119,8 +123,8 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
     val containsEmptyType   = maybeParameterTypes.exists(_.contains(ParameterDefaults.TypeFullName))
 
     (returnType, maybeParameterTypes) match {
-      case (Some(returnTpe), Some(parameterTpes)) if !containsEmptyType =>
-        composeMethodLikeSignature(returnTpe, parameterTpes)
+      case (Some(returnType), Some(parameterTypes)) if !containsEmptyType =>
+        composeMethodLikeSignature(returnType, parameterTypes)
 
       case _ => composeUnresolvedSignature(parameters.size)
     }
@@ -136,7 +140,16 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
     val signature         = lambdaMethodSignature(returnType, parameters)
     val lambdaFullName    = composeMethodFullName(enclosingTypeName, lambdaName, signature)
 
-    methodNode(lambdaExpr, lambdaName, "<lambda>", lambdaFullName, Some(signature), filename)
+    val genericSignature = binarySignatureCalculator.lambdaMethodBinarySignature(lambdaExpr)
+    methodNode(
+      lambdaExpr,
+      lambdaName,
+      "<lambda>",
+      lambdaFullName,
+      Some(signature),
+      filename,
+      genericSignature = Option(genericSignature)
+    )
   }
 
   private def createAndPushLambdaTypeDecl(
@@ -155,6 +168,7 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
         .fullName(lambdaMethodNode.fullName)
         .name(lambdaMethodNode.name)
         .inheritsFromTypeFullName(inheritsFromTypeFullName)
+        .genericSignature(binarySignatureCalculator.unspecifiedClassType)
     scope.addLocalDecl(Ast(lambdaTypeDeclNode))
 
     lambdaTypeDeclNode
@@ -207,8 +221,6 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
   }
 
   def astForLambdaExpr(expr: LambdaExpr, expectedType: ExpectedType): Ast = {
-    // TODO: lambda method scope can be static if no non-static captures are used
-    scope.pushMethodScope(NewMethod(), expectedType, isStatic = false)
 
     val lambdaMethodName = nextClosureName()
 
@@ -237,7 +249,6 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
     val lambdaTypeDeclNode = createAndPushLambdaTypeDecl(lambdaMethodNode, implementedInfo)
     BindingTable.createBindingNodes(diffGraph, lambdaTypeDeclNode, bindingTable)
 
-    scope.popMethodScope()
     Ast(methodRef)
   }
 
@@ -256,6 +267,7 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
   }
 
   private def defineCapturedVariables(
+    lambdaNode: LambdaExpr,
     lambdaMethodName: String,
     capturedVariables: Seq[ScopeVariable]
   ): Seq[(ClosureBindingEntry, NewLocal)] = {
@@ -266,7 +278,14 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
         val closureBindingNode = newClosureBindingNode(closureBindingId, name, EvaluationStrategies.BY_SHARING)
 
         val scopeVariable = variables.head
-        val capturedLocal = newLocalNode(scopeVariable.name, scopeVariable.typeFullName, Option(closureBindingId))
+        val capturedLocal = localNode(
+          lambdaNode,
+          scopeVariable.name,
+          scopeVariable.name,
+          scopeVariable.typeFullName,
+          Option(closureBindingId),
+          Option(scopeVariable.genericSignature)
+        )
         scope.enclosingBlock.foreach(_.addLocal(capturedLocal))
 
         ClosureBindingEntry(scopeVariable, closureBindingNode) -> capturedLocal
@@ -275,6 +294,7 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
   }
 
   private def astForLambdaBody(
+    lambdaExpr: LambdaExpr,
     lambdaMethodName: String,
     body: Statement,
     variablesInScope: Seq[ScopeVariable],
@@ -299,22 +319,16 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
       stmts.flatMap(_.nodes).collect {
         case i: NewIdentifier if outerScopeVariableNames.contains(i.name) => outerScopeVariableNames(i.name)
       }
-    val bindingsToLocals      = defineCapturedVariables(lambdaMethodName, capturedVariables)
+    val bindingsToLocals      = defineCapturedVariables(lambdaExpr, lambdaMethodName, capturedVariables)
     val capturedLocalAsts     = bindingsToLocals.map(_._2).map(Ast(_))
     val closureBindingEntries = bindingsToLocals.map(_._1)
+    val temporaryLocalAsts    = scope.enclosingMethod.map(_.getTemporaryLocals).getOrElse(Nil).map(Ast(_))
 
-    body match {
-      case block: BlockStmt =>
-        val blockAst = Ast(blockNode(block))
-          .withChildren(capturedLocalAsts)
-          .withChildren(stmts)
-        LambdaBody(blockAst, closureBindingEntries)
-      case stmt =>
-        val blockAst = Ast(blockNode(stmt))
-          .withChildren(capturedLocalAsts)
-          .withChildren(stmts)
-        LambdaBody(blockAst, closureBindingEntries)
-    }
+    val blockAst = Ast(blockNode(body))
+      .withChildren(temporaryLocalAsts)
+      .withChildren(capturedLocalAsts)
+      .withChildren(stmts)
+    LambdaBody(blockAst, closureBindingEntries)
   }
 
   private def genericParamTypeMapForLambda(expectedType: ExpectedType): ResolvedTypeParametersMap = {
@@ -382,7 +396,8 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
       }
 
     parameterNodes.foreach { paramNode =>
-      scope.enclosingMethod.get.addParameter(paramNode)
+      scope.enclosingMethod.get
+        .addParameter(paramNode, binarySignatureCalculator.unspecifiedClassType)
     }
 
     parameterNodes.map(Ast(_))

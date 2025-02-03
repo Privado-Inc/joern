@@ -4,7 +4,7 @@ object Versions {
   // Dont upgrade antlr to 4.10 or above since those versions require java 11 or higher which
   // causes problems upstreams.
   val antlr                  = "4.7.2"
-  val cask                   = "0.10.2"
+  val cask                   = "0.9.5" // 0.9.5 is actually the latest release, not 0.10.2 ¯\_(ツ)_/¯ - check the cask git commits...
   val catsCore               = "2.12.0"
   val catsEffect             = "3.5.4"
   val cfr                    = "0.152"
@@ -25,17 +25,17 @@ object Versions {
   val json4s                 = "4.0.7"
   val lombok                 = "1.18.32"
   val mavenArcheologist      = "0.0.10"
-  val phpParser              = "4.15.9"
+  val phpParser              = "4.15.10"
   val pPrint                 = "0.8.1"
   val reflection             = "0.10.2"
   val requests               = "0.8.0"
   val scalaParallel          = "1.0.4"
   val scalaParserCombinators = "2.4.0"
-  val scalaReplPP            = "0.3.8"
+  val scalaReplPP            = "0.3.9"
   val scalatest              = "3.2.18"
   val scopt                  = "4.1.0"
   val semverParser           = "0.0.6"
-  val soot                   = "4.5.0"
+  val soot                   = "4.6.0"
   val slf4j                  = "2.0.7"
   val log4j                  = "2.20.0"
   val upickle                = "4.0.2"
@@ -48,6 +48,7 @@ object Versions {
   val typeSafeConfig = "1.4.3"
   val versionSort    = "1.0.11"
   val zip4j          = "2.11.5"
+  val asm            = "9.7.1"
 
   private def parseVersion(key: String): String = {
     val versionRegexp = s""".*val $key[ ]+=[ ]?"(.*?)"""".r

@@ -62,8 +62,8 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) {
     case node: ReturnExpression                 => astForReturnExpression(node)
     case node: AccessModifier                   => astForSimpleIdentifier(node.toSimpleIdentifier)
     case node: ArrayPattern                     => astForArrayPattern(node)
-    case node: MatchVariable                    => astForMatchVariable(node)
     case node: DummyNode                        => Ast(node.node)
+    case node: DummyAst                         => node.ast
     case node: Unknown                          => astForUnknown(node)
     case x =>
       logger.warn(s"Unhandled expression of type ${x.getClass.getSimpleName}")
@@ -403,7 +403,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) {
       `return Bar.new`, lowered to
       `return {Bar tmp = Bar.<alloc>(); tmp.<init>(); tmp}`
      */
-    val block = blockNode(node)
+    val block = blockNode(node, node.text, Defines.Any)
     scope.pushNewScope(BlockScope(block))
 
     val tmpName     = this.tmpGen.fresh
@@ -520,6 +520,11 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) {
                     val asts = astsForStatement(x.multipleAssignment)
                     val call = callNode(node, code(node), op, op, DispatchTypes.STATIC_DISPATCH)
                     return callAst(call, asts :+ rhsAst)
+                  case x: MatchVariable =>
+                    handleVariableOccurrence(x.toSimpleIdentifier) // Create local variable under this scope
+                    val matchIden = astForExpression(x.toSimpleIdentifier)
+                    val call      = callNode(node, code(node), op, op, DispatchTypes.STATIC_DISPATCH)
+                    return callAst(call, matchIden :: rhsAst :: Nil)
                   case _ => astForExpression(node.lhs)
                 }
 
@@ -567,7 +572,8 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) {
       case EnsureClause(thenClause) => EnsureClause(reassign(lhs, op, thenClause, transform))(x.span)
       case ElsIfClause(condition, thenClause) =>
         ElsIfClause(condition, reassign(lhs, op, thenClause, transform))(x.span)
-      case ElseClause(thenClause) => ElseClause(reassign(lhs, op, thenClause, transform))(x.span)
+      case ElseClause(thenClause)  => ElseClause(reassign(lhs, op, thenClause, transform))(x.span)
+      case InClause(pattern, body) => InClause(pattern, reassign(lhs, op, body, transform))(x.span)
       case WhenClause(matchExpressions, matchSplatExpression, thenClause) =>
         WhenClause(matchExpressions, matchSplatExpression, reassign(lhs, op, thenClause, transform))(x.span)
     }
@@ -617,23 +623,13 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) {
   protected def astForArrayPattern(node: ArrayPattern): Ast = {
     val callNode_ =
       callNode(node, code(node), Operators.arrayInitializer, Operators.arrayInitializer, DispatchTypes.STATIC_DISPATCH)
-    val childrenAst = node.children.map(astForExpression)
+    val childrenAst = node.children.map {
+      case x: MatchVariable if scope.lookupVariable(x.text).isEmpty => handleVariableOccurrence(x.toSimpleIdentifier)
+      case x: MatchVariable                                         => astForExpression(x.toSimpleIdentifier)
+      case x                                                        => astForExpression(x)
+    }
 
     callAst(callNode_, childrenAst)
-  }
-
-  protected def astForMatchVariable(node: MatchVariable): Ast = {
-    val nodeCode = shortenCode(s"${RubyOperators.arrayPatternMatch}(${node.span.text})")
-    val callNode_ = callNode(
-      node,
-      nodeCode,
-      RubyOperators.arrayPatternMatch,
-      RubyOperators.arrayPatternMatch,
-      DispatchTypes.STATIC_DISPATCH
-    )
-    val identAst = astForExpression(SimpleIdentifier()(node.span))
-
-    callAst(callNode_, identAst :: Nil)
   }
 
   protected def astForMandatoryParameter(node: RubyExpression): Ast = handleVariableOccurrence(node)
@@ -709,23 +705,54 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   protected def astForArrayLiteral(node: ArrayLiteral): Ast = {
-    val arguments = if (node.text.startsWith("%")) {
-      val argumentsType =
-        if (node.isStringArray) getBuiltInType(Defines.String)
-        else getBuiltInType(Defines.Symbol)
-      node.elements.map {
-        case element @ StaticLiteral(_)               => StaticLiteral(argumentsType)(element.span)
-        case element @ DynamicLiteral(_, expressions) => DynamicLiteral(argumentsType, expressions)(element.span)
-        case element                                  => element
-      }
-    } else {
-      node.elements
+    val arrayInitCall = {
+      val base = SimpleIdentifier()(node.span.spanStart(Defines.Array))
+      astForExpression(SimpleObjectInstantiation(base, Nil)(node.span))
     }
-    val argumentAsts = arguments.map(astForExpression)
+    if (node.elements.isEmpty) {
+      arrayInitCall
+    } else {
+      val tmp = this.tmpGen.fresh
 
-    val call =
-      callNode(node, code(node), Operators.arrayInitializer, Operators.arrayInitializer, DispatchTypes.STATIC_DISPATCH)
-    callAst(call, argumentAsts)
+      def tmpRubyNode(tmpNode: Option[RubyExpression] = None) =
+        SimpleIdentifier()(tmpNode.map(_.span).getOrElse(node.span).spanStart(tmp))
+
+      def tmpAst(tmpNode: Option[RubyExpression] = None) = astForSimpleIdentifier(tmpRubyNode(tmpNode))
+
+      val block = blockNode(node, node.text, Defines.Any)
+      scope.pushNewScope(BlockScope(block))
+      val tmpLocal = NewLocal().name(tmp).code(tmp)
+      scope.addToScope(tmp, tmpLocal)
+
+      val arguments = if (node.text.startsWith("%")) {
+        val argumentsType =
+          if (node.isStringArray) getBuiltInType(Defines.String)
+          else getBuiltInType(Defines.Symbol)
+        node.elements.map {
+          case element @ StaticLiteral(_)               => StaticLiteral(argumentsType)(element.span)
+          case element @ DynamicLiteral(_, expressions) => DynamicLiteral(argumentsType, expressions)(element.span)
+          case element                                  => element
+        }
+      } else {
+        node.elements
+      }
+      val argumentAsts = arguments.zipWithIndex.map { case (arg, idx) =>
+        val indices     = StaticLiteral(getBuiltInType(Defines.Integer))(arg.span.spanStart(idx.toString)) :: Nil
+        val base        = tmpRubyNode(Option(arg))
+        val indexAccess = IndexAccess(base, indices)(arg.span.spanStart(s"${base.text}[$idx]"))
+        val assignment =
+          SingleAssignment(indexAccess, "=", arg)(arg.span.spanStart(s"${indexAccess.text} = ${arg.text}"))
+        astForExpression(assignment)
+      }
+
+      val assignment =
+        callNode(node, code(node), Operators.assignment, Operators.assignment, DispatchTypes.STATIC_DISPATCH)
+      val tmpAssignment = callAst(assignment, tmpAst() :: arrayInitCall :: Nil)
+      val tmpRetAst     = tmpAst(node.elements.lastOption)
+
+      scope.popScope()
+      blockAst(block, tmpAssignment +: argumentAsts :+ tmpRetAst)
+    }
   }
 
   protected def astForHashLiteral(node: HashLike): Ast = {

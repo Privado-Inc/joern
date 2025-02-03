@@ -34,6 +34,11 @@ Antlr4 / antlr4Version    := Versions.antlr
 Antlr4 / antlr4GenVisitor := true
 Antlr4 / javaSource       := (Compile / sourceManaged).value
 
+libraryDependencies ++= Seq(
+  "io.shiftleft"  %% "codepropertygraph" % Versions.cpg,
+  "org.scalatest" %% "scalatest"         % Versions.scalatest % Test
+)
+
 lazy val astGenVersion = settingKey[String]("`ruby_ast_gen` version")
 astGenVersion := appProperties.value.getString("rubysrc2cpg.ruby_ast_gen_version")
 
@@ -112,6 +117,10 @@ Compile / compile := ((Compile / compile) dependsOn joernTypeStubsDlTask).value
 
 Universal / packageName       := name.value
 Universal / topLevelDirectory := None
+
+/** write the astgen version to the manifest for downstream usage */
+Compile / packageBin / packageOptions +=
+  Package.ManifestAttributes(new java.util.jar.Attributes.Name("Ruby-AstGen-Version") -> astGenVersion.value)
 
 githubOwner      := "Privado-Inc"
 githubRepository := "joern"

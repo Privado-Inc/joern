@@ -1,22 +1,14 @@
 package io.joern.csharpsrc2cpg.astcreation
 
 import io.joern.csharpsrc2cpg.CSharpOperators
-import io.joern.csharpsrc2cpg.parser.DotNetNodeInfo
-import io.joern.csharpsrc2cpg.parser.ParserKeys
 import io.joern.csharpsrc2cpg.parser.DotNetJsonAst.*
-import io.joern.x2cpg.Ast
-import io.joern.x2cpg.ValidationMode
-import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, DispatchTypes, Operators}
-import io.shiftleft.codepropertygraph.generated.nodes.{
-  NewControlStructure,
-  NewFieldIdentifier,
-  NewIdentifier,
-  NewLiteral,
-  NewLocal
-}
+import io.joern.csharpsrc2cpg.parser.{DotNetNodeInfo, ParserKeys}
+import io.joern.x2cpg.{Ast, ValidationMode}
+import io.joern.x2cpg.utils.NodeBuilders.newModifierNode
+import io.shiftleft.codepropertygraph.generated.nodes.{NewFieldIdentifier, NewIdentifier, NewLiteral, NewLocal}
+import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, DispatchTypes, ModifierTypes, Operators}
 
 import scala.::
-import scala.util.Success
 import scala.util.Try
 
 trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
@@ -280,8 +272,14 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
 
   }
 
-  protected def astForGlobalStatement(globalStatement: DotNetNodeInfo): Seq[Ast] = {
-    astForNode(globalStatement.json(ParserKeys.Statement))
+  private def astForGlobalStatement(globalStatement: DotNetNodeInfo): Seq[Ast] = {
+    val stmtNodeInfo = createDotNetNodeInfo(globalStatement.json(ParserKeys.Statement))
+    stmtNodeInfo.node match
+      // Denotes a top-level method declaration. These shall be added to the fictitious "main" created
+      // by `astForTopLevelStatements`.
+      case LocalFunctionStatement =>
+        astForMethodDeclaration(stmtNodeInfo, extraModifiers = newModifierNode(ModifierTypes.STATIC) :: Nil)
+      case _ => astForNode(stmtNodeInfo)
   }
 
   private def astForJumpStatement(jumpStmt: DotNetNodeInfo): Seq[Ast] = {
@@ -317,20 +315,12 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
       case Some(_expr: ujson.Obj) => astForNode(createDotNetNodeInfo(_expr))
       case _                      => Seq.empty[Ast]
     }
-    val throwCall = createCallNodeForOperator(
-      throwStmt,
-      CSharpOperators.throws,
-      typeFullName = Option(getTypeFullNameFromAstNode(argsAst))
-    )
+    val throwCall = operatorCallNode(throwStmt, CSharpOperators.throws, Some(getTypeFullNameFromAstNode(argsAst)))
     Seq(callAst(throwCall, argsAst))
   }
 
   protected def astForTryStatement(tryStmt: DotNetNodeInfo): Seq[Ast] = {
-    val tryNode = NewControlStructure()
-      .controlStructureType(ControlStructureTypes.TRY)
-      .code(code(tryStmt))
-      .lineNumber(line(tryStmt))
-      .columnNumber(column(tryStmt))
+    val tryNode          = controlStructureNode(tryStmt, ControlStructureTypes.TRY, code(tryStmt))
     val tryBlockNodeInfo = createDotNetNodeInfo(tryStmt.json(ParserKeys.Block))
     val tryAst           = astForBlock(tryBlockNodeInfo, Option(code(tryBlockNodeInfo)))
 
@@ -338,31 +328,21 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
       .map(_.arr.toSeq)
       .map { c =>
         c.map { value =>
-          val nodeInfo = createDotNetNodeInfo(value)
-          val catchNode = NewControlStructure()
-            .controlStructureType(ControlStructureTypes.CATCH)
-            .code(code(nodeInfo))
-            .lineNumber(line(nodeInfo))
-            .columnNumber(column(nodeInfo))
-          val children = astForNode(nodeInfo)
+          val nodeInfo  = createDotNetNodeInfo(value)
+          val catchNode = controlStructureNode(nodeInfo, ControlStructureTypes.CATCH, code(nodeInfo))
+          val children  = astForNode(nodeInfo)
           Ast(catchNode).withChildren(children)
         }
       }
       .getOrElse(Seq.empty)
 
-    val finallyAst = Try(createDotNetNodeInfo(tryStmt.json(ParserKeys.Finally))) match {
-      case Success(finallyNodeInfo) =>
-        val finallyNode = NewControlStructure()
-          .controlStructureType(ControlStructureTypes.FINALLY)
-          .code(code(finallyNodeInfo))
-          .lineNumber(line(finallyNodeInfo))
-          .columnNumber(column(finallyNodeInfo))
-        val finallyClauseAst = astForFinallyClause(finallyNodeInfo)
-        Ast(finallyNode).withChildren(finallyClauseAst)
-      case _ => Ast()
+    val finallyAst = Try(createDotNetNodeInfo(tryStmt.json(ParserKeys.Finally))).toOption.map { finallyNodeInfo =>
+      val finallyNode      = controlStructureNode(finallyNodeInfo, ControlStructureTypes.FINALLY, code(finallyNodeInfo))
+      val finallyClauseAst = astForFinallyClause(finallyNodeInfo)
+      Ast(finallyNode).withChildren(finallyClauseAst)
     }
 
-    val controlStructureAst = tryCatchAst(tryNode, tryAst, catchAsts, Option(finallyAst))
+    val controlStructureAst = tryCatchAst(tryNode, tryAst, catchAsts, finallyAst)
     Seq(controlStructureAst)
   }
 
@@ -377,13 +357,11 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
     * Thus, this is lowered as a try-finally, with finally making a call to `Dispose` on the declared variable.
     */
   private def astForUsingStatement(usingStmt: DotNetNodeInfo): Seq[Ast] = {
-    val tryNode = controlStructureNode(usingStmt, ControlStructureTypes.TRY, code(usingStmt))
-    val declAst = Try(createDotNetNodeInfo(usingStmt.json(ParserKeys.Declaration))) match {
-      case Success(declNodevalue) => astForNode(declNodevalue)
-      case _                      => Seq.empty[Ast]
-    }
+    val tryNode     = controlStructureNode(usingStmt, ControlStructureTypes.TRY, code(usingStmt))
     val tryNodeInfo = createDotNetNodeInfo(usingStmt.json(ParserKeys.Statement))
     val tryAst      = astForBlock(tryNodeInfo, Option("try"))
+    val declNode    = createDotNetNodeInfo(usingStmt.json(ParserKeys.Declaration))
+    val declAst     = astForNode(declNode)
 
     val finallyAst = declAst.flatMap(_.nodes).collectFirst { case x: NewIdentifier => x.copy }.map { id =>
       val callCode = s"${id.name}.Dispose()"

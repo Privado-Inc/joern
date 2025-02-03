@@ -8,6 +8,7 @@ import io.shiftleft.codepropertygraph.generated.nodes.{NewImport, NewMethod, New
 
 import scala.collection.mutable
 import io.joern.javasrc2cpg.astcreation.ExpectedType
+import io.joern.javasrc2cpg.scope.TypeType.{ReferenceTypeType, TypeVariableType}
 import io.joern.javasrc2cpg.util.MultiBindingTableAdapterForJavaparser.JavaparserBindingDeclType
 import io.shiftleft.codepropertygraph.generated.nodes.NewMethodParameterIn
 import io.shiftleft.codepropertygraph.generated.nodes.NewLocal
@@ -19,15 +20,36 @@ import io.joern.x2cpg.{Ast, ValidationMode}
 import java.util
 import scala.jdk.CollectionConverters.*
 
+enum TypeType:
+  case ReferenceTypeType, TypeVariableType
+
 trait JavaScopeElement(disableTypeFallback: Boolean) {
   private val variables                        = mutable.Map[String, ScopeVariable]()
   private val types                            = mutable.Map[String, ScopeType]()
   private var wildcardImports: WildcardImports = NoWildcard
+  // TODO: This is almost a duplicate of types, but not quite since this stores type variables and local types
+  //  with original names. See if there's a way to combine them
+  private val declaredTypeTypes = mutable.Map[String, TypeType]()
 
   def isStatic: Boolean
 
   private[JavaScopeElement] def addVariableToScope(variable: ScopeVariable): Unit = {
     variables.put(variable.name, variable)
+  }
+
+  def addDeclaredTypeType(typeSimpleName: String, isTypeVariable: Boolean): Unit = {
+    val typeType =
+      if (isTypeVariable)
+        TypeVariableType
+      else {
+        ReferenceTypeType
+      }
+
+    declaredTypeTypes.put(typeSimpleName, typeType)
+  }
+
+  def getDeclaredTypeType(typeSimpleName: String): Option[TypeType] = {
+    declaredTypeTypes.get(typeSimpleName)
   }
 
   def lookupVariable(name: String): VariableLookupResult = {
@@ -47,7 +69,7 @@ trait JavaScopeElement(disableTypeFallback: Boolean) {
 
   def getNameWithWildcardPrefix(name: String): Option[ScopeType] = {
     wildcardImports match {
-      case SingleWildcard(prefix) => Some(ScopeTopLevelType(s"$prefix.$name"))
+      case SingleWildcard(prefix) => Some(ScopeTopLevelType(s"$prefix.$name", name))
 
       case _ => None
     }
@@ -71,7 +93,8 @@ case class PatternVariableInfo(
   typeVariableLocal: NewLocal,
   typeVariableInitializer: Ast,
   localAddedToAst: Boolean = false,
-  initializerAddedToAst: Boolean = false
+  initializerAddedToAst: Boolean = false,
+  index: Int
 )
 
 object JavaScopeElement {
@@ -113,9 +136,11 @@ object JavaScopeElement {
     private val temporaryLocals = mutable.ListBuffer[NewLocal]()
     private val patternVariableInfoIdentityMap: mutable.Map[TypePatternExpr, PatternVariableInfo] =
       new util.IdentityHashMap[TypePatternExpr, PatternVariableInfo]().asScala
+    // The insertion order should be preserved to ensure stable results when getting unadded variable asts
+    private var patternVariableIndex = 0
 
-    def addParameter(parameter: NewMethodParameterIn): Unit = {
-      addVariableToScope(ScopeParameter(parameter))
+    def addParameter(parameter: NewMethodParameterIn, genericSignature: String): Unit = {
+      addVariableToScope(ScopeParameter(parameter, genericSignature))
     }
 
     def addTemporaryLocal(local: NewLocal): Unit = {
@@ -131,8 +156,9 @@ object JavaScopeElement {
     ): Unit = {
       patternVariableInfoIdentityMap.put(
         typePatternExpr,
-        PatternVariableInfo(typePatternExpr, typeVariableLocal, typeVariableInitializer)
+        PatternVariableInfo(typePatternExpr, typeVariableLocal, typeVariableInitializer, index = patternVariableIndex)
       )
+      patternVariableIndex += 1
     }
 
     def getPatternVariableInfo(typePatternExpr: TypePatternExpr): Option[PatternVariableInfo] = {
@@ -140,20 +166,21 @@ object JavaScopeElement {
     }
 
     def registerPatternVariableInitializerToBeAddedToGraph(typePatternExpr: TypePatternExpr): Unit = {
-      patternVariableInfoIdentityMap.get(typePatternExpr).foreach { case patternVariableInfo =>
-        patternVariableInfoIdentityMap.put(typePatternExpr, patternVariableInfo.copy(initializerAddedToAst = true))
+      patternVariableInfoIdentityMap.get(typePatternExpr).foreach { patternVariableInfo =>
+        patternVariableInfoIdentityMap
+          .put(typePatternExpr, patternVariableInfo.copy(initializerAddedToAst = true))
       }
     }
 
     def registerPatternVariableLocalToBeAddedToGraph(typePatternExpr: TypePatternExpr): Unit = {
-      patternVariableInfoIdentityMap.get(typePatternExpr).foreach { case patternVariableInfo =>
+      patternVariableInfoIdentityMap.get(typePatternExpr).foreach { patternVariableInfo =>
         patternVariableInfoIdentityMap.put(typePatternExpr, patternVariableInfo.copy(localAddedToAst = true))
       }
     }
 
     def getUnaddedPatternVariableAstsAndMarkAdded(): List[Ast] = {
       val result = mutable.ListBuffer[Ast]()
-      patternVariableInfoIdentityMap.values.foreach { patternInfo =>
+      patternVariableInfoIdentityMap.values.toArray.sortBy(_.index).foreach { patternInfo =>
         if (!patternInfo.localAddedToAst) {
           result.addOne(Ast(patternInfo.typeVariableLocal))
           registerPatternVariableLocalToBeAddedToGraph(patternInfo.typePatternExpr)
@@ -176,6 +203,7 @@ object JavaScopeElement {
     override val isStatic: Boolean,
     private[scope] val capturedVariables: Map[String, CapturedVariable],
     outerClassType: Option[String],
+    outerClassGenericSignature: Option[String],
     val declaredMethodNames: Set[String],
     val recordParameters: List[Parameter]
   )(implicit disableTypeFallback: Boolean)
@@ -219,7 +247,9 @@ object JavaScopeElement {
 
     def getUsedCaptures(): List[ScopeVariable] = {
       val outerScope = outerClassType.map(typ =>
-        ScopeLocal(NewLocal().name(NameConstants.OuterClass).typeFullName(typ).code(NameConstants.OuterClass))
+        val localNode = NewLocal().name(NameConstants.OuterClass).typeFullName(typ).code(NameConstants.OuterClass)
+        outerClassGenericSignature.foreach(localNode.genericSignature(_))
+        ScopeLocal(localNode)
       )
 
       val sortedUsedCaptures = usedCaptureParams.toList.sortBy(_.name)

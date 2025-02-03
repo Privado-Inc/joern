@@ -99,6 +99,10 @@ stage := Def
   .andFinally(System.setProperty("ALL_PLATFORMS", "FALSE"))
   .value
 
+/** write the astgen version to the manifest for downstream usage */
+Compile / packageBin / packageOptions +=
+  Package.ManifestAttributes(new java.util.jar.Attributes.Name("Go-AstGen-Version") -> goAstGenVersion.value)
+
 githubOwner      := "Privado-Inc"
 githubRepository := "joern"
 credentials +=

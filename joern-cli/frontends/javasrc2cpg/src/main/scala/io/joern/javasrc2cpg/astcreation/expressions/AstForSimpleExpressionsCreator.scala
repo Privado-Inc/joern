@@ -170,7 +170,7 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
       .typePatternExprsExposedToChild(expr.getRight)
       .asScala
       .flatMap(pattern => scope.enclosingMethod.flatMap(_.getPatternVariableInfo(pattern)))
-      .foreach { case PatternVariableInfo(pattern, local, _, _, _) =>
+      .foreach { case PatternVariableInfo(pattern, local, _, _, _, _) =>
         scope.enclosingBlock.foreach(_.addPatternLocal(local, pattern))
       }
 
@@ -291,34 +291,6 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
     astsForExpression(expr.getInner, expectedType)
   }
 
-  private[expressions] def createFieldAccessAst(
-    base: Ast,
-    fieldAccessCode: String,
-    fieldAccessLineNo: Option[Int],
-    fieldAccessColumnNo: Option[Int],
-    fieldName: String,
-    fieldTypeFullName: String,
-    fieldLineNo: Option[Int],
-    fieldColumnNo: Option[Int]
-  ): Ast = {
-    val callNode =
-      newOperatorCallNode(
-        Operators.fieldAccess,
-        fieldAccessCode,
-        Some(fieldTypeFullName),
-        fieldAccessLineNo,
-        fieldAccessColumnNo
-      )
-
-    val fieldIdentifierNode = NewFieldIdentifier()
-      .code(fieldName)
-      .canonicalName(fieldName)
-      .lineNumber(fieldLineNo)
-      .columnNumber(fieldColumnNo)
-
-    callAst(callNode, Seq(base, Ast(fieldIdentifierNode)))
-  }
-
   private[expressions] def astForFieldAccessExpr(expr: FieldAccessExpr, expectedType: ExpectedType): Ast = {
     val typeFullName =
       expressionReturnTypeFullName(expr)
@@ -329,7 +301,7 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
     val fieldIdentifier = expr.getName
     val identifierAsts  = astsForExpression(expr.getScope, ExpectedType.empty)
 
-    createFieldAccessAst(
+    fieldAccessAst(
       identifierAsts.head,
       expr.toString,
       line(expr),
@@ -346,7 +318,7 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
     val lhsAst = astsForExpression(expr.getExpression, ExpectedType.empty).head
     expr.getPattern.toScala
       .map { patternExpression =>
-        astForInstanceOfWithPattern(expr.getExpression, lhsAst, patternExpression)
+        instanceOfAstForPattern(patternExpression, lhsAst)
       }
       .getOrElse {
         val booleanTypeFullName = Some(TypeConstants.Boolean)

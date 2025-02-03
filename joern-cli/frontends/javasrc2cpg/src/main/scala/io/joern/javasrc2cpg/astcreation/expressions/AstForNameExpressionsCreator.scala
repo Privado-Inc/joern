@@ -58,7 +58,7 @@ trait AstForNameExpressionsCreator { this: AstCreator =>
 
       case SimpleVariable(ScopePatternVariable(localNode, typePatternExpr)) =>
         scope.enclosingMethod.flatMap(_.getPatternVariableInfo(typePatternExpr)) match {
-          case Some(PatternVariableInfo(typePatternExpr, _, initializerAst, _, false)) =>
+          case Some(PatternVariableInfo(typePatternExpr, _, initializerAst, _, false, _)) =>
             scope.enclosingMethod.foreach(_.registerPatternVariableInitializerToBeAddedToGraph(typePatternExpr))
             initializerAst
           case _ =>
@@ -99,9 +99,9 @@ trait AstForNameExpressionsCreator { this: AstCreator =>
       } else {
         newIdentifierNode(NameConstants.This, baseTypeDeclFullName)
       }
-    createFieldAccessAst(
+    fieldAccessAst(
       Ast(base),
-      s"${base.code}.${fieldName}",
+      s"${base.code}.$fieldName",
       line(node),
       column(node),
       fieldName,

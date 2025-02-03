@@ -2,12 +2,10 @@ package io.joern.x2cpg
 
 import io.joern.x2cpg.passes.frontend.MetaDataPass
 import io.joern.x2cpg.utils.IntervalKeyPool
-import io.joern.x2cpg.utils.NodeBuilders.newMethodReturnNode
-import io.shiftleft.codepropertygraph.generated.Cpg
+import io.joern.x2cpg.utils.NodeBuilders.{newFieldIdentifierNode, newMethodReturnNode, newOperatorCallNode}
+import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, Cpg, DiffGraphBuilder, ModifierTypes, Operators}
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, ModifierTypes}
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
-import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: ValidationMode) {
   val diffGraph: DiffGraphBuilder = Cpg.newDiffGraphBuilder
@@ -200,6 +198,13 @@ abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: V
   ): Ast =
     forAst(forNode, locals, initAsts, conditionAsts, updateAsts, Seq(bodyAst))
 
+  private def setOrderExplicitly(ast: Ast, order: Int): Ast = {
+    ast.root match {
+      case Some(value: ExpressionNew) => value.order(order); ast
+      case _                          => ast
+    }
+  }
+
   def forAst(
     forNode: NewControlStructure,
     locals: Seq[Ast],
@@ -208,12 +213,15 @@ abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: V
     updateAsts: Seq[Ast],
     bodyAsts: Seq[Ast]
   ): Ast = {
-    val lineNumber = forNode.lineNumber
+    val lineNumber  = forNode.lineNumber
+    val numOfLocals = locals.size
+    // for the expected orders see CfgCreator.cfgForForStatement
+    if (bodyAsts.nonEmpty) setOrderExplicitly(bodyAsts.head, numOfLocals + 4)
     Ast(forNode)
       .withChildren(locals)
-      .withChild(wrapMultipleInBlock(initAsts, lineNumber))
-      .withChild(wrapMultipleInBlock(conditionAsts, lineNumber))
-      .withChild(wrapMultipleInBlock(updateAsts, lineNumber))
+      .withChild(setOrderExplicitly(wrapMultipleInBlock(initAsts, lineNumber), numOfLocals + 1))
+      .withChild(setOrderExplicitly(wrapMultipleInBlock(conditionAsts, lineNumber), numOfLocals + 2))
+      .withChild(setOrderExplicitly(wrapMultipleInBlock(updateAsts, lineNumber), numOfLocals + 3))
       .withChildren(bodyAsts)
       .withConditionEdges(forNode, conditionAsts.flatMap(_.root).toList)
   }
@@ -322,6 +330,21 @@ abstract class AstCreatorBase(filename: String)(implicit withSchemaValidation: V
           currIndex = currIndex + 1
       }
     }
+  }
+
+  def fieldAccessAst(
+    base: Ast,
+    code: String,
+    lineNo: Option[Int],
+    columnNo: Option[Int],
+    fieldName: String,
+    fieldTypeFullName: String,
+    fieldLineNo: Option[Int],
+    fieldColumnNo: Option[Int]
+  ): Ast = {
+    val callNode = newOperatorCallNode(Operators.fieldAccess, code, Some(fieldTypeFullName), lineNo, columnNo)
+    val fieldIdentifierNode = newFieldIdentifierNode(fieldName, fieldLineNo, fieldColumnNo)
+    callAst(callNode, Seq(base, Ast(fieldIdentifierNode)))
   }
 
   def withIndex[T, X](nodes: Seq[T])(f: (T, Int) => X): Seq[X] =
