@@ -3,9 +3,10 @@ package io.joern.c2cpg.passes.ast
 import io.joern.c2cpg.parser.FileDefaults
 import io.joern.c2cpg.testfixtures.C2CpgSuite
 import io.shiftleft.codepropertygraph.generated.ControlStructureTypes
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
+import org.apache.commons.lang3.StringUtils
 
-class ControlStructureTests extends C2CpgSuite(FileDefaults.CPP_EXT) {
+class ControlStructureTests extends C2CpgSuite(FileDefaults.CppExt) {
 
   "ControlStructureTest1" should {
     val cpg = code("""
@@ -50,7 +51,9 @@ class ControlStructureTests extends C2CpgSuite(FileDefaults.CPP_EXT) {
     }
 
     "should identify `switch` block" in {
-      cpg.method("foo").switchBlock.code.l shouldBe List("switch(y)")
+      cpg.method("foo").switchBlock.code.map(StringUtils.normalizeSpace).l shouldBe List(
+        "switch(y) { case 1: printf(\"bar\\n\"); break; default: }"
+      )
     }
 
     "should identify `for` block" in {
@@ -89,26 +92,26 @@ class ControlStructureTests extends C2CpgSuite(FileDefaults.CPP_EXT) {
     "should be correct for for-loop with multiple assignments" in {
       inside(cpg.controlStructure.l) { case List(forLoop) =>
         forLoop.controlStructureType shouldBe ControlStructureTypes.FOR
-        inside(forLoop.astChildren.order(1).l) { case List(assignmentBlock) =>
-          inside(assignmentBlock.astChildren.l) { case List(localX, localY, assignmentX, assignmentY) =>
-            localX.code shouldBe "int x"
-            localX.order shouldBe 1
-            localY.code shouldBe "int y"
-            localY.order shouldBe 2
+        inside(forLoop.astChildren.isLocal.l) { case List(localX, localY) =>
+          localX.code shouldBe "int x"
+          localY.code shouldBe "int y"
+        }
+        inside(forLoop.astChildren.order(3).l) { case List(assignmentBlock) =>
+          inside(assignmentBlock.astChildren.l) { case List(assignmentX, assignmentY) =>
             assignmentX.code shouldBe "x=1"
-            assignmentX.order shouldBe 3
+            assignmentX.order shouldBe 1
             assignmentY.code shouldBe "y=1"
-            assignmentY.order shouldBe 4
+            assignmentY.order shouldBe 2
           }
         }
         inside(forLoop.condition.l) { case List(x) =>
           x.code shouldBe "x"
-          x.order shouldBe 2
+          x.order shouldBe 4
         }
-        inside(forLoop.astChildren.order(3).l) { case List(updateX) =>
+        inside(forLoop.astChildren.order(5).l) { case List(updateX) =>
           updateX.code shouldBe "--x"
         }
-        inside(forLoop.astChildren.order(4).l) { case List(loopBody) =>
+        inside(forLoop.astChildren.order(6).l) { case List(loopBody) =>
           loopBody.astChildren.isCall.head.code shouldBe "bar()"
         }
       }

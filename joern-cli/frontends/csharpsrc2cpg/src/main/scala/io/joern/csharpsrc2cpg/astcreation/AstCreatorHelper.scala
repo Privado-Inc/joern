@@ -2,15 +2,17 @@ package io.joern.csharpsrc2cpg.astcreation
 
 import io.joern.csharpsrc2cpg.parser.DotNetJsonAst.*
 import io.joern.csharpsrc2cpg.parser.{DotNetJsonAst, DotNetNodeInfo, ParserKeys}
+import io.joern.csharpsrc2cpg.utils.Utils.{withoutSignature}
 import io.joern.csharpsrc2cpg.{CSharpDefines, Constants, astcreation}
+import io.joern.x2cpg.utils.IntervalKeyPool
 import io.joern.x2cpg.{Ast, Defines, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators, PropertyNames}
-import io.shiftleft.passes.IntervalKeyPool
+import io.shiftleft.codepropertygraph.generated.{Operators, PropertyNames}
 import ujson.Value
 
 import scala.annotation.tailrec
 import scala.util.{Failure, Success, Try}
+
 trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
   private val anonymousTypeKeyPool = new IntervalKeyPool(first = 0, last = Long.MaxValue)
@@ -29,15 +31,6 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
       }
   }
 
-  def createCallNodeForOperator(
-    node: DotNetNodeInfo,
-    operatorMethod: String,
-    signature: Option[String] = None,
-    typeFullName: Option[String] = None
-  ): NewCall = {
-    callNode(node, node.code, operatorMethod, operatorMethod, DispatchTypes.STATIC_DISPATCH, signature, typeFullName)
-  }
-
   protected def notHandledYet(node: DotNetNodeInfo): Seq[Ast] = {
     val text =
       s"""Node type '${node.node}' not handled yet!
@@ -52,7 +45,7 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
 
   protected def astFullName(node: DotNetNodeInfo): String = {
     scope.surroundingScopeFullName match
-      case Some(fullName) => s"$fullName.${nameFromNode(node)}"
+      case Some(fullName) => s"${withoutSignature(fullName)}.${nameFromNode(node)}"
       case _              => nameFromNode(node)
   }
 
@@ -83,7 +76,7 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
       case x: NewMethodParameterIn =>
         identifierNode(dotNetNode.orNull, x.name, x.code, x.typeFullName, x.dynamicTypeHintFullName)
       case x =>
-        logger.warn(s"Unhandled declaration type '${x.label()}' for ${x.name}")
+        logger.warn(s"Unhandled declaration type '${x.label}' for ${x.name}")
         identifierNode(dotNetNode.orNull, x.name, x.name, Defines.Any)
   }
 
@@ -196,7 +189,7 @@ object AstCreatorHelper {
       case SimpleMemberAccessExpression | MemberBindingExpression | SuppressNullableWarningExpression | Attribute =>
         nameFromIdentifier(createDotNetNodeInfo(node.json(ParserKeys.Name)))
       case ObjectCreationExpression | CastExpression => nameFromNode(createDotNetNodeInfo(node.json(ParserKeys.Type)))
-      case ThisExpression                            => "this"
+      case ThisExpression                            => Constants.This
       case _                                         => "<empty>"
   }
 
@@ -279,6 +272,6 @@ object BuiltinTypes {
     String  -> "System.String",
     Dynamic -> "System.Object",
     Null    -> Null,
-    Void    -> Void
+    Void    -> "System.Void"
   )
 }
