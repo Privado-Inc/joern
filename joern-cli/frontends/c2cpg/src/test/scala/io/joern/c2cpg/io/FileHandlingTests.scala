@@ -3,6 +3,8 @@ package io.joern.c2cpg.io
 import better.files.File
 import io.joern.c2cpg.parser.FileDefaults
 import io.joern.c2cpg.testfixtures.CDefaultTestCpg
+import io.joern.dataflowengineoss.DefaultSemantics
+import io.joern.dataflowengineoss.semanticsloader.NoSemantics
 import io.joern.x2cpg.testfixtures.Code2CpgFixture
 import io.shiftleft.semanticcpg.language.*
 
@@ -17,7 +19,7 @@ object FileHandlingTests {
 
 class FileHandlingTests
     extends Code2CpgFixture(() =>
-      new CDefaultTestCpg(FileDefaults.C_EXT) {
+      new CDefaultTestCpg(FileDefaults.CExt) {
         override def codeFilePreProcessing(codeFile: Path): Unit = {
           if (codeFile.toString.endsWith(FileHandlingTests.brokenLinkedFile)) {
             File(codeFile).delete().symbolicLinkTo(File("does/not/exist.c"))
@@ -36,7 +38,7 @@ class FileHandlingTests
         }
       }
         .withOssDataflow(false)
-        .withExtraFlows(List.empty)
+        .withSemantics(DefaultSemantics())
         .withPostProcessingPasses(false)
     ) {
 

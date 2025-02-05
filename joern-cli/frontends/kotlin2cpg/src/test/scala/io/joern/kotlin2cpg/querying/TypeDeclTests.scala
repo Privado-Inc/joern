@@ -467,11 +467,11 @@ class TypeDeclTests extends KotlinCode2CpgFixture(withOssDataflow = true) {
       val List(anonymousObjTypeDecl) = cpg.typeDecl("anonymous_obj").l
 
       anonymousObjTypeDecl.name shouldBe "anonymous_obj"
-      anonymousObjTypeDecl.fullName shouldBe "au.gov.health.covidsafe.bluetooth.gatt.GattServer.gattServerCallback$object$1"
+      anonymousObjTypeDecl.fullName shouldBe "au.gov.health.covidsafe.bluetooth.gatt.GattServer.gattServerCallback.object$0"
 
       val constructorMethod = anonymousObjTypeDecl.astChildren.isMethod.l
       constructorMethod.fullName.l shouldBe List(
-        "au.gov.health.covidsafe.bluetooth.gatt.GattServer.gattServerCallback$object$1.<init>:void()"
+        "au.gov.health.covidsafe.bluetooth.gatt.GattServer.gattServerCallback.object$0.<init>:void()"
       )
       constructorMethod.ast.isParameter.size shouldBe 1
       constructorMethod.ast.count(_.isInstanceOf[MethodReturn]) shouldBe 1
@@ -482,15 +482,32 @@ class TypeDeclTests extends KotlinCode2CpgFixture(withOssDataflow = true) {
       val List(innerClassTypeDecl) = cpg.typeDecl("ReadRequestEncryptedPayload").l
 
       innerClassTypeDecl.name shouldBe "ReadRequestEncryptedPayload"
-      innerClassTypeDecl.fullName shouldBe "au.gov.health.covidsafe.bluetooth.gatt.GattServer.gattServerCallback$object$1.ReadRequestEncryptedPayload"
+      innerClassTypeDecl.fullName shouldBe "au.gov.health.covidsafe.bluetooth.gatt.GattServer.gattServerCallback.object$0$ReadRequestEncryptedPayload"
 
       val constructorMethod = innerClassTypeDecl.astChildren.isMethod.l
       constructorMethod.fullName.l shouldBe List(
-        "au.gov.health.covidsafe.bluetooth.gatt.GattServer.gattServerCallback.<init>:void(long,java.lang.String,java.lang.String)"
+        "au.gov.health.covidsafe.bluetooth.gatt.GattServer.gattServerCallback.object$0$ReadRequestEncryptedPayload.<init>:void(long,java.lang.String,java.lang.String)"
       )
       constructorMethod.ast.isParameter.size shouldBe 4
       constructorMethod.ast.count(_.isInstanceOf[MethodReturn]) shouldBe 1
 
+    }
+  }
+
+  "CPG for inheritance having generics" should {
+    val cpg = code("""
+        |import org.apache.flink.streaming.api.functions.sink.RichSinkFunction
+        |
+        |class ApiSink<T>(private val apiUrl: String) : RichSinkFunction<T>() {
+        |    private var httpClient: CloseableHttpClient? = null
+        |
+        |}
+        |""".stripMargin)
+
+    "resolve base types" in {
+      cpg.typeDecl.name("ApiSink").inheritsFromTypeFullName.l shouldBe List(
+        "org.apache.flink.streaming.api.functions.sink.RichSinkFunction"
+      )
     }
   }
 }

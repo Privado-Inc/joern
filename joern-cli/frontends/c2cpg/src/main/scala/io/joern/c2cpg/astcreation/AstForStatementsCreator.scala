@@ -16,6 +16,7 @@ import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPASTNamespaceAlias
 import org.eclipse.cdt.internal.core.model.ASTStringUtil
 
 import java.nio.file.Paths
+import scala.collection.mutable
 
 trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
@@ -54,11 +55,11 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
             val name          = Operators.alloc
             val tpe           = registerType(typeFor(d))
             val codeString    = code(d)
-            val allocCallNode = callNode(d, code(d), name, name, DispatchTypes.STATIC_DISPATCH, None, Some(tpe))
+            val allocCallNode = callNode(d, codeString, name, name, DispatchTypes.STATIC_DISPATCH, None, Some(tpe))
             val allocCallAst  = callAst(allocCallNode, d.getArrayModifiers.toIndexedSeq.map(astForNode))
             val operatorName  = Operators.assignment
             val assignmentCallNode =
-              callNode(d, code(d), operatorName, operatorName, DispatchTypes.STATIC_DISPATCH, None, Some(tpe))
+              callNode(d, codeString, operatorName, operatorName, DispatchTypes.STATIC_DISPATCH, None, Some(tpe))
             val left = astForNode(d.getName)
             callAst(assignmentCallNode, List(left, allocCallAst))
           }
@@ -191,7 +192,8 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) { t
     // We only handle un-parsable macros here for now
     val isFromMacroExpansion = statement.getProblem.getNodeLocations.exists(_.isInstanceOf[IASTMacroExpansionLocation])
     val asts = if (isFromMacroExpansion) {
-      new CdtParser(config).parse(statement.getRawSignature, Paths.get(statement.getContainingFilename)) match
+      new CdtParser(config, mutable.LinkedHashSet.empty)
+        .parse(statement.getRawSignature, Paths.get(statement.getContainingFilename)) match
         case Some(node) => node.getDeclarations.toIndexedSeq.flatMap(astsForDeclaration)
         case None       => Seq.empty
     } else {

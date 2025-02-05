@@ -87,7 +87,7 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
     Option(cdtAst.flattenLocationsToFile(node.getNodeLocations.lastOption.toArray)).map(_.asFileLocation())
 
   protected def fileName(node: IASTNode): String = {
-    val path = nullSafeFileLocation(node).map(_.getFileName).getOrElse(filename)
+    val path = Try(node.getContainingFilename).getOrElse(filename)
     SourceFiles.toRelativePath(path, config.inputPath)
   }
 
@@ -330,7 +330,7 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
     }
     if (pointers.isEmpty) { s"$tpe$arr" }
     else {
-      val refs = "*" * (pointers.length - pointers.count(_.isInstanceOf[ICPPASTReferenceOperator]))
+      val refs = pointers.map(_.getRawSignature).mkString("")
       s"$tpe$arr$refs".strip()
     }
   }

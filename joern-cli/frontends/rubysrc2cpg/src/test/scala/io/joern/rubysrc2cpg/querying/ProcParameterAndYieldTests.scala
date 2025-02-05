@@ -1,5 +1,6 @@
 package io.joern.rubysrc2cpg.querying
 
+import io.joern.rubysrc2cpg.passes.Defines.RubyOperators
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
@@ -93,4 +94,56 @@ class ProcParameterAndYieldTests extends RubyCode2CpgFixture with Inspectors {
     })
   }
 
+  "A Yield statement with multiple arguments" in {
+    val cpg = code("""
+        |def foo
+        | yield 1, :z => 2
+        |end
+        |""".stripMargin)
+
+    inside(cpg.method.name("foo").call.nameExact("call").l) {
+      case yieldCall :: Nil =>
+        inside(yieldCall.argument.l) {
+          case (base: Identifier) :: (oneLiteral: Literal) :: (twoLiteral: Literal) :: Nil =>
+            base.name shouldBe "<proc-param-0>"
+            base.code shouldBe "<proc-param-0>"
+
+            oneLiteral.code shouldBe "1"
+            oneLiteral.argumentIndex shouldBe 1
+            twoLiteral.code shouldBe "2"
+            twoLiteral.argumentName shouldBe Some("z")
+          case xs => fail(s"Expected two arguments for yieldCall, got ${xs.code.mkString(",")}")
+        }
+      case xs => fail(s"Expected one call for yield, got ${xs.code.mkString(",")}")
+    }
+  }
+
+  "Yield in initialize should create implicit proc parameter" in {
+    val cpg = code("""
+        |class Payload
+        |def initialize
+        |  yield(self)
+        |end
+        |end
+        |""".stripMargin)
+
+    val initMethod = cpg.method.name("initialize").head
+
+    inside(initMethod.parameter.l) {
+      case _ :: procParam :: Nil =>
+        // This seems a bit strange, but the `<body>` method is being processed first which generates a procParam
+        // for the `MethodScope` which is why the procParam for this ConstructorScope is [1] instead of [0]
+        procParam.name shouldBe "<proc-param-1>"
+        procParam.code shouldBe "&<proc-param-1>"
+        procParam.index shouldBe 1
+      case xs => fail(s"Expected two arguments, got [${xs.code.mkString(",")}]")
+    }
+
+    inside(initMethod.call.nameExact("call").argument.l) { case selfBase :: selfParam :: Nil =>
+      selfBase.code shouldBe "<proc-param-1>"
+      selfBase.argumentIndex shouldBe 0
+      selfParam.code shouldBe "self"
+      selfParam.argumentIndex shouldBe 1
+    }
+  }
 }

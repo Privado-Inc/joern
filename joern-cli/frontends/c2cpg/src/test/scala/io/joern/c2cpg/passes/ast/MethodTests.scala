@@ -94,7 +94,7 @@ class MethodTests extends C2CpgSuite {
         data.index shouldBe 1
         data.name shouldBe "data"
         data.code shouldBe "int &data"
-        data.typeFullName shouldBe "int"
+        data.typeFullName shouldBe "int&"
         data.isVariadic shouldBe false
       }
     }
@@ -300,6 +300,23 @@ class MethodTests extends C2CpgSuite {
     }
   }
 
+  "Name for method parameter in parentheses" should {
+    "be correct" in {
+      val cpg = code("""
+          |int foo(int * (a)) {
+          |  int (x) = a;
+          |  return 2 * *a;
+          |}
+          |""".stripMargin)
+      val List(paramA) = cpg.method("foo").parameter.l
+      paramA.code shouldBe "int * (a)"
+      paramA.typeFullName shouldBe "int*"
+      paramA.name shouldBe "a"
+      cpg.identifier.nameExact("x").size shouldBe 1
+      cpg.method("foo").local.nameExact("x").size shouldBe 1
+    }
+  }
+
   "Method name, signature and full name tests" should {
     "be correct for plain C method" in {
       val cpg = code(
@@ -412,6 +429,27 @@ class MethodTests extends C2CpgSuite {
       thisId._refOut.l shouldBe List(implicitThisParam)
       varFieldIdent.code shouldBe "var"
       varFieldIdent.isFieldIdentifier shouldBe true
+    }
+
+    "be correct for class method in nested class" in {
+      val cpg = code(
+        """class Outer {
+          |  class Inner {
+          |    void Method();
+          |    int member;
+          | };
+          |};
+          |void Outer::Inner::Method() {
+          |  member;
+          |}""".stripMargin,
+        "test.cpp"
+      )
+      cpg.identifier.name("member").size shouldBe 0
+      val List(memberCall) = cpg.call.codeExact("this->member").l
+      memberCall.typeFullName shouldBe "int"
+      memberCall.name shouldBe Operators.indirectFieldAccess
+      memberCall.argument.isIdentifier.typeFullName.l shouldBe List("Outer.Inner*")
+      memberCall.argument.isFieldIdentifier.code.l shouldBe List("member")
     }
   }
 }
