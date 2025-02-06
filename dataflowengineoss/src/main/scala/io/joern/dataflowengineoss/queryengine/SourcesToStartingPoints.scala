@@ -32,7 +32,7 @@ object SourcesToStartingPoints {
         .map(src => {
           // We need to get Cpg wrapper from graph. Hence we are taking head element from source iterator.
           // This will also ensure if the source list is empty then these tasks are invoked.
-          val cpg                           = Cpg(src.graph())
+          val cpg                           = Cpg(src.graph)
           val (startingPoints, methodTasks) = calculateStartingPoints(sources, executorService)
           val startingPointFromUsageInOtherClasses =
             calculateStatingPointsWithUsageInOtherClasses(methodTasks, cpg, executorService)
@@ -147,7 +147,10 @@ class SourceToStartingPointsInMethod(
   private def usageInOtherClasses(m: Method, usageInputs: List[UsageInput]): List[StartingPointWithSource] = {
     usageInputs.flatMap { case UsageInput(src, typeDecl, astNode) =>
       m.fieldAccess
-        .where(_.argument(1).isIdentifier.typeFullNameExact(typeDecl.fullName))
+        .or(
+          _.argument(1).isIdentifier.typeFullNameExact(typeDecl.fullName),
+          _.argument(1).isTypeRef.typeFullNameExact(typeDecl.fullName)
+        )
         .where { x =>
           astNode match {
             case identifier: Identifier =>
@@ -189,7 +192,8 @@ abstract class BaseSourceToStartingPoints extends Callable[Unit] {
   protected def sourceToStartingPoints(src: StoredNode): (List[CfgNode], List[UsageInput]) = {
     src match {
       case methodReturn: MethodReturn =>
-        (methodReturn.method.callIn.l, Nil)
+        // n.b. there's a generated `callIn` step that we really want to use, but it's shadowed by `MethodTraversal.callIn`
+        (methodReturn.method._callIn.cast[Call].l, Nil)
       case lit: Literal =>
         val usageInput = targetsToClassIdentifierPair(literalToInitializedMembers(lit), src)
         val uses       = usages(usageInput)
