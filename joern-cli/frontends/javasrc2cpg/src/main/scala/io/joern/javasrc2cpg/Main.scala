@@ -2,10 +2,15 @@ package io.joern.javasrc2cpg
 
 import io.joern.javasrc2cpg.Frontend.*
 import io.joern.javasrc2cpg.jpastprinter.JavaParserAstPrinter
+import io.joern.x2cpg.X2CpgConfig
+import io.joern.x2cpg.X2CpgMain
 import io.joern.x2cpg.frontendspecific.javasrc2cpg
-import io.joern.x2cpg.{X2CpgConfig, X2CpgMain}
-import io.joern.x2cpg.passes.frontend.{TypeRecoveryParserConfig, XTypeRecovery, XTypeRecoveryConfig}
+import io.joern.x2cpg.passes.frontend.TypeRecoveryParserConfig
+import io.joern.x2cpg.passes.frontend.XTypeRecoveryConfig
+import io.joern.x2cpg.utils.server.FrontendHTTPServer
 import scopt.OParser
+
+import java.util.concurrent.ExecutorService
 
 /** Command line configuration parameters
   */
@@ -21,7 +26,8 @@ final case class Config(
   skipTypeInfPass: Boolean = false,
   dumpJavaparserAsts: Boolean = false,
   cacheJdkTypeSolver: Boolean = false,
-  keepTypeArguments: Boolean = false
+  keepTypeArguments: Boolean = false,
+  disableTypeFallback: Boolean = false
 ) extends X2CpgConfig[Config]
     with TypeRecoveryParserConfig[Config] {
   def withInferenceJarPaths(paths: Set[String]): Config = {
@@ -70,6 +76,10 @@ final case class Config(
 
   def withKeepTypeArguments(value: Boolean): Config = {
     copy(keepTypeArguments = value).withInheritedFields(this)
+  }
+
+  def withDisableTypeFallback(value: Boolean): Config = {
+    copy(disableTypeFallback = value).withInheritedFields(this)
   }
 }
 
@@ -128,12 +138,19 @@ private object Frontend {
       opt[Unit]("keep-type-arguments")
         .hidden()
         .action((_, c) => c.withKeepTypeArguments(true))
-        .text("Type full names of variables keep their type arguments.")
+        .text("Type full names of variables keep their type arguments."),
+      opt[Unit]("disable-type-fallback")
+        .action((_, c) => c.withDisableTypeFallback(true))
+        .text(
+          "Disables fallback to wildcard imports, unsound type inferences and the Any type (except where no better information is available)."
+        )
     )
   }
 }
 
-object Main extends X2CpgMain(cmdLineParser, new JavaSrc2Cpg()) {
+object Main extends X2CpgMain(cmdLineParser, new JavaSrc2Cpg()) with FrontendHTTPServer[Config, JavaSrc2Cpg] {
+
+  override protected def newDefaultConfig(): Config = Config()
 
   override def main(args: Array[String]): Unit = {
     // TODO: This is a hack to allow users to use the "--show-env" option without having
@@ -146,14 +163,14 @@ object Main extends X2CpgMain(cmdLineParser, new JavaSrc2Cpg()) {
   }
 
   def run(config: Config, javasrc2Cpg: JavaSrc2Cpg): Unit = {
-    if (config.showEnv) {
-      JavaSrc2Cpg.showEnv()
-    } else if (config.dumpJavaparserAsts) {
-      JavaParserAstPrinter.printJpAsts(config)
-    } else {
-      javasrc2Cpg.run(config)
+    config match {
+      case c if c.serverMode         => startup()
+      case c if c.showEnv            => JavaSrc2Cpg.showEnv()
+      case c if c.dumpJavaparserAsts => JavaParserAstPrinter.printJpAsts(c)
+      case _                         => javasrc2Cpg.run(config)
     }
   }
 
   def getCmdLineParser = cmdLineParser
+
 }
