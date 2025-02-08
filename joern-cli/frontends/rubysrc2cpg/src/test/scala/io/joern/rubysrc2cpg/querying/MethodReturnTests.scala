@@ -1,13 +1,13 @@
 package io.joern.rubysrc2cpg.querying
 
-import io.joern.rubysrc2cpg.passes.Defines.RubyOperators
-import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
-import io.shiftleft.codepropertygraph.generated.Operators
+import io.joern.rubysrc2cpg.passes.Defines.{Main, RubyOperators}
 import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Literal, Method, MethodRef, Return}
+import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
+import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, Operators}
 import io.shiftleft.semanticcpg.language.*
 
-class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
+class MethodReturnTests extends RubyCode2CpgFixture {
 
   "implicit RETURN node for `x * x` exists" in {
     val cpg = code("""
@@ -72,7 +72,7 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
     r.lineNumber shouldBe Some(3)
 
     val List(c: Call) = r.astChildren.isCall.l
-    c.methodFullName shouldBe s"$kernelPrefix:puts"
+    c.methodFullName shouldBe s"$kernelPrefix.puts"
     c.lineNumber shouldBe Some(3)
     c.code shouldBe "puts x"
   }
@@ -103,8 +103,8 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
     r.code shouldBe "[]"
     r.lineNumber shouldBe Some(3)
 
-    val List(c: Call) = r.astChildren.isCall.l
-    c.methodFullName shouldBe Operators.arrayInitializer
+    val List(arr: Block) = r.astChildren.isBlock.l
+    arr.code shouldBe "[]"
   }
 
   "implicit RETURN node for index access exists" in {
@@ -339,7 +339,7 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
     }
   }
 
-  "implicit RETURN node for ASSOCIATION" in {
+  "implicit RETURN node for super call" in {
     val cpg = code("""
                      |def j
                      |  super(only: ["a"])
@@ -350,18 +350,18 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
       case jMethod :: Nil =>
         inside(jMethod.methodReturn.toReturn.l) {
           case retAssoc :: Nil =>
-            retAssoc.code shouldBe "only: [\"a\"]"
+            retAssoc.code shouldBe "super(only: [\"a\"])"
 
             val List(call: Call) = retAssoc.astChildren.l: @unchecked
-            call.name shouldBe RubyOperators.association
-            call.code shouldBe "only: [\"a\"]"
+            call.name shouldBe "super"
+            call.code shouldBe "super(only: [\"a\"])"
           case xs => fail(s"Expected exactly one return nodes, instead got [${xs.code.mkString(",")}]")
         }
       case _ => fail("Only one method expected")
     }
   }
 
-  "implict RETURN node for RubyCallWithBlock" should {
+  "implicit RETURN node for RubyCallWithBlock" should {
     val cpg = code("""
                      | def foo &block
                      |  puts block.call
@@ -380,7 +380,7 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
           inside(bar.astChildren.collectAll[Method].l) {
             case closureMethod :: Nil =>
               closureMethod.name shouldBe "<lambda>0"
-              closureMethod.fullName shouldBe "Test0.rb:<global>::program:bar:<lambda>0"
+              closureMethod.fullName shouldBe s"Test0.rb:$Main.bar.<lambda>0"
             case xs => fail(s"Expected closure method, but found ${xs.code.mkString(", ")} instead")
           }
 
@@ -388,12 +388,12 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
             case barReturn :: Nil =>
               inside(barReturn.astChildren.l) {
                 case (returnCall: Call) :: Nil =>
-                  returnCall.code.replaceAll("\n", "") shouldBe "foo do   \"hello\"  end"
+                  returnCall.code should startWith("foo")
 
                   returnCall.name shouldBe "foo"
 
-                  val List(_, arg: MethodRef) = returnCall.argument.l: @unchecked
-                  arg.methodFullName shouldBe "Test0.rb:<global>::program:bar:<lambda>0"
+                  val List(_, arg: TypeRef) = returnCall.argument.l: @unchecked
+                  arg.typeFullName shouldBe s"Test0.rb:$Main.bar.<lambda>0&Proc"
                 case xs => fail(s"Expected one call for return, but found ${xs.code.mkString(", ")} instead")
               }
 
@@ -421,22 +421,99 @@ class MethodReturnTests extends RubyCode2CpgFixture(withDataFlow = true) {
 
   "implicit return of a heredoc should return a literal" in {
     val cpg = code("""
-          |def custom_fact_content(key='custom_fact', value='custom_value', *args)
+          |def foo
           | <<-EOM
-          |  Facter.add('#{key}') do
-          |    setcode {'#{value}'}
-          |    #{args.empty? ? '' : args.join('\n')}
-          |  end
-          |   EOM
+          |   puts "hello"
+          | EOM
           |end
           |""".stripMargin)
 
-    inside(cpg.method.nameExact("custom_fact_content").methodReturn.toReturn.astChildren.l) {
+    inside(cpg.method.nameExact("foo").methodReturn.toReturn.astChildren.l) {
       case (heredoc: Literal) :: Nil =>
         heredoc.typeFullName shouldBe s"$kernelPrefix.String"
-        heredoc.code should startWith("<<-EOM")
+        heredoc.code should startWith("   puts \"hello\"")
       case xs => fail(s"Expected a single literal node, instead got [${xs.code.mkString(", ")}]")
     }
   }
 
+  "a return in an expression position without arguments should generate a return node with no children" in {
+    val cpg = code("""
+        |def foo
+        | return unless baz()
+        | bar()
+        |end
+        |""".stripMargin)
+
+    inside(cpg.method.nameExact("foo").ast.isReturn.l) {
+      case ret1 :: ret2 :: ret3 :: Nil =>
+        ret1.code shouldBe "return nil"
+        ret1.astChildren.size shouldBe 1
+        ret1.astParent.astParent.code shouldBe "return unless baz()"
+
+        ret2.code shouldBe "return"
+        ret2.astChildren.size shouldBe 0
+        ret2.astParent.astParent.code shouldBe "return unless baz()"
+
+        ret3.code shouldBe "bar()"
+      case xs => fail(s"Expected 3 return nodes, got ${xs.size}")
+    }
+  }
+
+  "a return with multiple values" in {
+    val cpg = code("""
+        |def foo
+        | return 1, :z => 1
+        |end
+        |""".stripMargin)
+
+    inside(cpg.method.nameExact("foo").ast.isReturn.headOption) {
+      case Some(ret) =>
+        val List(oneLiteral: Literal, zAssoc: Call) = ret.astChildren.l: @unchecked
+        oneLiteral.code shouldBe "1"
+        zAssoc.code shouldBe ":z => 1"
+        zAssoc.methodFullName shouldBe RubyOperators.association
+
+        inside(zAssoc.argument.l) {
+          case (key: Literal) :: (value: Literal) :: Nil =>
+            key.code shouldBe ":z"
+            value.code shouldBe "1"
+          case xs => fail(s"Expected two args, got ${xs.code.mkString(",")}")
+        }
+      case None => fail(s"Expected at least one return node")
+    }
+  }
+
+  "Return with method invocation without parentheses" in {
+    val cpg = code("""
+        |def foo()
+        | return render json: {}, status: :internal_server_error unless success
+        |end
+        |""".stripMargin)
+
+    inside(cpg.method.name("foo").body.astChildren.isControlStructure.l) {
+      case ifNode :: Nil =>
+        ifNode.controlStructureType shouldBe ControlStructureTypes.IF
+
+        val List(successCall: Call) = ifNode.condition.l: @unchecked
+        successCall.code shouldBe "self.success"
+
+        val List(ifReturnFalse: Return) = ifNode.whenFalse.isBlock.astChildren.isReturn.l
+        ifReturnFalse.code shouldBe "return render json: {}, status: :internal_server_error"
+
+        val List(_, jsonArg: Block, statusArg: Literal) = ifReturnFalse.astChildren.isCall.argument.l: @unchecked
+        jsonArg.argumentName shouldBe Some("json")
+        jsonArg.code shouldBe "<empty>"
+
+        val List(_: Identifier, hashInitCall: Call) = jsonArg.astChildren.isCall.argument.l: @unchecked
+        hashInitCall.methodFullName shouldBe RubyOperators.hashInitializer
+
+        statusArg.argumentName shouldBe Some("status")
+        statusArg.code shouldBe ":internal_server_error"
+
+        val List(ifReturnTrue: Return) = ifNode.whenTrue.isBlock.astChildren.isReturn.l
+        ifReturnTrue.code shouldBe "return nil"
+
+      case xs => fail(s"Expected two method returns, got [${xs.code.mkString(",")}]")
+    }
+  }
 }
