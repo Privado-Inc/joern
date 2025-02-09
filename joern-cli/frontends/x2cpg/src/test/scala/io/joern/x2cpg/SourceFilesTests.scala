@@ -1,6 +1,6 @@
 package io.joern.x2cpg
 
-import better.files._
+import better.files.*
 import io.joern.x2cpg.utils.IgnoreInWindows
 import io.shiftleft.utils.ProjectRoot
 import org.scalatest.matchers.should.Matchers
@@ -8,7 +8,7 @@ import org.scalatest.wordspec.AnyWordSpec
 import org.scalatest.Inside
 
 import java.nio.file.attribute.PosixFilePermissions
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 import scala.util.Try
 import java.io.FileNotFoundException
 
@@ -51,6 +51,24 @@ class SourceFilesTests extends AnyWordSpec with Matchers with Inside {
         .size shouldBe 0
     }
 
+  }
+
+  "do not throw an exception" when {
+    "one of the input files is a broken symlink" in {
+      File.usingTemporaryDirectory() { tmpDir =>
+        (tmpDir / "a.c").touch()
+        val symlink = (tmpDir / "broken.c").symbolicLinkTo(File("does/not/exist.c"))
+        symlink.exists shouldBe false
+        symlink.isReadable shouldBe false
+        val ignored = (tmpDir / "ignored.c").touch()
+        val result = Try(
+          SourceFiles
+            .determine(tmpDir.canonicalPath, cSourceFileExtensions, ignoredFilesPath = Some(Seq(ignored.pathAsString)))
+        )
+        result.isFailure shouldBe false
+        result.getOrElse(List.empty).size shouldBe 1
+      }
+    }
   }
 
   "throw an exception" when {

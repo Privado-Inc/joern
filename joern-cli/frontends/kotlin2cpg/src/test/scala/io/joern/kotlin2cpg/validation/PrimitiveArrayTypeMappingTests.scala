@@ -1,7 +1,7 @@
 package io.joern.kotlin2cpg.validation
 
 import io.joern.kotlin2cpg.testfixtures.KotlinCode2CpgFixture
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class PrimitiveArrayTypeMappingTests extends KotlinCode2CpgFixture(withOssDataflow = false) {
   "CPG for code with usage of `kotlin.BooleanArray`" should {
@@ -53,7 +53,7 @@ class PrimitiveArrayTypeMappingTests extends KotlinCode2CpgFixture(withOssDatafl
 
     "should contain a CALL node with a METHOD_FULL_NAME starting with `kotlin.ByteArray`" in {
       val List(c) = cpg.call.code("byte.*toString.*").l
-      c.methodFullName shouldBe "kotlin.ByteArray.toString:java.lang.String(java.nio.charset.Charset)"
+      c.methodFullName shouldBe "kotlin.collections.toString:java.lang.String(byte[],java.nio.charset.Charset)"
     }
   }
 
