@@ -1,8 +1,8 @@
 package io.joern.pysrc2cpg.cpg
 
-import io.joern.pysrc2cpg.Py2CpgTestContext
+import io.joern.pysrc2cpg.testfixtures.Py2CpgTestContext
 import io.shiftleft.codepropertygraph.generated.EvaluationStrategies
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers
 
@@ -149,11 +149,10 @@ class VariableReferencingCpgTests extends AnyFreeSpec with Matchers {
     }
 
     "test method reference closure binding" in {
-      val methodRefNode  = cpg.methodRef("f").head
+      val methodRefNode  = cpg.methodRefWithName("f").head
       val closureBinding = methodRefNode._closureBindingViaCaptureOut.next()
       closureBinding.closureBindingId shouldBe Some("test.py:<module>.f:x")
       closureBinding.evaluationStrategy shouldBe EvaluationStrategies.BY_REFERENCE
-      closureBinding.closureOriginalName shouldBe Some("x")
     }
 
     "test global variable exists" in {
@@ -185,11 +184,10 @@ class VariableReferencingCpgTests extends AnyFreeSpec with Matchers {
     }
 
     "test method reference closure binding" in {
-      val methodRefNode  = cpg.methodRef("f").head
+      val methodRefNode  = cpg.methodRefWithName("f").head
       val closureBinding = methodRefNode._closureBindingViaCaptureOut.next()
       closureBinding.closureBindingId shouldBe Some("test.py:<module>.f:x")
       closureBinding.evaluationStrategy shouldBe EvaluationStrategies.BY_REFERENCE
-      closureBinding.closureOriginalName shouldBe Some("x")
     }
 
     "test global variable exists" in {
@@ -223,11 +221,10 @@ class VariableReferencingCpgTests extends AnyFreeSpec with Matchers {
     }
 
     "test method reference closure binding of f in g" in {
-      val methodRefNode  = cpg.methodRef("f").head
+      val methodRefNode  = cpg.methodRefWithName("f").head
       val closureBinding = methodRefNode._closureBindingViaCaptureOut.next()
       closureBinding.closureBindingId shouldBe Some("test.py:<module>.g.f:x")
       closureBinding.evaluationStrategy shouldBe EvaluationStrategies.BY_REFERENCE
-      closureBinding.closureOriginalName shouldBe Some("x")
     }
 
     "test local variable exists in g" in {
@@ -240,11 +237,10 @@ class VariableReferencingCpgTests extends AnyFreeSpec with Matchers {
     }
 
     "test method reference closure binding of g in module" in {
-      val methodRefNode  = cpg.methodRef("g").head
+      val methodRefNode  = cpg.methodRefWithName("g").head
       val closureBinding = methodRefNode._closureBindingViaCaptureOut.next()
       closureBinding.closureBindingId shouldBe Some("test.py:<module>.g:x")
       closureBinding.evaluationStrategy shouldBe EvaluationStrategies.BY_REFERENCE
-      closureBinding.closureOriginalName shouldBe Some("x")
     }
 
     "test global variable exists" in {
@@ -259,7 +255,8 @@ class VariableReferencingCpgTests extends AnyFreeSpec with Matchers {
   }
 
   "reference from class method" - {
-    lazy val cpg = Py2CpgTestContext.buildCpg("""x = 0
+    lazy val cpg = Py2CpgTestContext.buildCpg("""
+        |x = 0
         |class MyClass():
         |  x = 1
         |  def f(self):
@@ -267,15 +264,20 @@ class VariableReferencingCpgTests extends AnyFreeSpec with Matchers {
         |""".stripMargin)
 
     "test capturing to global x exists" in {
-      val moduleLocal = cpg.method.name("<module>").local.name("x").head
-      moduleLocal._closureBindingViaRefIn.next().closureBindingId shouldBe Some("test.py:<module>.MyClass.f:x")
+      val moduleXLocal   = cpg.method.name("<module>").local.name("x").head
+      val moduleXBinding = moduleXLocal._closureBindingViaRefIn.next()
+      moduleXBinding.closureBindingId shouldBe Some("test.py:<module>.MyClass.<body>:x")
 
-      val bodyLocal = cpg.method.fullName("test.py:<module>.MyClass.<body>").local.name("x").head
-      bodyLocal.closureBindingId shouldBe None
+      val bodyXLocal = cpg.method.fullName("test.py:<module>.MyClass.<body>").local.name("x").head
+      bodyXLocal.closureBindingId shouldBe None
+
+      val capturedBodyXLocal = cpg.method.fullName("test.py:<module>.MyClass.<body>").local.name("<captured>x").head
+      capturedBodyXLocal.closureBindingId shouldBe Some("test.py:<module>.MyClass.<body>:x")
+      val bodyXBinding = capturedBodyXLocal._closureBindingViaRefIn.next()
+      bodyXBinding.closureBindingId shouldBe Some("test.py:<module>.MyClass.f:x")
 
       val fLocal = cpg.method.fullName("test.py:<module>.MyClass.f").local.name("x").head
       fLocal.closureBindingId shouldBe Some("test.py:<module>.MyClass.f:x")
-
     }
   }
 
