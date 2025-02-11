@@ -3,7 +3,7 @@ package io.joern.kotlin2cpg.querying
 import io.joern.kotlin2cpg.testfixtures.KotlinCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.codepropertygraph.generated.nodes.{Block, Call, Identifier}
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class TryExpressionsTests extends KotlinCode2CpgFixture(withOssDataflow = false) {
   "CPG for code with simple `try`-expression" should {
@@ -49,7 +49,7 @@ class TryExpressionsTests extends KotlinCode2CpgFixture(withOssDataflow = false)
       firstAstChildOfSecondArg.order shouldBe 1
       firstAstChildOfSecondArg.name shouldBe "toInt"
       firstAstChildOfSecondArg.code shouldBe "r.toInt()"
-      firstAstChildOfSecondArg.methodFullName shouldBe "java.lang.String.toInt:int()"
+      firstAstChildOfSecondArg.methodFullName shouldBe "kotlin.text.toInt:int(java.lang.String)"
     }
   }
 }
