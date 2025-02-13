@@ -1,6 +1,5 @@
 package io.shiftleft.semanticcpg.language.types.structure
 
-import io.shiftleft.codepropertygraph.generated.nodes
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 
@@ -11,13 +10,13 @@ class TypeDeclTraversal(val traversal: Iterator[TypeDecl]) extends AnyVal {
 
   /** Annotations of the type declaration
     */
-  def annotation: Iterator[nodes.Annotation] =
+  def annotation: Iterator[Annotation] =
     traversal.flatMap(_._annotationViaAstOut)
 
   /** Types referencing to this type declaration.
     */
   def referencingType: Iterator[Type] =
-    traversal.flatMap(_.refIn)
+    traversal.refIn
 
   /** Namespace in which this type declaration is defined
     */
@@ -57,7 +56,7 @@ class TypeDeclTraversal(val traversal: Iterator[TypeDecl]) extends AnyVal {
   /** Direct and transitive base type declaration.
     */
   def derivedTypeDeclTransitive: Iterator[TypeDecl] =
-    traversal.repeat(_.derivedTypeDecl)(_.emitAllButFirst)
+    traversal.repeat(_.derivedTypeDecl)(_.emitAllButFirst.dedup)
 
   /** Direct base type declaration.
     */
@@ -67,7 +66,7 @@ class TypeDeclTraversal(val traversal: Iterator[TypeDecl]) extends AnyVal {
   /** Direct and transitive base type declaration.
     */
   def baseTypeDeclTransitive: Iterator[TypeDecl] =
-    traversal.repeat(_.baseTypeDecl)(_.emitAllButFirst)
+    traversal.repeat(_.baseTypeDecl)(_.emitAllButFirst.dedup)
 
   /** Traverse to alias type declarations.
     */
@@ -105,7 +104,7 @@ class TypeDeclTraversal(val traversal: Iterator[TypeDecl]) extends AnyVal {
   /** Direct and transitive alias type declarations.
     */
   def aliasTypeDeclTransitive: Iterator[TypeDecl] =
-    traversal.repeat(_.aliasTypeDecl)(_.emitAllButFirst)
+    traversal.repeat(_.aliasTypeDecl)(_.emitAllButFirst.dedup)
 
   def content: Iterator[String] = {
     traversal.flatMap(contentOnSingle)

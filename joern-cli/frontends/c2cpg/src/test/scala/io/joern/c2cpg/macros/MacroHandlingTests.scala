@@ -2,13 +2,13 @@ package io.joern.c2cpg.macros
 
 import io.joern.c2cpg.testfixtures.C2CpgSuite
 import io.joern.c2cpg.testfixtures.DataFlowCodeToCpgSuite
-import io.joern.dataflowengineoss.language._
+import io.joern.dataflowengineoss.language.*
 import io.shiftleft.codepropertygraph.generated.DispatchTypes
 import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.codepropertygraph.generated.nodes.Block
 import io.shiftleft.codepropertygraph.generated.nodes.Call
 import io.shiftleft.codepropertygraph.generated.nodes.Identifier
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class MacroHandlingTests extends C2CpgSuite {
 
@@ -231,7 +231,7 @@ class MacroHandlingTests extends C2CpgSuite {
     """.stripMargin)
 
     "should not result in malformed CFGs when expanding a nested macro with block" in {
-      cpg.all.collectAll[Block].l.count(b => b.cfgOut.size > 1) shouldBe 0
+      cpg.all.collectAll[Block].l.count(b => b._cfgOut.size > 1) shouldBe 0
     }
   }
 
@@ -296,6 +296,64 @@ class MacroHandlingTests extends C2CpgSuite {
       typeNumCall.name shouldBe "type_num"
       typeNumCall.lineNumber shouldBe Some(12)
       typeNumCall.columnNumber shouldBe Some(11)
+    }
+  }
+
+  "MacroHandlingTests10" should {
+
+    "have ast parents" in {
+      val cpg = code("""
+          |#define FFSWAP(type,a,b) do{type SWAP_tmp=b; b=a; a=SWAP_tmp;}while(0)
+          |struct elem_to_channel {
+          |    uint64_t av_position;
+          |    uint8_t syn_ele;
+          |    uint8_t elem_id;
+          |    uint8_t aac_position;
+          |};
+          |int main () {
+          |  struct elem_to_channel e2c_vec[4 * 1] = { { 0 } };
+          |  int i = 1;
+          |  FFSWAP(struct elem_to_channel, e2c_vec[i - 1], e2c_vec[i]);
+          |}
+          |""".stripMargin)
+      cpg.local.count(l => l._astIn.isEmpty) shouldBe 0
+      cpg.local.count(l => l._astIn.size == 1) shouldBe 4
+      cpg.local.count(l => l._astIn.size > 1) shouldBe 0
+    }
+
+    "only have locals with exactly one ast parent" in {
+      val cpg = code(
+        """
+          |#define deleteReset(ptr) do { delete ptr; ptr = nullptr; } while(0)
+          |void func(void) {
+          |  int *foo = new int;
+          |  int *bar = new int;
+          |  int *baz = new int;
+          |  deleteReset(foo);
+          |  deleteReset(bar);
+          |  deleteReset(baz);
+          |}
+          |""".stripMargin,
+        "foo.cc"
+      )
+      val List(foo) = cpg.local.nameExact("foo").l
+      foo._astIn.size shouldBe 1
+      val List(bar) = cpg.local.nameExact("bar").l
+      bar._astIn.size shouldBe 1
+      val List(baz) = cpg.local.nameExact("baz").l
+      baz._astIn.size shouldBe 1
+    }
+
+    "only have local for declaration and not from assignment from broken macro" in {
+      val cpg = code("""
+          |#define FOO() (long)va_arg(ap, int)
+          |void func(void) {
+          |  int foo;
+          |  foo = FOO();
+          |  foo = FOO();
+          |}
+          |""".stripMargin)
+      cpg.local.nameExact("foo").size shouldBe 1
     }
   }
 }
