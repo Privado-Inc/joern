@@ -3,7 +3,7 @@ package io.joern.kotlin2cpg.validation
 import io.joern.kotlin2cpg.testfixtures.KotlinCode2CpgFixture
 import io.joern.x2cpg.Defines
 import io.shiftleft.codepropertygraph.generated.nodes.{Call, Method}
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class MissingTypeInformationTests extends KotlinCode2CpgFixture(withOssDataflow = false) {
   "CPG for code with CALL to Java stdlib fn with argument of unknown type" should {
@@ -59,10 +59,9 @@ class MissingTypeInformationTests extends KotlinCode2CpgFixture(withOssDataflow 
         |""".stripMargin)
 
     "contain METHODs node for the constructors with the METHOD_FULL_NAMEs set" in {
-      val List(m1: Method, m2: Method, m3: Method) = cpg.method.nameExact("<init>").l
+      val List(m1: Method, m2: Method) = cpg.method.nameExact("<init>").l
       m1.fullName shouldBe "com.insecureshop.CartAdapter.<init>:void()"
-      m2.fullName shouldBe "com.insecureshop.CartAdapter.CartViewHolder.<init>:void(com.insecureshop.databinding.CartItemBinding)"
-      m3.fullName shouldBe "com.insecureshop.CartAdapter.CartViewHolder.<init>:void(ANY)"
+      m2.fullName shouldBe s"com.insecureshop.CartAdapter$$CartViewHolder.<init>:${Defines.UnresolvedSignature}(1)"
     }
   }
 }

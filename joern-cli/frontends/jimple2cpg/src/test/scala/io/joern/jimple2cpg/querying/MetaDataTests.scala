@@ -2,7 +2,7 @@ package io.joern.jimple2cpg.querying
 
 import io.joern.jimple2cpg.testfixtures.JimpleCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class MetaDataTests extends JimpleCode2CpgFixture {
 
@@ -19,8 +19,8 @@ class MetaDataTests extends JimpleCode2CpgFixture {
 
   "should not have any incoming or outgoing edges" in {
     cpg.metaData.size shouldBe 1
-    cpg.metaData.in().l shouldBe List()
-    cpg.metaData.out().l shouldBe List()
+    cpg.metaData.in.l shouldBe List()
+    cpg.metaData.out.l shouldBe List()
   }
 
 }
