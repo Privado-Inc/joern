@@ -1,5 +1,6 @@
 package io.joern.javasrc2cpg.astcreation
 
+import com.github.javaparser.ast.`type`.Type
 import com.github.javaparser.ast.expr.{
   AnnotationExpr,
   BooleanLiteralExpr,
@@ -26,7 +27,7 @@ import com.github.javaparser.resolution.declarations.{
 import com.github.javaparser.resolution.types.ResolvedType
 import com.github.javaparser.resolution.types.parametrization.ResolvedTypeParametersMap
 import com.github.javaparser.symbolsolver.JavaSymbolSolver
-import io.joern.javasrc2cpg.astcreation.declarations.AstForDeclarationsCreator
+import io.joern.javasrc2cpg.astcreation.declarations.{AstForDeclarationsCreator, BinarySignatureCalculator}
 import io.joern.javasrc2cpg.astcreation.expressions.AstForExpressionsCreator
 import io.joern.javasrc2cpg.astcreation.statements.AstForStatementsCreator
 import io.joern.javasrc2cpg.scope.Scope
@@ -43,15 +44,17 @@ import io.joern.javasrc2cpg.util.{
   BindingTable,
   BindingTableAdapterForJavaparser,
   MultiBindingTableAdapterForJavaparser,
-  NameConstants
+  NameConstants,
+  TemporaryNameProvider,
+  Util
 }
 import io.joern.x2cpg.datastructures.Global
 import io.joern.x2cpg.utils.OffsetUtils
-import io.joern.x2cpg.{Ast, AstCreatorBase, AstNodeBuilder, ValidationMode}
+import io.joern.x2cpg.{Ast, AstCreatorBase, AstNodeBuilder, Defines, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{NewClosureBinding, NewFile, NewImport, NewNamespaceBlock}
 import org.slf4j.LoggerFactory
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 import java.util.concurrent.ConcurrentHashMap
 import scala.collection.mutable
@@ -90,7 +93,7 @@ class AstCreator(
   val symbolSolver: JavaSymbolSolver,
   protected val keepTypeArguments: Boolean,
   val loggedExceptionCounts: scala.collection.concurrent.Map[Class[?], Int]
-)(implicit val withSchemaValidation: ValidationMode)
+)(implicit val withSchemaValidation: ValidationMode, val disableTypeFallback: Boolean)
     extends AstCreatorBase(filename)
     with AstNodeBuilder[Node, AstCreator]
     with AstForDeclarationsCreator
@@ -104,6 +107,9 @@ class AstCreator(
   private[astcreation] val typeInfoCalc: TypeInfoCalculator =
     TypeInfoCalculator(global, symbolSolver, keepTypeArguments)
   private[astcreation] val bindingTableCache = mutable.HashMap.empty[String, BindingTable]
+  private[astcreation] val binarySignatureCalculator: BinarySignatureCalculator = new BinarySignatureCalculator(scope)
+
+  private[astcreation] val tempNameProvider: TemporaryNameProvider = new TemporaryNameProvider
 
   /** Entry point of AST creation. Translates a compilation unit created by JavaParser into a DiffGraph containing the
     * corresponding CPG AST.
@@ -130,15 +136,38 @@ class AstCreator(
     }
   }
 
+  private[astcreation] def getTypeFullName(expectedType: ExpectedType): Option[String] = {
+    Option.unless(disableTypeFallback)(expectedType.fullName).flatten
+  }
+
+  private[astcreation] def defaultTypeFallback(typ: Type): String = {
+    defaultTypeFallback(code(typ))
+  }
+
+  private[astcreation] def defaultTypeFallback(typ: String): String = {
+    if (disableTypeFallback) {
+      s"${Defines.UnresolvedNamespace}.${Util.stripGenericTypes(typ)}"
+    } else
+      TypeConstants.Any
+  }
+
+  private[astcreation] def defaultTypeFallback(): String = {
+    TypeConstants.Any
+  }
+
+  private[astcreation] def isResolvedTypeFullName(typeFullName: String): Boolean = {
+    typeFullName != TypeConstants.Any && !typeFullName.startsWith(Defines.UnresolvedNamespace)
+  }
+
   /** Custom printer that omits comments. To be used by [[code]] */
   private val codePrinterOptions = new DefaultPrinterConfiguration()
     .removeOption(new DefaultConfigurationOption(ConfigOption.PRINT_COMMENTS))
     .removeOption(new DefaultConfigurationOption(ConfigOption.PRINT_JAVADOC))
 
-  protected def line(node: Node): Option[Int]      = node.getBegin.map(x => x.line).toScala
-  protected def column(node: Node): Option[Int]    = node.getBegin.map(x => x.column).toScala
-  protected def lineEnd(node: Node): Option[Int]   = node.getEnd.map(x => x.line).toScala
-  protected def columnEnd(node: Node): Option[Int] = node.getEnd.map(x => x.column).toScala
+  protected def line(node: Node): Option[Int]      = node.getBegin.map(_.line).toScala
+  protected def column(node: Node): Option[Int]    = node.getBegin.map(_.column).toScala
+  protected def lineEnd(node: Node): Option[Int]   = node.getEnd.map(_.line).toScala
+  protected def columnEnd(node: Node): Option[Int] = node.getEnd.map(_.column).toScala
   protected def code(node: Node): String           = node.toString(codePrinterOptions)
 
   private val lineOffsetTable = OffsetUtils.getLineOffsetTable(fileContent)
@@ -348,8 +377,10 @@ class AstCreator(
     case _                       => None
   }
 
-  def argumentTypesForMethodLike(maybeResolvedMethodLike: Try[ResolvedMethodLikeDeclaration]): Option[List[String]] = {
-    maybeResolvedMethodLike.toOption
+  def argumentTypesForMethodLike(
+    maybeResolvedMethodLike: Option[ResolvedMethodLikeDeclaration]
+  ): Option[List[String]] = {
+    maybeResolvedMethodLike
       .flatMap(calcParameterTypes(_, ResolvedTypeParametersMap.empty()))
   }
 
