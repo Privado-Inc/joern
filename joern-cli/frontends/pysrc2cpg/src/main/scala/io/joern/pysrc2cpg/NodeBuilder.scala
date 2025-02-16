@@ -7,7 +7,7 @@ import io.joern.x2cpg.Defines
 import io.joern.x2cpg.frontendspecific.pysrc2cpg.Constants
 import io.joern.x2cpg.utils.NodeBuilders
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EvaluationStrategies, nodes}
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 class NodeBuilder(diffGraph: DiffGraphBuilder) {
 
@@ -126,12 +126,12 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
     addNodeToDiff(methodRefNode)
   }
 
-  def closureBindingNode(closureBindingId: String, closureOriginalName: String): nodes.NewClosureBinding = {
+  def closureBindingNode(closureBindingId: String): nodes.NewClosureBinding = {
     val closureBindingNode = nodes
       .NewClosureBinding()
       .closureBindingId(Some(closureBindingId))
       .evaluationStrategy(EvaluationStrategies.BY_REFERENCE)
-      .closureOriginalName(Some(closureOriginalName))
+      .closureOriginalName(None)
     addNodeToDiff(closureBindingNode)
   }
 
