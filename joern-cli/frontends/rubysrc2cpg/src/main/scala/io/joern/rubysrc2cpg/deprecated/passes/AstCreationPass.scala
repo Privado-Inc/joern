@@ -7,7 +7,7 @@ import io.joern.rubysrc2cpg.deprecated.utils.{PackageContext, PackageTable}
 import io.joern.x2cpg.SourceFiles
 import io.joern.x2cpg.datastructures.Global
 import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.passes.ForkJoinParallelCpgPass
+import io.shiftleft.passes.CpgPass
 import io.shiftleft.semanticcpg.language.*
 import org.slf4j.LoggerFactory
 
@@ -15,21 +15,17 @@ import scala.jdk.CollectionConverters.EnumerationHasAsScala
 
 class AstCreationPass(
   cpg: Cpg,
-  parsedFiles: List[(String, DeprecatedRubyParser.ProgramContext)],
+  fileNameAndContext: (String, DeprecatedRubyParser.ProgramContext),
   packageTable: PackageTable,
   config: Config
-) extends ForkJoinParallelCpgPass[(String, DeprecatedRubyParser.ProgramContext)](cpg) {
+) extends CpgPass(cpg) {
 
   private val logger = LoggerFactory.getLogger(this.getClass)
 
-  override def generateParts(): Array[(String, DeprecatedRubyParser.ProgramContext)] = parsedFiles.toArray
-
-  override def runOnPart(
-    diffGraph: DiffGraphBuilder,
-    fileNameAndContext: (String, DeprecatedRubyParser.ProgramContext)
-  ): Unit = {
+  def run(diffGraph: DiffGraphBuilder): Unit = {
     val (fileName, context) = fileNameAndContext
     try {
+      logger.error(s"Processing AST for file - $fileName")
       diffGraph.absorb(
         new AstCreator(fileName, context, PackageContext(fileName, packageTable), cpg.metaData.root.headOption)(
           config.schemaValidation

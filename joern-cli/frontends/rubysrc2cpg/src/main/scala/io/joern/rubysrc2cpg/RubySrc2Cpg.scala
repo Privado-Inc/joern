@@ -6,7 +6,7 @@ import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.StatementList
 import io.joern.rubysrc2cpg.datastructures.RubyProgramSummary
 import io.joern.rubysrc2cpg.deprecated.parser.DeprecatedRubyParser
 import io.joern.rubysrc2cpg.deprecated.parser.DeprecatedRubyParser.*
-import io.joern.rubysrc2cpg.parser.{RubyJsonParser, RubyJsonToNodeCreator, RubyAstGenRunner}
+import io.joern.rubysrc2cpg.parser.{RubyAstGenRunner, RubyJsonParser, RubyJsonToNodeCreator}
 import io.joern.rubysrc2cpg.passes.{
   AstCreationPass,
   ConfigFileCreationPass,
@@ -128,9 +128,9 @@ class RubySrc2Cpg extends X2CpgFrontend[Config] {
 
       new io.joern.rubysrc2cpg.deprecated.ParseInternalStructures(parsedFiles, cpg.metaData.root.headOption)
         .populatePackageTable()
-      val astCreationPass =
-        new deprecated.passes.AstCreationPass(cpg, parsedFiles, RubySrc2Cpg.packageTableInfo, config)
-      astCreationPass.createAndApply()
+      parsedFiles.foreach(parsedFile =>
+        new deprecated.passes.AstCreationPass(cpg, parsedFile, RubySrc2Cpg.packageTableInfo, config).createAndApply()
+      )
     }
   } finally {
     RubySrc2Cpg.packageTableInfo.clear()
