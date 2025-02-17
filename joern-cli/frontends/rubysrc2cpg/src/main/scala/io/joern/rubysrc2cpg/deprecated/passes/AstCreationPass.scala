@@ -25,7 +25,7 @@ class AstCreationPass(
   def run(diffGraph: DiffGraphBuilder): Unit = {
     val (fileName, context) = fileNameAndContext
     try {
-      logger.error(s"Processing AST for file - $fileName")
+      println(s"Processing AST for file - $fileName")
       diffGraph.absorb(
         new AstCreator(fileName, context, PackageContext(fileName, packageTable), cpg.metaData.root.headOption)(
           config.schemaValidation
