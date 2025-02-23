@@ -14,8 +14,13 @@ import io.joern.javasrc2cpg.scope.Scope.CapturedVariable
 import io.shiftleft.codepropertygraph.generated.nodes.NewMethodParameterIn
 import io.joern.javasrc2cpg.scope.Scope.ScopeParameter
 import io.joern.javasrc2cpg.scope.Scope.NotInScope
+import io.joern.x2cpg.ValidationMode
 
 class ScopeTests extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
+  private implicit val withSchemaValidation: ValidationMode = ValidationMode.Enabled
+  private implicit val disableTypeFallback: Boolean         = false
+  private val genericSignature                              = "GENERIC_SIGNATURE"
+
   behavior of "javasrc2cpg scope"
 
   it should "find a simple variable for a member" in {
@@ -24,7 +29,7 @@ class ScopeTests extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     val method   = NewMethod().name("fooMethod")
 
     val scope = new Scope()
-    scope.pushTypeDeclScope(typeDecl, isStatic = false)
+    scope.pushTypeDeclScope(typeDecl, isStatic = false, Option(genericSignature))
     scope.enclosingTypeDecl.get.addMember(member, isStatic = false)
     scope.pushMethodScope(method, ExpectedType.empty, isStatic = false)
 
@@ -55,10 +60,13 @@ class ScopeTests extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     val scope = new Scope()
     scope.pushTypeDeclScope(outerTypeDecl, isStatic = false)
     scope.pushMethodScope(method, ExpectedType.empty, isStatic = false)
-    scope.enclosingMethod.get.addParameter(outerParameter)
+    scope.enclosingMethod.get.addParameter(outerParameter, genericSignature)
     scope.pushTypeDeclScope(innerTypeDecl, isStatic = false)
 
-    scope.lookupVariable("fooParameter") shouldBe CapturedVariable(Nil, ScopeParameter(outerParameter))
+    scope.lookupVariable("fooParameter") shouldBe CapturedVariable(
+      Nil,
+      ScopeParameter(outerParameter, genericSignature)
+    )
   }
 
   it should "find a capture chain for a captured variable in an outer-outer scope" in {
@@ -72,14 +80,14 @@ class ScopeTests extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     val scope = new Scope()
     scope.pushTypeDeclScope(outerOuterTypeDecl, isStatic = false)
     scope.pushMethodScope(outerOuterMethod, ExpectedType.empty, isStatic = false)
-    scope.enclosingMethod.get.addParameter(outerOuterParameter)
+    scope.enclosingMethod.get.addParameter(outerOuterParameter, genericSignature)
     scope.pushTypeDeclScope(outerTypeDecl, isStatic = false)
     scope.pushMethodScope(outerMethod, ExpectedType.empty, isStatic = false)
     scope.pushTypeDeclScope(innerTypeDecl, isStatic = false)
 
     scope.lookupVariable("parameter") shouldBe CapturedVariable(
       List(outerTypeDecl),
-      ScopeParameter(outerOuterParameter)
+      ScopeParameter(outerOuterParameter, genericSignature)
     )
   }
 
@@ -94,7 +102,7 @@ class ScopeTests extends AnyFlatSpec with Matchers with BeforeAndAfterAll {
     val scope = new Scope()
     scope.pushTypeDeclScope(outerOuterTypeDecl, isStatic = false)
     scope.pushMethodScope(outerOuterMethod, ExpectedType.empty, isStatic = false)
-    scope.enclosingMethod.get.addParameter(outerOuterParameter)
+    scope.enclosingMethod.get.addParameter(outerOuterParameter, genericSignature)
     scope.pushTypeDeclScope(outerTypeDecl, isStatic = false)
     scope.pushMethodScope(outerMethod, ExpectedType.empty, isStatic = false)
     scope.pushTypeDeclScope(innerTypeDecl, isStatic = true)

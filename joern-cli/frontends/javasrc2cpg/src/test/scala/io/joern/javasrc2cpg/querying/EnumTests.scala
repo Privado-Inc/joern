@@ -2,7 +2,7 @@ package io.joern.javasrc2cpg.querying
 
 import io.joern.javasrc2cpg.testfixtures.JavaSrcCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.nodes.Literal
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class EnumTests extends JavaSrcCode2CpgFixture {
   val cpg = code("""
@@ -23,6 +23,10 @@ class EnumTests extends JavaSrcCode2CpgFixture {
       |  }
       |}
       |""".stripMargin)
+
+  "the enum type should extends java.lang.Enum" in {
+    cpg.typeDecl.name("FuzzyBool").inheritsFromTypeFullName.l shouldBe List("java.lang.Enum")
+  }
 
   "it should parse a basic enum without values" in {
     inside(cpg.typeDecl.name(".*FuzzyBool.*").l) { case List(typeDecl) =>

@@ -1,14 +1,20 @@
 package io.joern.rubysrc2cpg.passes
 
+import org.slf4j.LoggerFactory
+
 object Defines {
 
+  private val logger = LoggerFactory.getLogger(getClass)
+
   val Any: String          = "ANY"
+  val Defined: String      = "defined"
   val Undefined: String    = "Undefined"
   val Object: String       = "Object"
   val NilClass: String     = "NilClass"
   val TrueClass: String    = "TrueClass"
   val FalseClass: String   = "FalseClass"
   val Numeric: String      = "Numeric"
+  val New: String          = "new"
   val Integer: String      = "Integer"
   val Float: String        = "Float"
   val String: String       = "String"
@@ -21,30 +27,43 @@ object Defines {
   val Proc: String         = "proc"
   val Loop: String         = "loop"
   val Self: String         = "self"
+  val Super: String        = "super"
+  val Rational: String     = "Rational"
   val Initialize: String   = "initialize"
   val TypeDeclBody: String = "<body>"
 
-  val Program: String = ":program"
+  val Main: String = "<main>"
 
   val Resolver: String = "<dependency-resolver>"
 
-  val AnonymousProcParameter = "<anonymous-proc-param>"
+  def prefixAsKernelDefined(typeInString: String): String = {
+    if (GlobalTypes.bundledClasses.contains(typeInString))
+      logger.warn(s"Type '$typeInString' is considered a 'core' type, not a 'Kernel-contained' type")
+    s"${GlobalTypes.kernelPrefix}.$typeInString"
+  }
 
-  def getBuiltInType(typeInString: String) = s"${GlobalTypes.kernelPrefix}.$typeInString"
+  def prefixAsCoreType(typeInString: String): String = {
+    if (!GlobalTypes.bundledClasses.contains(typeInString))
+      logger.warn(s"Type '$typeInString' not considered a 'core' type")
+    s"${GlobalTypes.corePrefix}.$typeInString"
+  }
 
   object RubyOperators {
-    val hashInitializer = "<operator>.hashInitializer"
-    val association     = "<operator>.association"
-    val splat           = "<operator>.splat"
-    val regexpMatch     = "=~"
-    val regexpNotMatch  = "!~"
+    val backticks: String = "<operator>.backticks"
+    val hashInitializer   = "<operator>.hashInitializer"
+    val association       = "<operator>.association"
+    val splat             = "<operator>.splat"
+    val regexpMatch       = "=~"
+    val regexpNotMatch    = "!~"
+
+    val regexMethods = Set("match") // TODO: Figure out how to model these, "sub", "gsub")
   }
 }
 
 object GlobalTypes {
-  val Kernel        = "Kernel"
-  val builtinPrefix = "__core"
-  val kernelPrefix  = s"$builtinPrefix.$Kernel"
+  val Kernel       = "Kernel"
+  val corePrefix   = "__core"
+  val kernelPrefix = s"$corePrefix.$Kernel"
 
   /** Source: https://ruby-doc.org/docs/ruby-doc-bundle/Manual/man-1.4/function.html
     */
@@ -192,7 +211,8 @@ object GlobalTypes {
 
   /* Source: https://ruby-doc.org/3.2.2/Kernel.html
    *
-   * We comment-out methods that require an explicit "receiver" (target of member access.)
+   * We comment-out methods that require an explicit "receiver" (target of member access) and those that may be commonly
+   * shadowed.
    */
   val kernelFunctions: Set[String] = Set(
     "Array",
@@ -252,7 +272,7 @@ object GlobalTypes {
     "require",
     "require_all",
     "require_relative",
-    "select",
+//    "select",
     "set_trace_func",
     "sleep",
     "spawn",

@@ -26,6 +26,7 @@ class CallsToFieldAccessTests extends KotlinCode2CpgFixture(withOssDataflow = fa
       val List(c) = cpg.call.codeExact("println(x)").argument.isCall.l
       c.code shouldBe "this.x"
       c.name shouldBe Operators.fieldAccess
+      c.typeFullName shouldBe "java.lang.String"
       c.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
       c.lineNumber shouldBe Some(6)
       c.columnNumber shouldBe Some(16)
@@ -139,4 +140,21 @@ class CallsToFieldAccessTests extends KotlinCode2CpgFixture(withOssDataflow = fa
       x.methodFullName shouldBe "mypkg.AClass.printX:void()"
     }
   }
+
+  "Field access after array/map access" should {
+    "have correct arguments" in {
+      val cpg = code("""
+          |val m = LinkedHashMap<Int, User>()
+          |val x = m[1].aaa
+          |""".stripMargin)
+
+      inside(cpg.call.methodFullNameExact(Operators.fieldAccess).argument.l) { case List(arg1, arg2) =>
+        arg1.code shouldBe "m[1]"
+        arg1.argumentIndex shouldBe 1
+        arg2.code shouldBe "aaa"
+        arg2.argumentIndex shouldBe 2
+      }
+    }
+  }
+
 }

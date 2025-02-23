@@ -3,7 +3,7 @@ package io.joern.joerncli
 import io.joern.dataflowengineoss.layers.dataflows.{OssDataFlow, OssDataFlowOptions}
 import io.joern.x2cpg.X2Cpg.applyDefaultOverlays
 import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.semanticcpg.layers._
+import io.shiftleft.semanticcpg.layers.*
 
 object DefaultOverlays {
 
@@ -16,7 +16,7 @@ object DefaultOverlays {
     *   the filename of the cpg
     */
   def create(storeFilename: String, maxNumberOfDefinitions: Int = defaultMaxNumberOfDefinitions): Cpg = {
-    val cpg = CpgBasedTool.loadFromOdb(storeFilename)
+    val cpg = CpgBasedTool.loadFromFile(storeFilename)
     applyDefaultOverlays(cpg)
     val context = new LayerCreatorContext(cpg)
     val options = new OssDataFlowOptions(maxNumberOfDefinitions)

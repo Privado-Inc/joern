@@ -1,7 +1,7 @@
 package io.joern.php2cpg.querying
 
 import io.joern.php2cpg.testfixtures.PhpCode2CpgFixture
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class LocalTests extends PhpCode2CpgFixture {
 
@@ -71,7 +71,6 @@ class LocalTests extends PhpCode2CpgFixture {
           |  }
           |}
           |""".stripMargin)
-    println(cpg.local.name.l)
     inside(cpg.local.l) { case List(xLocal) =>
       xLocal.name shouldBe "x"
       xLocal.code shouldBe "static $x"
