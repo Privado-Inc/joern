@@ -37,7 +37,7 @@ lazy val GoAstgenMac      = "goastgen-macos"
 lazy val GoAstgenMacArm   = "goastgen-macos-arm64"
 
 lazy val goAstGenDlUrl = settingKey[String]("goastgen download url")
-goAstGenDlUrl := s"https://github.com/Privado-Inc/goastgen/releases/download/v${goAstGenVersion.value}/"
+goAstGenDlUrl := s"https://github.com/joernio/goastgen/releases/download/v${goAstGenVersion.value}/"
 
 def hasCompatibleAstGenVersion(goAstGenVersion: String): Boolean = {
   Try("goastgen -version".!!).toOption.map(_.strip()) match {
@@ -78,16 +78,15 @@ goAstGenDlTask := {
   val goAstGenDir = baseDirectory.value / "bin" / "astgen"
 
   goAstGenBinaryNames.value.foreach { fileName =>
-    DownloadHelper.ensureIsAvailable(s"${goAstGenDlUrl.value}$fileName", goAstGenDir / fileName)
+    val file = goAstGenDir / fileName
+    DownloadHelper.ensureIsAvailable(s"${goAstGenDlUrl.value}$fileName", file)
+    // permissions are lost during the download; need to set them manually
+    file.setExecutable(true, false)
   }
 
   val distDir = (Universal / stagingDirectory).value / "bin" / "astgen"
   distDir.mkdirs()
-  IO.copyDirectory(goAstGenDir, distDir)
-
-  // permissions are lost during the download; need to set them manually
-  goAstGenDir.listFiles().foreach(_.setExecutable(true, false))
-  distDir.listFiles().foreach(_.setExecutable(true, false))
+  IO.copyDirectory(goAstGenDir, distDir, preserveExecutable = true)
 }
 
 Compile / compile := ((Compile / compile) dependsOn goAstGenDlTask).value
@@ -99,3 +98,7 @@ stage := Def
   .sequential(goAstGenSetAllPlatforms, Universal / stage)
   .andFinally(System.setProperty("ALL_PLATFORMS", "FALSE"))
   .value
+
+/** write the astgen version to the manifest for downstream usage */
+Compile / packageBin / packageOptions +=
+  Package.ManifestAttributes(new java.util.jar.Attributes.Name("Go-AstGen-Version") -> goAstGenVersion.value)

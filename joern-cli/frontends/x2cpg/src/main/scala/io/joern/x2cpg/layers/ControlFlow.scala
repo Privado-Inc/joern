@@ -3,7 +3,7 @@ package io.joern.x2cpg.layers
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.Languages
 import io.shiftleft.passes.CpgPassBase
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext, LayerCreatorOptions}
 import io.joern.x2cpg.passes.controlflow.CfgCreationPass
 import io.joern.x2cpg.passes.controlflow.cfgdominator.CfgDominatorPass
@@ -31,10 +31,7 @@ class ControlFlow extends LayerCreator {
   override val dependsOn: List[String] = List(Base.overlayName)
 
   override def create(context: LayerCreatorContext): Unit = {
-    val cpg = context.cpg
-    ControlFlow.passes(cpg).zipWithIndex.foreach { case (pass, index) =>
-      runPass(pass, context, index)
-    }
+    ControlFlow.passes(context.cpg).foreach(_.createAndApply())
   }
 
   // LayerCreators need one-arg constructor, because they're called by reflection from io.joern.console.Run
