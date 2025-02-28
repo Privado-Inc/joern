@@ -2,10 +2,10 @@ package io.joern.c2cpg.passes.types
 
 import io.joern.c2cpg.parser.FileDefaults
 import io.joern.c2cpg.testfixtures.C2CpgSuite
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
-class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
+class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CppExt) {
 
   "Templates" should {
 
@@ -29,7 +29,7 @@ class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
           typeDeclA.aliasTypeFullName shouldBe Option("X<int>")
           typeDeclB.name shouldBe "B"
           typeDeclB.fullName shouldBe "B"
-          typeDeclB.aliasTypeFullName shouldBe Option("Y<int, char>")
+          typeDeclB.aliasTypeFullName shouldBe Option("Y<int,char>")
       }
     }
 
@@ -72,10 +72,10 @@ class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
        |""".stripMargin)
       inside(cpg.method.nameNot("<global>").internal.l) { case List(x, y) =>
         x.name shouldBe "x"
-        x.fullName shouldBe "x:void(#0,#1)"
+        x.fullName shouldBe "x:void(T,U)"
         x.signature shouldBe "void(T,U)"
         y.name shouldBe "y"
-        y.fullName shouldBe "y:void(#0,#1)"
+        y.fullName shouldBe "y:void(T,U)"
         y.signature shouldBe "void(T,U)"
       }
     }

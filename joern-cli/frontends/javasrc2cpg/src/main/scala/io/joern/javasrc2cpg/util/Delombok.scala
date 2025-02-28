@@ -1,14 +1,14 @@
 package io.joern.javasrc2cpg.util
 
 import better.files.File
-import io.joern.x2cpg.utils.ExternalCommand
 import io.joern.javasrc2cpg.util.Delombok.DelombokMode.*
+import io.shiftleft.semanticcpg.utils.ExternalCommand
 import org.slf4j.LoggerFactory
 
-import java.nio.file.{Path, Paths}
-import scala.collection.mutable
-import scala.util.matching.Regex
-import scala.util.{Failure, Success, Try}
+import java.nio.file.Path
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
 
 object Delombok {
 
@@ -53,8 +53,17 @@ object Delombok {
         System.getProperty("java.class.path")
     }
     val command =
-      s"$javaPath -cp $classPathArg lombok.launch.Main delombok ${inputPath.toAbsolutePath.toString} -d ${outputDir.canonicalPath}"
-    logger.debug(s"Executing delombok with command $command")
+      Seq(
+        javaPath,
+        "-cp",
+        classPathArg,
+        "lombok.launch.Main",
+        "delombok",
+        inputPath.toAbsolutePath.toString,
+        "-d",
+        outputDir.canonicalPath
+      )
+    logger.debug(s"Executing delombok with command ${command.mkString(" ")}")
     command
   }
 
@@ -71,7 +80,8 @@ object Delombok {
     val inputDir = projectDir.resolve(relativePackageRoot)
     Try(delombokTempDir.createChild(relativeOutputPath, asDirectory = true)).flatMap { packageOutputDir =>
       ExternalCommand
-        .run(delombokToTempDirCommand(inputDir, packageOutputDir, analysisJavaHome), ".")
+        .run(delombokToTempDirCommand(inputDir, packageOutputDir, analysisJavaHome), Some("."))
+        .toTry
         .map(_ => delombokTempDir.path.toAbsolutePath.toString)
     }
   }

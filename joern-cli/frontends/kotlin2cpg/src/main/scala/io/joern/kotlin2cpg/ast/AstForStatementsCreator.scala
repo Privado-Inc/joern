@@ -2,7 +2,6 @@ package io.joern.kotlin2cpg.ast
 
 import io.joern.kotlin2cpg.Constants
 import io.joern.kotlin2cpg.types.TypeConstants
-import io.joern.kotlin2cpg.types.TypeInfoProvider
 import io.joern.x2cpg.Ast
 import io.joern.x2cpg.ValidationMode
 import io.joern.x2cpg.utils.NodeBuilders
@@ -35,9 +34,7 @@ import scala.jdk.CollectionConverters.*
 trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
   this: AstCreator =>
 
-  def astForFor(expr: KtForExpression, annotations: Seq[KtAnnotationEntry] = Seq())(implicit
-    typeInfoProvider: TypeInfoProvider
-  ): Ast = {
+  def astForFor(expr: KtForExpression, annotations: Seq[KtAnnotationEntry] = Seq()): Ast = {
     val outAst =
       if (expr.getDestructuringDeclaration != null) astForForWithDestructuringLHS(expr)
       else astForForWithSimpleVarLHS(expr)
@@ -60,25 +57,25 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
   //                            |-> loweringOf{d2 = tmp.component2()}
   //                            |-> <statements>
   //
-  private def astForForWithDestructuringLHS(expr: KtForExpression)(implicit typeInfoProvider: TypeInfoProvider): Ast = {
+  private def astForForWithDestructuringLHS(expr: KtForExpression): Ast = {
     val loopRangeText         = expr.getLoopRange.getText
-    val iteratorName          = s"${Constants.iteratorPrefix}${iteratorKeyPool.next()}"
-    val localForIterator      = localNode(expr, iteratorName, iteratorName, TypeConstants.any)
-    val iteratorAssignmentLhs = newIdentifierNode(iteratorName, TypeConstants.any)
+    val iteratorName          = s"${Constants.IteratorPrefix}${iteratorKeyPool.next}"
+    val localForIterator      = localNode(expr, iteratorName, iteratorName, TypeConstants.Any)
+    val iteratorAssignmentLhs = newIdentifierNode(iteratorName, TypeConstants.Any)
     val iteratorLocalAst      = Ast(localForIterator).withRefEdge(iteratorAssignmentLhs, localForIterator)
 
     // TODO: maybe use a different method here, one which does not translate `kotlin.collections.List` to `java.util.List`
-    val loopRangeExprTypeFullName = registerType(typeInfoProvider.expressionType(expr.getLoopRange, TypeConstants.any))
+    val loopRangeExprTypeFullName = registerType(exprTypeFullName(expr.getLoopRange).getOrElse(TypeConstants.Any))
     val iteratorAssignmentRhsIdentifier = newIdentifierNode(loopRangeText, loopRangeExprTypeFullName)
       .argumentIndex(0)
     val iteratorAssignmentRhs = callNode(
       expr.getLoopRange,
-      s"$loopRangeText.${Constants.getIteratorMethodName}()",
-      Constants.getIteratorMethodName,
-      s"$loopRangeExprTypeFullName.${Constants.getIteratorMethodName}:${Constants.javaUtilIterator}()",
+      s"$loopRangeText.${Constants.GetIteratorMethodName}()",
+      Constants.GetIteratorMethodName,
+      s"$loopRangeExprTypeFullName.${Constants.GetIteratorMethodName}:${Constants.JavaUtilIterator}()",
       DispatchTypes.DYNAMIC_DISPATCH,
-      Some(s"${Constants.javaUtilIterator}()"),
-      Some(Constants.javaUtilIterator)
+      Some(s"${Constants.JavaUtilIterator}()"),
+      Some(Constants.JavaUtilIterator)
     )
 
     val iteratorAssignmentRhsAst =
@@ -92,50 +89,40 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     val conditionIdentifier = newIdentifierNode(loopRangeText, loopRangeExprTypeFullName).argumentIndex(0)
 
     val hasNextFullName =
-      s"${Constants.collectionsIteratorName}.${Constants.hasNextIteratorMethodName}:${TypeConstants.javaLangBoolean}()"
+      s"${Constants.CollectionsIteratorName}.${Constants.HasNextIteratorMethodName}:${TypeConstants.JavaLangBoolean}()"
     val controlStructureCondition = callNode(
       expr.getLoopRange,
-      s"$iteratorName.${Constants.hasNextIteratorMethodName}()",
-      Constants.hasNextIteratorMethodName,
+      s"$iteratorName.${Constants.HasNextIteratorMethodName}()",
+      Constants.HasNextIteratorMethodName,
       hasNextFullName,
       DispatchTypes.DYNAMIC_DISPATCH,
-      Some(s"${TypeConstants.javaLangBoolean}()"),
-      Some(TypeConstants.javaLangBoolean)
+      Some(s"${TypeConstants.JavaLangBoolean}()"),
+      Some(TypeConstants.JavaLangBoolean)
     ).argumentIndex(0)
     val controlStructureConditionAst =
       callAst(controlStructureCondition, List(), Option(Ast(conditionIdentifier)))
 
-    val destructuringDeclEntries = expr.getDestructuringDeclaration.getEntries
-    val localsForDestructuringVars =
-      destructuringDeclEntries.asScala
-        .filterNot(_.getText == Constants.unusedDestructuringEntryText)
-        .map { entry =>
-          val entryTypeFullName = registerType(typeInfoProvider.typeFullName(entry, TypeConstants.any))
-          val entryName         = entry.getText
-          val node              = localNode(entry, entryName, entryName, entryTypeFullName)
-          scope.addToScope(entryName, node)
-          Ast(node)
-        }
-        .toList
+    val destructuringDeclEntries   = expr.getDestructuringDeclaration.getEntries
+    val localsForDestructuringVars = localsForDestructuringEntries(expr.getDestructuringDeclaration)
 
-    val tmpName     = s"${Constants.tmpLocalPrefix}${tmpKeyPool.next}"
-    val localForTmp = localNode(expr, tmpName, tmpName, TypeConstants.any)
+    val tmpName     = s"${Constants.TmpLocalPrefix}${tmpKeyPool.next}"
+    val localForTmp = localNode(expr, tmpName, tmpName, TypeConstants.Any)
     scope.addToScope(localForTmp.name, localForTmp)
     val localForTmpAst = Ast(localForTmp)
 
-    val tmpIdentifier             = newIdentifierNode(tmpName, TypeConstants.any)
+    val tmpIdentifier             = newIdentifierNode(tmpName, TypeConstants.Any)
     val tmpIdentifierAst          = Ast(tmpIdentifier).withRefEdge(tmpIdentifier, localForTmp)
-    val iteratorNextIdentifier    = newIdentifierNode(iteratorName, TypeConstants.any).argumentIndex(0)
+    val iteratorNextIdentifier    = newIdentifierNode(iteratorName, TypeConstants.Any).argumentIndex(0)
     val iteratorNextIdentifierAst = Ast(iteratorNextIdentifier).withRefEdge(iteratorNextIdentifier, localForIterator)
 
     val iteratorNextCall = callNode(
       expr.getLoopRange,
-      s"${iteratorNextIdentifier.code}.${Constants.nextIteratorMethodName}()",
-      Constants.nextIteratorMethodName,
-      s"${Constants.collectionsIteratorName}.${Constants.nextIteratorMethodName}:${TypeConstants.javaLangObject}()",
+      s"${iteratorNextIdentifier.code}.${Constants.NextIteratorMethodName}()",
+      Constants.NextIteratorMethodName,
+      s"${Constants.CollectionsIteratorName}.${Constants.NextIteratorMethodName}:${TypeConstants.JavaLangObject}()",
       DispatchTypes.DYNAMIC_DISPATCH,
-      Some(s"${TypeConstants.javaLangObject}()"),
-      Some(TypeConstants.javaLangObject)
+      Some(s"${TypeConstants.JavaLangObject}()"),
+      Some(TypeConstants.JavaLangObject)
     )
 
     val iteratorNextCallAst =
@@ -145,16 +132,22 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     val tmpParameterNextAssignmentAst = callAst(tmpParameterNextAssignment, List(tmpIdentifierAst, iteratorNextCallAst))
 
     val assignmentsForEntries =
-      destructuringDeclEntries.asScala.filterNot(_.getText == Constants.unusedDestructuringEntryText).zipWithIndex.map {
+      destructuringDeclEntries.asScala.filterNot(_.getText == Constants.UnusedDestructuringEntryText).zipWithIndex.map {
         case (entry, idx) =>
-          assignmentAstForDestructuringEntry(entry, localForTmp.name, localForTmp.typeFullName, idx + 1)
+          val rhsBaseAst =
+            astWithRefEdgeMaybe(
+              localForTmp.name,
+              identifierNode(entry, localForTmp.name, localForTmp.name, localForTmp.typeFullName)
+                .argumentIndex(0)
+            )
+          assignmentAstForDestructuringEntry(entry, rhsBaseAst, idx + 1)
       }
 
     val stmtAsts             = astsForExpression(expr.getBody, None)
     val controlStructureBody = blockNode(expr.getBody, "", "")
     val controlStructureBodyAst = blockAst(
       controlStructureBody,
-      localsForDestructuringVars ++
+      localsForDestructuringVars.toList ++
         List(localForTmpAst, tmpParameterNextAssignmentAst) ++
         assignmentsForEntries ++
         stmtAsts
@@ -163,7 +156,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     val _controlStructureAst =
       controlStructureAst(controlStructure, Some(controlStructureConditionAst), Seq(controlStructureBodyAst))
     blockAst(
-      blockNode(expr, Constants.codeForLoweredForBlock, ""),
+      blockNode(expr, Constants.CodeForLoweredForBlock, ""),
       List(iteratorLocalAst, iteratorAssignmentAst, _controlStructureAst)
     )
   }
@@ -180,25 +173,25 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
   //                            |-> loweringOf{one = iterator.next()}
   //                            |-> <statements>
   //
-  private def astForForWithSimpleVarLHS(expr: KtForExpression)(implicit typeInfoProvider: TypeInfoProvider): Ast = {
+  private def astForForWithSimpleVarLHS(expr: KtForExpression): Ast = {
     val loopRangeText         = expr.getLoopRange.getText
-    val iteratorName          = s"${Constants.iteratorPrefix}${iteratorKeyPool.next()}"
-    val iteratorLocal         = localNode(expr, iteratorName, iteratorName, TypeConstants.any)
-    val iteratorAssignmentLhs = newIdentifierNode(iteratorName, TypeConstants.any)
+    val iteratorName          = s"${Constants.IteratorPrefix}${iteratorKeyPool.next}"
+    val iteratorLocal         = localNode(expr, iteratorName, iteratorName, TypeConstants.Any)
+    val iteratorAssignmentLhs = newIdentifierNode(iteratorName, TypeConstants.Any)
     val iteratorLocalAst      = Ast(iteratorLocal).withRefEdge(iteratorAssignmentLhs, iteratorLocal)
 
-    val loopRangeExprTypeFullName = registerType(typeInfoProvider.expressionType(expr.getLoopRange, TypeConstants.any))
+    val loopRangeExprTypeFullName = registerType(exprTypeFullName(expr.getLoopRange).getOrElse(TypeConstants.Any))
 
     val iteratorAssignmentRhsIdentifier = newIdentifierNode(loopRangeText, loopRangeExprTypeFullName)
       .argumentIndex(0)
     val iteratorAssignmentRhs = callNode(
       expr.getLoopRange,
-      s"$loopRangeText.${Constants.getIteratorMethodName}()",
-      Constants.getIteratorMethodName,
-      s"$loopRangeExprTypeFullName.${Constants.getIteratorMethodName}:${Constants.javaUtilIterator}()",
+      s"$loopRangeText.${Constants.GetIteratorMethodName}()",
+      Constants.GetIteratorMethodName,
+      s"$loopRangeExprTypeFullName.${Constants.GetIteratorMethodName}:${Constants.JavaUtilIterator}()",
       DispatchTypes.DYNAMIC_DISPATCH,
-      Some(s"${Constants.javaUtilIterator}()"),
-      Some(Constants.javaUtilIterator)
+      Some(s"${Constants.JavaUtilIterator}()"),
+      Some(Constants.JavaUtilIterator)
     )
 
     val iteratorAssignmentRhsAst =
@@ -212,40 +205,43 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     val conditionIdentifier = newIdentifierNode(loopRangeText, loopRangeExprTypeFullName).argumentIndex(0)
 
     val hasNextFullName =
-      s"${Constants.collectionsIteratorName}.${Constants.hasNextIteratorMethodName}:${TypeConstants.javaLangBoolean}()"
+      s"${Constants.CollectionsIteratorName}.${Constants.HasNextIteratorMethodName}:${TypeConstants.JavaLangBoolean}()"
     val controlStructureCondition = callNode(
       expr.getLoopRange,
-      s"$iteratorName.${Constants.hasNextIteratorMethodName}()",
-      Constants.hasNextIteratorMethodName,
+      s"$iteratorName.${Constants.HasNextIteratorMethodName}()",
+      Constants.HasNextIteratorMethodName,
       hasNextFullName,
       DispatchTypes.DYNAMIC_DISPATCH,
-      Some(s"${TypeConstants.javaLangBoolean}()"),
-      Some(TypeConstants.javaLangBoolean)
+      Some(s"${TypeConstants.JavaLangBoolean}()"),
+      Some(TypeConstants.JavaLangBoolean)
     ).argumentIndex(0)
     val controlStructureConditionAst =
       callAst(controlStructureCondition, List(), Option(Ast(conditionIdentifier)))
 
     val loopParameterTypeFullName = registerType(
-      typeInfoProvider.typeFullName(expr.getLoopParameter, TypeConstants.any)
+      bindingUtils
+        .getVariableDesc(expr.getLoopParameter)
+        .flatMap(desc => nameRenderer.typeFullName(desc.getType))
+        .getOrElse(TypeConstants.Any)
     )
     val loopParameterName  = expr.getLoopParameter.getText
     val loopParameterLocal = localNode(expr, loopParameterName, loopParameterName, loopParameterTypeFullName)
     scope.addToScope(loopParameterName, loopParameterLocal)
 
-    val loopParameterIdentifier = newIdentifierNode(loopParameterName, TypeConstants.any)
+    val loopParameterIdentifier = newIdentifierNode(loopParameterName, TypeConstants.Any)
     val loopParameterAst        = Ast(loopParameterLocal).withRefEdge(loopParameterIdentifier, loopParameterLocal)
 
-    val iteratorNextIdentifier    = newIdentifierNode(iteratorName, TypeConstants.any).argumentIndex(0)
+    val iteratorNextIdentifier    = newIdentifierNode(iteratorName, TypeConstants.Any).argumentIndex(0)
     val iteratorNextIdentifierAst = Ast(iteratorNextIdentifier).withRefEdge(iteratorNextIdentifier, iteratorLocal)
 
     val iteratorNextCall = callNode(
       expr.getLoopParameter,
-      s"$iteratorName.${Constants.nextIteratorMethodName}()",
-      Constants.nextIteratorMethodName,
-      s"${Constants.collectionsIteratorName}.${Constants.nextIteratorMethodName}:${TypeConstants.javaLangObject}()",
+      s"$iteratorName.${Constants.NextIteratorMethodName}()",
+      Constants.NextIteratorMethodName,
+      s"${Constants.CollectionsIteratorName}.${Constants.NextIteratorMethodName}:${TypeConstants.JavaLangObject}()",
       DispatchTypes.DYNAMIC_DISPATCH,
-      Some(s"${TypeConstants.javaLangObject}()"),
-      Some(TypeConstants.javaLangObject)
+      Some(s"${TypeConstants.JavaLangObject}()"),
+      Some(TypeConstants.JavaLangObject)
     )
     val iteratorNextCallAst =
       callAst(iteratorNextCall, Seq(), Option(iteratorNextIdentifierAst))
@@ -262,7 +258,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     val _controlStructureAst =
       controlStructureAst(controlStructure, Some(controlStructureConditionAst), Seq(controlStructureBodyAst))
     blockAst(
-      blockNode(expr, Constants.codeForLoweredForBlock, ""),
+      blockNode(expr, Constants.CodeForLoweredForBlock, ""),
       List(iteratorLocalAst, iteratorAssignmentAst, _controlStructureAst)
     )
   }
@@ -272,15 +268,13 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     argIdx: Option[Int],
     argNameMaybe: Option[String],
     annotations: Seq[KtAnnotationEntry] = Seq()
-  )(implicit typeInfoProvider: TypeInfoProvider): Ast = {
+  ): Ast = {
     val isChildOfControlStructureBody = expr.getParent.isInstanceOf[KtContainerNodeForControlStructureBody]
     if (KtPsiUtil.isStatement(expr) && !isChildOfControlStructureBody) astForIfAsControlStructure(expr, annotations)
     else astForIfAsExpression(expr, argIdx, argNameMaybe, annotations)
   }
 
-  private def astForIfAsControlStructure(expr: KtIfExpression, annotations: Seq[KtAnnotationEntry] = Seq())(implicit
-    typeInfoProvider: TypeInfoProvider
-  ): Ast = {
+  private def astForIfAsControlStructure(expr: KtIfExpression, annotations: Seq[KtAnnotationEntry] = Seq()): Ast = {
     val conditionAst = astsForExpression(expr.getCondition, None).headOption
     val thenAsts     = astsForExpression(expr.getThen, None)
     val elseAsts     = Option(expr.getElse).toSeq.flatMap(astsForExpression(_, None))
@@ -295,14 +289,14 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     argIdx: Option[Int],
     argNameMaybe: Option[String],
     annotations: Seq[KtAnnotationEntry] = Seq()
-  )(implicit typeInfoProvider: TypeInfoProvider): Ast = {
+  ): Ast = {
     val conditionAsts = astsForExpression(expr.getCondition, None)
     val thenAsts      = astsForExpression(expr.getThen, None)
     val elseAsts      = Option(expr.getElse).toSeq.flatMap(astsForExpression(_, None))
 
     val allAsts = (conditionAsts ++ thenAsts ++ elseAsts).toList
     if (allAsts.nonEmpty) {
-      val returnTypeFullName = registerType(typeInfoProvider.expressionType(expr, TypeConstants.any))
+      val returnTypeFullName = registerType(exprTypeFullName(expr).getOrElse(TypeConstants.Any))
       val node =
         NodeBuilders.newOperatorCallNode(
           Operators.conditional,
@@ -319,9 +313,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     }
   }
 
-  def astForWhile(expr: KtWhileExpression, annotations: Seq[KtAnnotationEntry] = Seq())(implicit
-    typeInfoProvider: TypeInfoProvider
-  ): Ast = {
+  def astForWhile(expr: KtWhileExpression, annotations: Seq[KtAnnotationEntry] = Seq()): Ast = {
     val conditionAst = astsForExpression(expr.getCondition, None).headOption
     val stmtAsts     = astsForExpression(expr.getBody, None)
     val code         = Option(expr.getText)
@@ -332,9 +324,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
       .withChildren(annotations.map(astForAnnotationEntry))
   }
 
-  def astForDoWhile(expr: KtDoWhileExpression, annotations: Seq[KtAnnotationEntry] = Seq())(implicit
-    typeInfoProvider: TypeInfoProvider
-  ): Ast = {
+  def astForDoWhile(expr: KtDoWhileExpression, annotations: Seq[KtAnnotationEntry] = Seq()): Ast = {
     val conditionAst = astsForExpression(expr.getCondition, None).headOption
     val stmtAsts     = astsForExpression(expr.getBody, None)
     val code         = Option(expr.getText)
@@ -345,9 +335,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
       .withChildren(annotations.map(astForAnnotationEntry))
   }
 
-  private def astForWhenAsStatement(expr: KtWhenExpression, argIdx: Option[Int])(implicit
-    typeInfoProvider: TypeInfoProvider
-  ): Ast = {
+  private def astForWhenAsStatement(expr: KtWhenExpression, argIdx: Option[Int]): Ast = {
     val (astForSubject, finalAstForSubject) = Option(expr.getSubjectExpression) match {
       case Some(subjectExpression) =>
         val astForSubject = astsForExpression(subjectExpression, Some(1)).headOption.getOrElse(Ast())
@@ -369,12 +357,12 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
       }.flatten
 
     val switchBlockNode =
-      blockNode(expr, expr.getEntries.asScala.map(_.getText).mkString("\n"), TypeConstants.any)
+      blockNode(expr, expr.getEntries.asScala.map(_.getText).mkString("\n"), TypeConstants.Any)
     val astForBlock = blockAst(switchBlockNode, astsForEntries.toList)
     val codeForSwitch = Option(expr.getSubjectExpression)
       .map(_.getText)
-      .map { text => s"${Constants.when}($text)" }
-      .getOrElse(Constants.when)
+      .map { text => s"${Constants.WhenKeyword}($text)" }
+      .getOrElse(Constants.WhenKeyword)
     val switchNode = controlStructureNode(expr, ControlStructureTypes.SWITCH, codeForSwitch)
     val ast        = Ast(withArgumentIndex(switchNode, argIdx)).withChildren(List(astForSubject, astForBlock))
     // TODO: rewrite this as well
@@ -384,10 +372,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     }
   }
 
-  def astForWhenAsExpression(expr: KtWhenExpression, argIdx: Option[Int], argNameMaybe: Option[String])(implicit
-    typeInfoProvider: TypeInfoProvider
-  ): Ast = {
-
+  def astForWhenAsExpression(expr: KtWhenExpression, argIdx: Option[Int], argNameMaybe: Option[String]): Ast = {
     val callNode =
       withArgumentIndex(NodeBuilders.newOperatorCallNode("<operator>.when", "<operator>.when", None), argIdx)
         .argumentName(argNameMaybe)
@@ -416,10 +401,10 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     callAst(callNode, List(subjectBlockAst) ++ argAsts)
   }
 
-  private def astForNoArgWhen(expr: KtWhenExpression)(implicit typeInfoProvider: TypeInfoProvider): Ast = {
+  private def astForNoArgWhen(expr: KtWhenExpression): Ast = {
     assert(expr.getSubjectExpression == null)
 
-    val typeFullName = registerType(typeInfoProvider.expressionType(expr, TypeConstants.any))
+    val typeFullName = registerType(exprTypeFullName(expr).getOrElse(TypeConstants.Any))
     var elseAst: Ast = Ast() // Initialize this as `Ast()` instead of `null`, as there is no guarantee of else block
 
     // In reverse order than expr.getEntries since that is the order
@@ -449,7 +434,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
           logger.debug(
             s"Creating empty AST node for unknown condition expression `${cond.getClass}` with text `${cond.getText}`."
           )
-          Seq(Ast(unknownNode(expr, Option(expr).map(_.getText).getOrElse(Constants.codePropUndefinedValue))))
+          Seq(Ast(unknownNode(expr, Option(expr).map(_.getText).getOrElse(Constants.CodePropUndefinedValue))))
         case None =>
           // This is the 'else' branch of 'when'.
           // and thus first in reverse order, if exists
@@ -464,7 +449,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     argIdx: Option[Int],
     argNameMaybe: Option[String],
     annotations: Seq[KtAnnotationEntry] = Seq()
-  )(implicit typeInfoProvider: TypeInfoProvider): Ast = {
+  ): Ast = {
     val outAst =
       if (expr.getSubjectExpression != null) {
         typeInfoProvider.usedAsExpression(expr) match {
@@ -477,20 +462,18 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     outAst.withChildren(annotations.map(astForAnnotationEntry))
   }
 
-  private def astsForWhenEntry(entry: KtWhenEntry, argIdx: Int)(implicit
-    typeInfoProvider: TypeInfoProvider
-  ): Seq[Ast] = {
+  private def astsForWhenEntry(entry: KtWhenEntry, argIdx: Int): Seq[Ast] = {
     // TODO: get all conditions with entry.getConditions()
     val name =
-      if (entry.getElseKeyword == null) Constants.defaultCaseNode
-      else s"${Constants.caseNodePrefix}$argIdx"
-    val jumpNode = jumpTargetNode(entry, name, entry.getText, Some(Constants.caseNodeParserTypeName))
+      if (entry.getElseKeyword == null) Constants.DefaultCaseNode
+      else s"${Constants.CaseNodePrefix}$argIdx"
+    val jumpNode = jumpTargetNode(entry, name, entry.getText, Some(Constants.CaseNodeParserTypeName))
       .argumentIndex(argIdx)
     val exprNode = astsForExpression(entry.getExpression, Some(argIdx + 1)).headOption.getOrElse(Ast())
     Seq(Ast(jumpNode), exprNode)
   }
 
-  private def astForTryAsStatement(expr: KtTryExpression)(implicit typeInfoProvider: TypeInfoProvider): Ast = {
+  private def astForTryAsStatement(expr: KtTryExpression): Ast = {
     val tryAst = astsForExpression(expr.getTryBlock, None).headOption.getOrElse(Ast())
     val clauseAsts = expr.getCatchClauses.asScala.toSeq.map { catchClause =>
       val catchNode    = controlStructureNode(catchClause, ControlStructureTypes.CATCH, catchClause.getText)
@@ -513,10 +496,10 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     argIdx: Option[Int],
     argNameMaybe: Option[String],
     annotations: Seq[KtAnnotationEntry] = Seq()
-  )(implicit typeInfoProvider: TypeInfoProvider): Ast = {
+  ): Ast = {
     val typeFullName = registerType(
       // TODO: remove the `last`
-      typeInfoProvider.expressionType(expr.getTryBlock.getStatements.asScala.last, TypeConstants.any)
+      exprTypeFullName(expr.getTryBlock.getStatements.asScala.last).getOrElse(TypeConstants.Any)
     )
     val tryBlockAst = astsForExpression(expr.getTryBlock, None).headOption.getOrElse(Ast())
     val clauseAsts = expr.getCatchClauses.asScala.toSeq.flatMap { entry =>
@@ -537,7 +520,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     argIdx: Option[Int],
     argNameMaybe: Option[String],
     annotations: Seq[KtAnnotationEntry] = Seq()
-  )(implicit typeInfoProvider: TypeInfoProvider): Ast = {
+  ): Ast = {
     if (KtPsiUtil.isStatement(expr)) astForTryAsStatement(expr)
     else astForTryAsExpression(expr, argIdx, argNameMaybe, annotations)
   }
@@ -560,8 +543,8 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
     localsForCaptures: List[NewLocal] = List(),
     implicitReturnAroundLastStatement: Boolean = false,
     preStatements: Option[Seq[Ast]] = None
-  )(implicit typeInfoProvider: TypeInfoProvider): Seq[Ast] = {
-    val typeFullName = registerType(typeInfoProvider.expressionType(expr, TypeConstants.any))
+  ): Seq[Ast] = {
+    val typeFullName = registerType(exprTypeFullName(expr).getOrElse(TypeConstants.Any))
     val node =
       withArgumentIndex(
         blockNode(expr, expr.getStatements.asScala.map(_.getText).mkString("\n"), typeFullName),
@@ -582,7 +565,7 @@ trait AstForStatementsCreator(implicit withSchemaValidation: ValidationMode) {
 
     val lastStatementAstWithTail =
       if (implicitReturnAroundLastStatement && statements.nonEmpty) {
-        val _returnNode          = returnNode(statements.last, Constants.retCode)
+        val _returnNode          = returnNode(statements.last, Constants.RetCode)
         val astsForLastStatement = astsForExpression(statements.last, Some(1))
         if (astsForLastStatement.isEmpty)
           (Seq(), None)
