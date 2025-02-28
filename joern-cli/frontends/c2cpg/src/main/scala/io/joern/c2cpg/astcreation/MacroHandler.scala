@@ -1,19 +1,20 @@
 package io.joern.c2cpg.astcreation
 
+import io.joern.x2cpg.Ast
+import io.joern.x2cpg.ValidationMode
 import io.shiftleft.codepropertygraph.generated.DispatchTypes
-import io.shiftleft.codepropertygraph.generated.nodes.{
-  AstNodeNew,
-  ExpressionNew,
-  NewBlock,
-  NewCall,
-  NewFieldIdentifier,
-  NewNode
-}
-import io.joern.x2cpg.{Ast, AstEdge, ValidationMode}
+import io.shiftleft.codepropertygraph.generated.nodes.AstNodeNew
+import io.shiftleft.codepropertygraph.generated.nodes.ExpressionNew
+import io.shiftleft.codepropertygraph.generated.nodes.NewBlock
+import io.shiftleft.codepropertygraph.generated.nodes.NewCall
+import io.shiftleft.codepropertygraph.generated.nodes.NewFieldIdentifier
 import io.shiftleft.codepropertygraph.generated.nodes.NewLocal
+import io.shiftleft.codepropertygraph.generated.nodes.NewNode
 import org.apache.commons.lang3.StringUtils
-import org.eclipse.cdt.core.dom.ast.{IASTMacroExpansionLocation, IASTNode, IASTPreprocessorMacroDefinition}
 import org.eclipse.cdt.core.dom.ast.IASTBinaryExpression
+import org.eclipse.cdt.core.dom.ast.IASTMacroExpansionLocation
+import org.eclipse.cdt.core.dom.ast.IASTNode
+import org.eclipse.cdt.core.dom.ast.IASTPreprocessorMacroDefinition
 import org.eclipse.cdt.internal.core.model.ASTStringUtil
 
 import scala.annotation.nowarn
@@ -45,18 +46,16 @@ trait MacroHandler(implicit withSchemaValidation: ValidationMode) { this: AstCre
     val macroCallAst  = matchingMacro.map { case (mac, args) => createMacroCallAst(ast, node, mac, args) }
     macroCallAst match {
       case Some(callAst) =>
-        val lostLocals = ast.refEdges.collect { case AstEdge(_, dst: NewLocal) => Ast(dst) }.toList
-        val newAst     = ast.subTreeCopy(ast.root.get.asInstanceOf[AstNodeNew], argIndex = 1)
-        // We need to wrap the copied AST as it may contain CPG nodes not being allowed
-        // to be connected via AST edges under a CALL. E.g., LOCALs but only if its not already a BLOCK.
-        val childAst = newAst.root match {
-          case Some(_: NewBlock) =>
-            newAst
+        // We need to wrap the AST as it may contain CPG nodes not being allowed
+        // to be connected via AST edges under a CALL. E.g., LOCALs but only if it is not already a BLOCK.
+        val childAst = ast.root match {
+          case Some(_: NewBlock) => ast
           case _ =>
-            val b = NewBlock().argumentIndex(1).typeFullName(registerType(Defines.voidTypeName))
-            blockAst(b, List(newAst))
+            setArgumentIndices(List(ast))
+            blockAst(blockNode(node), List(ast))
         }
-        callAst.withChildren(lostLocals).withChild(childAst)
+        setArgumentIndices(List(childAst))
+        callAst.withChild(childAst)
       case None => ast
     }
   }
@@ -124,13 +123,14 @@ trait MacroHandler(implicit withSchemaValidation: ValidationMode) { this: AstCre
 
     val callName     = StringUtils.normalizeSpace(name)
     val callFullName = StringUtils.normalizeSpace(fullName(macroDef, argAsts))
+    val typeFullName = registerType(cleanType(typeFor(node)))
     val callNode =
       NewCall()
         .name(callName)
         .dispatchType(DispatchTypes.INLINED)
         .methodFullName(callFullName)
         .code(code)
-        .typeFullName(typeFor(node))
+        .typeFullName(typeFullName)
         .lineNumber(line(node))
         .columnNumber(column(node))
     callAst(callNode, argAsts)

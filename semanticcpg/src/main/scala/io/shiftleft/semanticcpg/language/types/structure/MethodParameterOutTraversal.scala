@@ -3,11 +3,12 @@ package io.shiftleft.semanticcpg.language.types.structure
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 
-import scala.jdk.CollectionConverters.*
-
 class MethodParameterOutTraversal(val traversal: Iterator[MethodParameterOut]) extends AnyVal {
 
-  def paramIn: Iterator[MethodParameterIn] = traversal.flatMap(_.parameterLinkIn.headOption)
+  def paramIn: Iterator[MethodParameterIn] = {
+    // TODO define a named step in schema
+    traversal.flatMap(_.parameterLinkIn.collectAll[MethodParameterIn])
+  }
 
   /* method parameter indexes are  based, i.e. first parameter has index  (that's how java2cpg generates it) */
   def index(num: Int): Iterator[MethodParameterOut] =
@@ -27,9 +28,10 @@ class MethodParameterOutTraversal(val traversal: Iterator[MethodParameterOut]) e
     for {
       paramOut <- traversal
       method = paramOut.method
-      call <- method.callIn
-      arg  <- call.argumentOut.collectAll[Expression]
-      if paramOut.parameterLinkIn.index.headOption.contains(arg.argumentIndex)
+      call <- method._callIn
+      arg  <- call._argumentOut.collectAll[Expression]
+      // TODO define 'parameterLinkIn' as named step in schema
+      if paramOut.parameterLinkIn.collectAll[MethodParameterIn].index.headOption.contains(arg.argumentIndex)
     } yield arg
 
 }

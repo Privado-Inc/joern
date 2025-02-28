@@ -1,7 +1,7 @@
 package io.joern.c2cpg.io.dotgenerator
 
 import io.joern.c2cpg.testfixtures.C2CpgSuite
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class DotCfgGeneratorTests extends C2CpgSuite {
 
@@ -21,7 +21,7 @@ class DotCfgGeneratorTests extends C2CpgSuite {
       inside(cpg.method.name("main").dotCfg.l) { case List(dotStr) =>
         dotStr should (
           startWith("digraph \"main\" {") and
-            include("(&lt;operator&gt;.assignment,i = 0)") and
+            include("[label = <&lt;operator&gt;.assignment, 3<BR/>i = 0> ]") and
             endWith("}\n")
         )
       }
@@ -70,15 +70,9 @@ class DotCfgGeneratorTests extends C2CpgSuite {
     val cpg = code("""
         |int example(int a, int b, int c) {
         |  int x = 3;
-        |  if(a) {
-        |    foo();
-        |  }
-        |  if(b) {
-        |    foo_2();
-        |  }
-        |  if (c) {
-        |    foo_3();
-        |  }
+        |  if(a) { foo(); }
+        |  if(b) { foo_2(); }
+        |  if (c) { foo_3(); }
         |}
         |""".stripMargin)
 
@@ -86,9 +80,9 @@ class DotCfgGeneratorTests extends C2CpgSuite {
       inside(cpg.method.name("example").dotCfg.l) { case List(dotStr) =>
         dotStr should (
           startWith("digraph \"example\" {") and
-            include("<(IDENTIFIER,a,if (a))<SUB>4</SUB>>") and
-            include("<(IDENTIFIER,b,if (b))<SUB>7</SUB>>") and
-            include("<(IDENTIFIER,c,if (c))<SUB>10</SUB>>") and
+            include("[label = <IDENTIFIER, 4<BR/>a<BR/>if(a) { foo(); }> ]") and
+            include("[label = <IDENTIFIER, 5<BR/>b<BR/>if(b) { foo_2(); }> ]") and
+            include("[label = <IDENTIFIER, 6<BR/>c<BR/>if (c) { foo_3(); }> ]") and
             endWith("}\n")
         )
       }

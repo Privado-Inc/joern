@@ -12,10 +12,10 @@ import io.shiftleft.codepropertygraph.cpgloading.CpgLoader
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.dotextension.ImageViewer
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext}
-import overflowdb.traversal.help.Doc
-import overflowdb.traversal.help.Table.AvailableWidthProvider
+import io.shiftleft.codepropertygraph.generated.help.Doc
+import flatgraph.help.Table.AvailableWidthProvider
+import io.shiftleft.semanticcpg.utils.ExternalCommand
 
-import scala.sys.process.Process
 import scala.util.control.NoStackTrace
 import scala.util.{Failure, Success, Try}
 
@@ -44,7 +44,8 @@ class Console[T <: Project](loader: WorkspaceLoader[T], baseDir: File = File.cur
       Try {
         val command = if (scala.util.Properties.isWin) { Seq("cmd.exe", "/C", config.tools.imageViewer) }
         else { Seq(config.tools.imageViewer) }
-        Process(command :+ tmpFile.path.toAbsolutePath.toString).run()
+        ExternalCommand
+          .run(command :+ tmpFile.path.toAbsolutePath.toString)
       } match {
         case Success(_) =>
           // We never handle the actual result anywhere.
@@ -349,10 +350,14 @@ class Console[T <: Project](loader: WorkspaceLoader[T], baseDir: File = File.cur
 
     val cpgDestinationPath = cpgDestinationPathOpt.get
 
-    if (CpgLoader.isLegacyCpg(cpgFile)) {
-      report("You have provided a legacy proto CPG. Attempting conversion.")
+    val isProtoFormat      = CpgLoader.isProtoFormat(cpgFile.path)
+    val isOverflowDbFormat = CpgLoader.isOverflowDbFormat(cpgFile.path)
+    if (isProtoFormat || isOverflowDbFormat) {
+      if (isProtoFormat) report("You have provided a legacy proto CPG. Attempting conversion.")
+      else if (isOverflowDbFormat) report("You have provided a legacy overflowdb CPG. Attempting conversion.")
       try {
-        CpgConverter.convertProtoCpgToOverflowDb(cpgFile.path.toString, cpgDestinationPath.toString)
+        val cpg = CpgLoader.load(cpgFile.path, cpgDestinationPath)
+        cpg.close()
       } catch {
         case exc: Exception =>
           report("Error converting legacy CPG: " + exc.getMessage)

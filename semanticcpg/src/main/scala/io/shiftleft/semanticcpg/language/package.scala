@@ -1,8 +1,10 @@
 package io.shiftleft.semanticcpg
 
+import flatgraph.help.DocSearchPackages
+import io.shiftleft.codepropertygraph.generated
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.codepropertygraph.generated.traversal.NodeTraversalImplicits
+import io.shiftleft.semanticcpg.language.SarifExtension
 import io.shiftleft.semanticcpg.language.bindingextension.{
   MethodTraversal as BindingMethodTraversal,
   TypeDeclTraversal as BindingTypeDeclTraversal
@@ -10,16 +12,11 @@ import io.shiftleft.semanticcpg.language.bindingextension.{
 import io.shiftleft.semanticcpg.language.callgraphextension.{CallTraversal, MethodTraversal}
 import io.shiftleft.semanticcpg.language.dotextension.{AstNodeDot, CfgNodeDot, InterproceduralNodeDot}
 import io.shiftleft.semanticcpg.language.nodemethods.*
-import io.shiftleft.semanticcpg.language.types.expressions.generalizations.{
-  AstNodeTraversal,
-  CfgNodeTraversal,
-  DeclarationTraversal,
-  ExpressionTraversal
-}
+import io.shiftleft.semanticcpg.language.types.expressions.generalizations.*
 import io.shiftleft.semanticcpg.language.types.expressions.{CallTraversal as OriginalCall, *}
 import io.shiftleft.semanticcpg.language.types.propertyaccessors.*
 import io.shiftleft.semanticcpg.language.types.structure.{MethodTraversal as OriginalMethod, *}
-import overflowdb.NodeOrDetachedNode
+import io.shiftleft.semanticcpg.language.types.structure.*
 
 /** Language for traversing the code property graph
   *
@@ -27,20 +24,19 @@ import overflowdb.NodeOrDetachedNode
   * `steps` package, e.g. `Steps`
   */
 package object language
-    extends operatorextension.Implicits
+    extends generated.language
+    with operatorextension.Implicits
     with modulevariable.Implicits
     with importresolver.Implicits
-    with LowPrioImplicits
-    with NodeTraversalImplicits {
+    with LowPrioImplicits {
   // Implicit conversions from generated node types. We use these to add methods
   // to generated node types.
+  implicit def cfgNodeToAstNode(node: CfgNode): AstNodeMethods           = new AstNodeMethods(node)
+  implicit def toExtendedNode(node: AbstractNode): NodeMethods           = new NodeMethods(node)
+  implicit def toExtendedStoredNode(node: StoredNode): StoredNodeMethods = new StoredNodeMethods(node)
+  implicit def toAstNodeMethods(node: AstNode): AstNodeMethods           = new AstNodeMethods(node)
+  implicit def toExpressionMethods(node: Expression): ExpressionMethods  = new ExpressionMethods(node)
 
-  implicit def cfgNodeToAsNode(node: CfgNode): AstNodeMethods                 = new AstNodeMethods(node)
-  implicit def toExtendedNode(node: NodeOrDetachedNode): NodeMethods          = new NodeMethods(node)
-  implicit def toExtendedStoredNode(node: StoredNode): StoredNodeMethods      = new StoredNodeMethods(node)
-  implicit def toAstNodeMethods(node: AstNode): AstNodeMethods                = new AstNodeMethods(node)
-  implicit def toCfgNodeMethods(node: CfgNode): CfgNodeMethods                = new CfgNodeMethods(node)
-  implicit def toExpressionMethods(node: Expression): ExpressionMethods       = new ExpressionMethods(node)
   implicit def toMethodMethods(node: Method): MethodMethods                   = new MethodMethods(node)
   implicit def toMethodReturnMethods(node: MethodReturn): MethodReturnMethods = new MethodReturnMethods(node)
   implicit def toCallMethods(node: Call): CallMethods                         = new CallMethods(node)
@@ -68,8 +64,7 @@ package object language
   implicit def iterOnceToTypeDeclTrav[A <: TypeDecl](a: IterableOnce[A]): TypeDeclTraversal =
     new TypeDeclTraversal(a.iterator)
 
-  implicit def iterOnceToOriginalCallTrav[A <: Call](a: IterableOnce[A]): OriginalCall =
-    new OriginalCall(a.iterator)
+  implicit def iterOnceToOriginalCallTrav(traversal: IterableOnce[Call]): OriginalCall = new OriginalCall(traversal)
 
   implicit def singleToControlStructureTrav[A <: ControlStructure](a: A): ControlStructureTraversal =
     new ControlStructureTraversal(Iterator.single(a))
@@ -110,8 +105,6 @@ package object language
   implicit def iterOnceToMethodParameterInTrav[A <: MethodParameterIn](a: IterableOnce[A]): MethodParameterTraversal =
     new MethodParameterTraversal(a.iterator)
 
-  implicit def singleToMethodParameterOutTrav[A <: MethodParameterOut](a: A): MethodParameterOutTraversal =
-    new MethodParameterOutTraversal(Iterator.single(a))
   implicit def iterOnceToMethodParameterOutTrav[A <: MethodParameterOut](
     a: IterableOnce[A]
   ): MethodParameterOutTraversal =
@@ -162,11 +155,6 @@ package object language
     new BindingTypeDeclTraversal(Iterator.single(a))
   implicit def iterOnceToBindingTypeDeclTrav[A <: TypeDecl](a: IterableOnce[A]): BindingTypeDeclTraversal =
     new BindingTypeDeclTraversal(a.iterator)
-
-  implicit def singleToAstNodeDot[A <: AstNode](a: A): AstNodeDot[A] =
-    new AstNodeDot(Iterator.single(a))
-  implicit def iterOnceToAstNodeDot[A <: AstNode](a: IterableOnce[A]): AstNodeDot[A] =
-    new AstNodeDot(a.iterator)
 
   implicit def singleToCfgNodeDot[A <: Method](a: A): CfgNodeDot =
     new CfgNodeDot(Iterator.single(a))
@@ -268,11 +256,32 @@ package object language
 
   implicit def toExpression[A <: Expression](a: IterableOnce[A]): ExpressionTraversal[A] =
     new ExpressionTraversal[A](a.iterator)
+
+  object NonStandardImplicits {
+
+    // note: this causes problems because MethodParameterOut has an `index` property and the `MethodParameterOutTraversal` defines an `index` step...
+    implicit def singleToMethodParameterOutTrav[A <: MethodParameterOut](a: A): MethodParameterOutTraversal =
+      new MethodParameterOutTraversal(Iterator.single(a))
+
+  }
+
+  implicit def singleToSarifTraversal[A <: Finding](a: A): SarifExtension = new SarifExtension(Iterator.single(a))
+  implicit def iterOnceToSarifTraversal[A <: Finding](a: IterableOnce[A]): SarifExtension = new SarifExtension(a)
 }
 
-trait LowPrioImplicits extends overflowdb.traversal.Implicits {
-  implicit def singleToCfgNodeTraversal[A <: CfgNode](a: A): CfgNodeTraversal[A] =
-    new CfgNodeTraversal[A](Iterator.single(a))
+trait LowPrioImplicits {
+  implicit val docSearchPackages: DocSearchPackages =
+    Cpg.defaultDocSearchPackage
+      .withAdditionalPackage("io.joern")
+      .withAdditionalPackage("io.shiftleft")
+
+  implicit def singleToAstNodeDot[A <: AstNode](a: A): AstNodeDot[A] =
+    new AstNodeDot(Iterator.single(a))
+  implicit def iterOnceToAstNodeDot[A <: AstNode](a: IterableOnce[A]): AstNodeDot[A] =
+    new AstNodeDot(a.iterator)
+
+  implicit def toCfgNodeMethods(node: CfgNode): CfgNodeMethods = new CfgNodeMethods(node)
+
   implicit def iterOnceToCfgNodeTraversal[A <: CfgNode](a: IterableOnce[A]): CfgNodeTraversal[A] =
     new CfgNodeTraversal[A](a.iterator)
 
@@ -285,4 +294,5 @@ trait LowPrioImplicits extends overflowdb.traversal.Implicits {
     new DeclarationTraversal[A](Iterator.single(a))
   implicit def iterOnceToDeclarationNodeTraversal[A <: Declaration](a: IterableOnce[A]): DeclarationTraversal[A] =
     new DeclarationTraversal[A](a.iterator)
+
 }

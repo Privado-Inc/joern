@@ -5,7 +5,7 @@ import io.joern.csharpsrc2cpg.Config
 import io.joern.x2cpg.SourceFiles
 import io.joern.x2cpg.astgen.AstGenRunner.{AstGenProgramMetaData, getClass}
 import io.joern.x2cpg.astgen.AstGenRunnerBase
-import io.joern.x2cpg.utils.ExternalCommand
+import io.shiftleft.semanticcpg.utils.ExternalCommand
 import org.slf4j.LoggerFactory
 
 import scala.collection.mutable
@@ -16,8 +16,9 @@ class DotNetAstGenRunner(config: Config) extends AstGenRunnerBase(config) {
   private val logger = LoggerFactory.getLogger(getClass)
 
   // The x86 variant seems to run well enough on MacOS M-family chips, whereas the ARM build crashes
-  override val MacArm: String = MacX86
-  override val WinArm: String = WinX86
+  override val MacArm: String   = MacX86
+  override val WinArm: String   = WinX86
+  override val LinuxArm: String = "linux-arm64"
 
   override def fileFilter(file: String, out: File): Boolean = {
     file.stripSuffix(".json").replace(out.pathAsString, config.inputPath) match {
@@ -30,11 +31,14 @@ class DotNetAstGenRunner(config: Config) extends AstGenRunnerBase(config) {
   override def skippedFiles(in: File, astGenOut: List[String]): List[String] = {
     val diagnosticMap = mutable.LinkedHashMap.empty[String, Seq[String]]
 
-    def addReason(reason: String, lastFile: Option[String] = None) = {
-      val key = lastFile.getOrElse(diagnosticMap.last._1)
-      diagnosticMap.updateWith(key) {
-        case Some(x) => Option(x :+ reason)
-        case None    => Option(reason :: Nil)
+    def addReason(reason: String, lastFile: Option[String] = None): Unit = {
+      val key = lastFile.orElse(diagnosticMap.lastOption.map(_._1))
+
+      key.foreach { resolvedKey =>
+        diagnosticMap.updateWith(resolvedKey) {
+          case Some(existingReasons) => Some(existingReasons :+ reason)
+          case None                  => Some(List(reason))
+        }
       }
     }
 
@@ -63,8 +67,8 @@ class DotNetAstGenRunner(config: Config) extends AstGenRunnerBase(config) {
   override def runAstGenNative(in: String, out: File, exclude: String, include: String)(implicit
     metaData: AstGenProgramMetaData
   ): Try[Seq[String]] = {
-    val excludeCommand = if (exclude.isEmpty) "" else s"-e \"$exclude\""
-    ExternalCommand.run(s"$astGenCommand -o ${out.toString()} -i \"$in\" $excludeCommand", ".")
+    val excludeCommand = if (exclude.isEmpty) Seq.empty else Seq("-e", exclude)
+    ExternalCommand.run(Seq(astGenCommand, "-o", out.toString(), "-i", in) ++ excludeCommand, Some(".")).toTry
   }
 
 }
