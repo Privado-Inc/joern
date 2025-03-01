@@ -19,6 +19,7 @@ import io.shiftleft.codepropertygraph.generated.nodes.{
   NewIdentifier,
   NewLocal,
   NewMember,
+  NewTypeRef,
   NewUnknown
 }
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
@@ -28,6 +29,7 @@ import scala.jdk.CollectionConverters.*
 import scala.jdk.OptionConverters.RichOptional
 import scala.util.{Failure, Success, Try}
 import io.joern.javasrc2cpg.scope.JavaScopeElement.PartialInit
+import io.joern.x2cpg.utils.NodeBuilders.newIdentifierNode
 
 trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
   private val logger = LoggerFactory.getLogger(this.getClass())
@@ -117,51 +119,56 @@ trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
       case None      => (None, None)
     }
 
-    val typeFullName = tryWithSafeStackOverflow(
+    val typeFullNameWithoutArgs = tryWithSafeStackOverflow(
       variableTypeString
         .flatMap(scope.lookupType(_, includeWildcards = false))
         .orElse(declaratorType.flatMap(typeInfoCalc.fullName))
-    ).toOption.flatten.map { typ =>
-      maybeTypeArgs match {
-        case Some(typeArgs) if keepTypeArguments => s"$typ<${typeArgs.mkString(",")}>"
-        case _                                   => typ
+        .orElse(declaratorType.map(typ => defaultTypeFallback(typ)))
+    ).toOption.flatten.getOrElse(defaultTypeFallback())
+
+    val typeFullName = maybeTypeArgs match {
+      case Some(typeArgs) if keepTypeArguments => s"$typeFullNameWithoutArgs<${typeArgs.mkString(",")}>"
+      case _                                   => typeFullNameWithoutArgs
+    }
+
+    val originalName = variableDeclarator.getNameAsString
+    val declarationNodeFromPatterns =
+      scope.getHoistedPatternLocals.find(local => local.name == originalName && local.typeFullName == typeFullName)
+    val declarationNode: Option[NewVariableNode] =
+      if (originNode.isInstanceOf[FieldDeclaration]) {
+        scope.lookupVariable(originalName).variableNode
+      } else if (declarationNodeFromPatterns.isDefined) {
+        declarationNodeFromPatterns.foreach(local => scope.enclosingBlock.foreach(_.addLocal(local, originalName)))
+        declarationNodeFromPatterns
+      } else {
+        // Use type name with generics for code
+        val mangledName = scope.getMangledName(originalName)
+        val localCode   = s"${declaratorType.map(_.toString).getOrElse("")} ${mangledName}"
+
+        val genericSignature = binarySignatureCalculator.variableBinarySignature(variableDeclarator.getType)
+        val local =
+          localNode(originNode, mangledName, localCode, typeFullName, genericSignature = Option(genericSignature))
+
+        scope.enclosingBlock.foreach(_.addLocal(local, originalName))
+
+        Some(local)
       }
-    }
-
-    val variableName = variableDeclarator.getNameAsString
-    val declarationNode: Option[NewVariableNode] = if (originNode.isInstanceOf[FieldDeclaration]) {
-      scope.lookupVariable(variableName).variableNode
-    } else {
-      // Use type name with generics for code
-      val localCode = s"${declaratorType.map(_.toString).getOrElse("")} ${variableDeclarator.getNameAsString}"
-
-      val local =
-        localNode(originNode, variableDeclarator.getNameAsString, localCode, typeFullName.getOrElse(TypeConstants.Any))
-
-      scope.enclosingBlock.foreach(_.addLocal(local))
-
-      Some(local)
-    }
 
     declarationNode match {
       case None =>
-        logger.warn(s"No declaration node found for declarator ${variableName}")
+        logger.warn(s"No declaration node found for declarator ${originalName}")
         Nil
 
       case Some(declarationNode) =>
         val assignmentTarget = declarationNode match {
           case member: NewMember =>
-            val name =
-              if (scope.isEnclosingScopeStatic)
-                scope.enclosingTypeDecl.map(_.typeDecl.name).getOrElse(NameConstants.Unknown)
-              else NameConstants.This
-            fieldAccessAst(
-              name,
-              scope.enclosingTypeDecl.fullName,
-              declarationNode.name,
-              Option(declarationNode.typeFullName),
-              line(originNode),
-              column(originNode)
+            createImplicitBaseFieldAccess(
+              scope.isEnclosingScopeStatic,
+              scope.enclosingTypeDecl.name.get,
+              scope.enclosingTypeDecl.fullName.get,
+              originNode,
+              originalName,
+              declarationNode.typeFullName
             )
 
           case variable =>
@@ -184,12 +191,14 @@ trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
             initializer,
             Operators.assignment,
             "=",
-            ExpectedType(typeFullName, expectedType),
+            ExpectedType(Option(typeFullName), expectedType),
             strippedType
           )
         }
 
-        val localAst = Option.when(declarationNode.isInstanceOf[NewLocal])(Ast(declarationNode))
+        val localAst = Option.when(declarationNode.isInstanceOf[NewLocal] && declarationNodeFromPatterns.isEmpty)(
+          Ast(declarationNode)
+        )
 
         localAst.toList ++ assignmentAsts
 
