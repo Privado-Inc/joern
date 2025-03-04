@@ -3,10 +3,52 @@ package io.joern.javasrc2cpg.querying
 import io.joern.javasrc2cpg.JavaSrc2Cpg
 import io.shiftleft.semanticcpg.language.*
 import io.joern.javasrc2cpg.testfixtures.JavaSrcCode2CpgFixture
-import io.shiftleft.codepropertygraph.generated.nodes.{Binding, Block, Call, FieldIdentifier, Identifier, TypeDecl}
+import io.shiftleft.codepropertygraph.generated.nodes.{
+  Binding,
+  Block,
+  Call,
+  FieldIdentifier,
+  Identifier,
+  TypeDecl,
+  TypeRef
+}
 import io.shiftleft.codepropertygraph.generated.Operators
 
 class AnonymousClassTests extends JavaSrcCode2CpgFixture {
+
+  "mixed static/non-static anonymous classes with the same name as children of lambdas" should {
+    val cpg = code("""
+        |package foo;
+        |
+        |public class Foo {
+        |
+        |    private static FirstProvider method1() {
+        |        return firstTask -> {
+        |            firstTask.doFirst(new Action() { });
+        |        };
+        |    }
+        |
+        |    private SecondProvider method2() {
+        |        return secondTask -> {
+        |            secondTask.doSecond(new Action() { });
+        |        };
+        |    }
+        |}
+        |
+        |""".stripMargin)
+
+    "have the correct names" in {
+      cpg.typeDecl.name(".*Action.*").fullName.sorted.l shouldBe List(
+        "foo.Foo.<lambda>0.Action$0",
+        "foo.Foo.<lambda>1.Action$0"
+      )
+    }
+
+    "not result in any orphan locals" in {
+      !cpg.local.exists(_._astIn.isEmpty) shouldBe true
+    }
+
+  }
 
   "simple anonymous classes extending interfaces in method bodies" should {
     val cpg = code("""
@@ -178,10 +220,8 @@ class AnonymousClassTests extends JavaSrcCode2CpgFixture {
           fieldAccess.name shouldBe Operators.fieldAccess
           fieldAccess.typeFullName shouldBe "foo.Bar"
 
-          inside(fieldAccess.argument.l) { case List(fooIdentifier: Identifier, bField: FieldIdentifier) =>
-            fooIdentifier.name shouldBe "Foo"
-            fooIdentifier.typeFullName shouldBe "foo.Foo"
-
+          inside(fieldAccess.argument.l) { case List(typeRef: TypeRef, bField: FieldIdentifier) =>
+            typeRef.typeFullName shouldBe "foo.Foo"
             bField.canonicalName shouldBe "b"
           }
         }

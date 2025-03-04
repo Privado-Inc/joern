@@ -7,7 +7,7 @@ import io.joern.gosrc2cpg.model.{GoModDependency, GoModHelper}
 import io.joern.gosrc2cpg.parser.GoAstJsonParser
 import io.joern.gosrc2cpg.utils.AstGenRunner
 import io.joern.gosrc2cpg.utils.AstGenRunner.{GoAstGenRunnerResult, getClass}
-import io.joern.x2cpg.utils.ExternalCommand
+import io.shiftleft.semanticcpg.utils.ExternalCommand
 import io.shiftleft.codepropertygraph.generated.Cpg
 import org.slf4j.LoggerFactory
 
@@ -27,13 +27,13 @@ class DownloadDependenciesPass(cpg: Cpg, parentGoMod: GoModHelper, goGlobal: GoG
       parentGoMod
         .getModMetaData()
         .foreach(mod => {
-          ExternalCommand.run("go mod init joern.io/temp", projDir) match {
+          ExternalCommand.run(Seq("go", "mod", "init", "joern.io/temp"), Option(projDir)).toTry match {
             case Success(_) =>
               mod.dependencies
                 .filter(dep => dep.beingUsed)
                 .map(dependency => {
-                  val cmd     = s"go get ${dependency.dependencyStr()}"
-                  val results = ExternalCommand.run(cmd, projDir)
+                  val cmd     = Seq("go", "get", dependency.dependencyStr())
+                  val results = ExternalCommand.run(cmd, Option(projDir)).toTry
                   results match {
                     case Success(_) =>
                       print(". ")
@@ -83,10 +83,11 @@ class DownloadDependenciesPass(cpg: Cpg, parentGoMod: GoModHelper, goGlobal: GoG
           .withIgnoredFilesRegex(config.ignoredFilesRegex.toString())
           .withIgnoredFiles(config.ignoredFiles.toList)
         val astGenResult = new AstGenRunner(depConfig, dependency.getIncludePackagesList())
-          .execute(astLocation)
-          .asInstanceOf[GoAstGenRunnerResult]
+          .executeForGo(astLocation)
+          .headOption
+          .getOrElse(GoAstGenRunnerResult())
         val goMod = new GoModHelper(
-          Some(depConfig),
+          Some(dependencyLocation),
           astGenResult.parsedModFile.flatMap(modFile => GoAstJsonParser.readModFile(Paths.get(modFile)).map(x => x))
         )
         DependencySrcProcessorPass(cpg, astGenResult.parsedFiles, depConfig, goMod, goGlobal, astLocation)
