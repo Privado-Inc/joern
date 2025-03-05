@@ -2,10 +2,10 @@ package io.joern.c2cpg.passes.types
 
 import io.joern.c2cpg.parser.FileDefaults
 import io.joern.c2cpg.testfixtures.C2CpgSuite
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
-class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
+class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CppExt) {
 
   "Templates" should {
 
@@ -29,7 +29,7 @@ class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
           typeDeclA.aliasTypeFullName shouldBe Option("X<int>")
           typeDeclB.name shouldBe "B"
           typeDeclB.fullName shouldBe "B"
-          typeDeclB.aliasTypeFullName shouldBe Option("Y<int, char>")
+          typeDeclB.aliasTypeFullName shouldBe Option("Y<int,char>")
       }
     }
 
@@ -38,15 +38,16 @@ class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
         |template<typename T> class X;
         |template<typename A, typename B> class Y : public X<A> {};
         |""".stripMargin)
-      inside(cpg.typeDecl.nameNot(NamespaceTraversal.globalNamespaceName).filter(x => !x.isExternal).l) {
-        case List(x, y) =>
-          x.name shouldBe "X"
-          x.fullName shouldBe "X"
-          x.aliasTypeFullName shouldBe Option("X<T>")
-          y.name shouldBe "Y"
-          y.fullName shouldBe "Y"
-          y.aliasTypeFullName shouldBe Option("Y<A,B>")
-          y.inheritsFromTypeFullName shouldBe Seq("X<A>")
+      inside(
+        cpg.typeDecl.nameNot(NamespaceTraversal.globalNamespaceName).filter(x => !x.isExternal).sortBy(_.fullName).l
+      ) { case List(x, y) =>
+        x.name shouldBe "X"
+        x.fullName shouldBe "X"
+        x.aliasTypeFullName shouldBe Option("X<T>")
+        y.name shouldBe "Y"
+        y.fullName shouldBe "Y"
+        y.aliasTypeFullName shouldBe Option("Y<A,B>")
+        y.inheritsFromTypeFullName shouldBe Seq("X<A>")
       }
     }
 
@@ -72,10 +73,10 @@ class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
        |""".stripMargin)
       inside(cpg.method.nameNot("<global>").internal.l) { case List(x, y) =>
         x.name shouldBe "x"
-        x.fullName shouldBe "x:void(#0,#1)"
+        x.fullName shouldBe "x:void(T,U)"
         x.signature shouldBe "void(T,U)"
         y.name shouldBe "y"
-        y.fullName shouldBe "y:void(#0,#1)"
+        y.fullName shouldBe "y:void(T,U)"
         y.signature shouldBe "void(T,U)"
       }
     }

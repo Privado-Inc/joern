@@ -1,7 +1,7 @@
 package io.joern.rubysrc2cpg.querying
 
 import io.joern.rubysrc2cpg.passes.Defines.RubyOperators
-import io.joern.rubysrc2cpg.passes.GlobalTypes.{builtinPrefix, kernelPrefix}
+import io.joern.rubysrc2cpg.passes.Defines
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.codepropertygraph.generated.nodes.{Call, Identifier, Literal, TypeRef}
@@ -30,7 +30,7 @@ class HashTests extends RubyCode2CpgFixture {
 
     val List(assocCall) = hashCall.inCall.astSiblings.assignment.l
     val List(x, one)    = assocCall.argument.l
-    x.code shouldBe "<tmp-0>[x]"
+    x.code shouldBe "<tmp-0>[:x]"
     one.code shouldBe "1"
   }
 
@@ -64,13 +64,13 @@ class HashTests extends RubyCode2CpgFixture {
     regexp.code shouldBe "/(eu|us)/"
   }
 
-  "`{:x : /(eu|us)/}` is represented by a `hashInitializer` operator call" in {
+  "`{x: /(eu|us)/}` is represented by a `hashInitializer` operator call" in {
     val cpg = code("""
-        |{:x : /(eu|us)/}
+        |{x: /(eu|us)/}
         |""".stripMargin)
 
     val List(hashCall) = cpg.call.name(RubyOperators.hashInitializer).l
-    hashCall.code shouldBe "{:x : /(eu|us)/}"
+    hashCall.code shouldBe "{x: /(eu|us)/}"
     hashCall.lineNumber shouldBe Some(2)
 
     val List(assocCall) = hashCall.inCall.astSiblings.assignment.l
@@ -81,8 +81,8 @@ class HashTests extends RubyCode2CpgFixture {
 
   "Inclusive Range of primitive ordinal type should expand in hash key" in {
     val cpg = code("""
-        |{1..3:"abc", 4..5:"ade"}
-        |{'a'..'c': "abc"}
+        |{1..3 => "abc", 4..5 => "ade"}
+        |{'a'..'c' => "abc"}
         |""".stripMargin)
 
     inside(cpg.call.name(RubyOperators.hashInitializer).l) {
@@ -101,7 +101,7 @@ class HashTests extends RubyCode2CpgFixture {
                 lhs.name shouldBe Operators.indexAccess
 
                 rhs.code shouldBe "\"abc\""
-                rhs.typeFullName shouldBe s"$kernelPrefix.String"
+                rhs.typeFullName shouldBe Defines.prefixAsCoreType("String")
               case _ => fail("Expected LHS and RHS after lowering")
             }
 
@@ -110,7 +110,7 @@ class HashTests extends RubyCode2CpgFixture {
               lhs.name shouldBe Operators.indexAccess
 
               rhs.code shouldBe "\"ade\""
-              rhs.typeFullName shouldBe s"$kernelPrefix.String"
+              rhs.typeFullName shouldBe Defines.prefixAsCoreType("String")
             }
           case _ => fail("Expected 5 calls (one per item in range)")
         }
@@ -127,19 +127,19 @@ class HashTests extends RubyCode2CpgFixture {
                 lhs.name shouldBe Operators.indexAccess
 
                 rhs.code shouldBe "\"abc\""
-                rhs.typeFullName shouldBe s"$kernelPrefix.String"
+                rhs.typeFullName shouldBe Defines.prefixAsCoreType("String")
               case _ => fail("Expected LHS and RHS after lowering")
             }
           case _ => fail("Expected 3 calls (one per item in range)")
         }
-      case _ => fail("Expected one hash initializer function")
+      case _ => fail("Expected two hash initializer functions")
     }
 
   }
 
   "Exclusive Range of primitive ordinal type should expand in hash key" in {
     val cpg = code("""
-                     |{1...3:"abc"}
+                     |{1...3 => "abc"}
                      |""".stripMargin)
 
     inside(cpg.call.name(RubyOperators.hashInitializer).l) {
@@ -157,7 +157,7 @@ class HashTests extends RubyCode2CpgFixture {
 
   "Non-Primitive ordinal type should not expand in hash key" in {
     val cpg = code("""
-        |{:a...:b:"a"}
+        |{:a...:b => "a"}
         |""".stripMargin)
 
     inside(cpg.call.name(RubyOperators.hashInitializer).l) {
@@ -175,7 +175,7 @@ class HashTests extends RubyCode2CpgFixture {
                   case _ => fail("Expected range operator for non-primitive range key")
                 }
 
-                rhs.typeFullName shouldBe s"$kernelPrefix.String"
+                rhs.typeFullName shouldBe Defines.prefixAsCoreType("String")
                 rhs.code shouldBe "\"a\""
               case _ => fail("Expected LHS and RHS for association")
             }
@@ -195,8 +195,8 @@ class HashTests extends RubyCode2CpgFixture {
       case hashCall :: Nil =>
         hashCall.code shouldBe "Hash [1 => \"a\", 2 => \"b\", 3 => \"c\"]"
         hashCall.lineNumber shouldBe Some(2)
-        hashCall.methodFullName shouldBe s"$builtinPrefix.Hash.[]"
-        hashCall.typeFullName shouldBe s"$builtinPrefix.Hash"
+        hashCall.methodFullName shouldBe s"${Defines.prefixAsCoreType("Hash")}.[]"
+        hashCall.typeFullName shouldBe Defines.prefixAsCoreType("Hash")
 
         inside(hashCall.astChildren.l) {
           case (_: Call) :: (_: TypeRef) :: (one: Call) :: (two: Call) :: (three: Call) :: Nil =>
@@ -209,4 +209,63 @@ class HashTests extends RubyCode2CpgFixture {
     }
   }
 
+  "Splatting argument in hash" in {
+    val cpg = code("""
+        |a = {**x, **y}
+        |""".stripMargin)
+
+    inside(cpg.call.name(RubyOperators.hashInitializer).l) {
+      case hashCall :: Nil =>
+        val List(xSplatCall, ySplatCall) = hashCall.inCall.astSiblings.isCall.l
+        xSplatCall.code shouldBe "**x"
+        xSplatCall.methodFullName shouldBe RubyOperators.splat
+
+        ySplatCall.code shouldBe "**y"
+        ySplatCall.methodFullName shouldBe RubyOperators.splat
+      case xs => fail(s"Expected call to hashInitializer, [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "Function call in hash" in {
+    val cpg = code("""
+        |bar = 200
+        |a = {**foo(bar)}
+        |""".stripMargin)
+
+    inside(cpg.call.name(RubyOperators.hashInitializer).l) {
+      case hashInitializer :: Nil =>
+        val List(splatCall) = hashInitializer.inCall.astSiblings.isCall.l
+        splatCall.code shouldBe "**foo(bar)"
+        splatCall.name shouldBe RubyOperators.splat
+
+        val List(splatCallArg: Call) = splatCall.argument.l: @unchecked
+
+        splatCallArg.code shouldBe "foo(bar)"
+
+        val List(_, barCallArg) = splatCallArg.argument.l
+        barCallArg.code shouldBe "bar"
+      case xs => fail(s"Expected one call for init, got [${xs.code.mkString(",")}]")
+    }
+  }
+
+  "Function call without parentheses" in {
+    val cpg = code("""
+        |a = {**(foo 13)}
+        |""".stripMargin)
+
+    inside(cpg.call.name(RubyOperators.hashInitializer).l) {
+      case hashInitializer :: Nil =>
+        val List(splatCall) = hashInitializer.inCall.astSiblings.isCall.l
+        splatCall.code shouldBe "**(foo 13)"
+        splatCall.name shouldBe RubyOperators.splat
+
+        val List(splatCallArg: Call) = splatCall.argument.l: @unchecked
+
+        splatCallArg.code shouldBe "foo 13"
+
+        val List(selfCallArg, literalCallArg) = splatCallArg.argument.l
+        literalCallArg.code shouldBe "13"
+      case xs => fail(s"Expected one call for init, got [${xs.code.mkString(",")}]")
+    }
+  }
 }

@@ -1,15 +1,15 @@
 package io.joern.scanners.android
 
-import io.joern.scanners._
-import io.joern.console._
+import io.joern.scanners.*
+import io.joern.console.*
 import io.joern.dataflowengineoss.queryengine.EngineContext
-import io.joern.dataflowengineoss.semanticsloader.Semantics
-import io.joern.macros.QueryMacros._
-import io.shiftleft.semanticcpg.language._
-import io.joern.dataflowengineoss.language._
+import io.joern.dataflowengineoss.semanticsloader.NoSemantics
+import io.joern.macros.QueryMacros.*
+import io.shiftleft.semanticcpg.language.*
+import io.joern.dataflowengineoss.language.*
 
 object ArbitraryFileWrites extends QueryBundle {
-  implicit val engineContext: EngineContext = EngineContext(Semantics.empty)
+  implicit val engineContext: EngineContext = EngineContext(NoSemantics)
   implicit val resolver: ICallResolver      = NoResolve
 
   // todo: improve accuracy, might lead to high number of false positives

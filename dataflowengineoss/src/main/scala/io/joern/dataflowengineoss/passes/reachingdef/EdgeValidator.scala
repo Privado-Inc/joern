@@ -1,7 +1,7 @@
 package io.joern.dataflowengineoss.passes.reachingdef
 
 import io.joern.dataflowengineoss.language.*
-import io.joern.dataflowengineoss.queryengine.Engine.isOutputArgOfInternalMethod
+import io.joern.dataflowengineoss.queryengine.Engine.{isOutputArgOfInternalMethod, semanticsForCall}
 import io.joern.dataflowengineoss.semanticsloader.{
   FlowMapping,
   FlowPath,
@@ -50,7 +50,7 @@ object EdgeValidator {
     */
   private def isCallRetval(parentNode: StoredNode)(implicit semantics: Semantics): Boolean =
     parentNode match {
-      case call: Call => semantics.forMethod(call.methodFullName).exists(!explicitlyFlowsToReturnValue(_))
+      case call: Call => semanticsForCall(call).exists(!explicitlyFlowsToReturnValue(_))
       case _          => false
     }
 
@@ -58,8 +58,10 @@ object EdgeValidator {
     flowSemantic.mappings.exists(explicitlyFlowsToReturnValue)
 
   private def explicitlyFlowsToReturnValue(flowPath: FlowPath): Boolean = flowPath match {
-    case FlowMapping(_, ParameterNode(dst, _)) => dst == -1
-    case PassThroughMapping                    => true
-    case _                                     => false
+    // Some frontends (e.g. python) denote named arguments using `-1` as the argument index. As such
+    // `-1` denotes the return value only if there's no argument name.
+    case FlowMapping(_, ParameterNode(-1, None)) => true
+    case PassThroughMapping                      => true
+    case _                                       => false
   }
 }
