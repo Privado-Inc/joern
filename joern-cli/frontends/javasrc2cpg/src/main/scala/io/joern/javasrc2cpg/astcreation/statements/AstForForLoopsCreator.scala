@@ -2,10 +2,13 @@ package io.joern.javasrc2cpg.astcreation.statements
 
 import com.github.javaparser.ast.expr.{Expression, NameExpr}
 import com.github.javaparser.ast.stmt.{BlockStmt, ForEachStmt, ForStmt}
+import com.github.javaparser.symbolsolver.javaparsermodel.contexts.ForStatementContext
+import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver
 import io.joern.javasrc2cpg.astcreation.{AstCreator, ExpectedType}
 import io.joern.javasrc2cpg.scope.NodeTypeInfo
 import io.joern.javasrc2cpg.typesolvers.TypeInfoCalculator.TypeConstants
 import io.joern.x2cpg.Ast
+import io.joern.x2cpg.utils.IntervalKeyPool
 import io.joern.x2cpg.utils.NodeBuilders.{newCallNode, newFieldIdentifierNode, newIdentifierNode, newOperatorCallNode}
 import io.shiftleft.codepropertygraph.generated.nodes.Call.PropertyDefaults
 import io.shiftleft.codepropertygraph.generated.nodes.{
@@ -18,12 +21,10 @@ import io.shiftleft.codepropertygraph.generated.nodes.{
   NewNode
 }
 import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, DispatchTypes, Operators}
-import io.shiftleft.passes.IntervalKeyPool
 import org.slf4j.LoggerFactory
 
 import scala.jdk.CollectionConverters.*
 import scala.jdk.OptionConverters.RichOptional
-import scala.util.Try
 
 trait AstForForLoopsCreator { this: AstCreator =>
 
@@ -44,7 +45,10 @@ trait AstForForLoopsCreator { this: AstCreator =>
     s"$IterableNamePrefix${iterableKeyPool.next}"
   }
 
-  def astForFor(stmt: ForStmt): Ast = {
+  def astsForFor(stmt: ForStmt): List[Ast] = {
+    val forContext       = new ForStatementContext(stmt, new CombinedTypeSolver())
+    val patternPartition = partitionPatternAstsByScope(stmt)
+
     val forNode =
       NewControlStructure()
         .controlStructureType(ControlStructureTypes.FOR)
@@ -59,24 +63,41 @@ trait AstForForLoopsCreator { this: AstCreator =>
       astsForExpression(_, ExpectedType.Boolean)
     }
 
-    val updateAsts = stmt.getUpdate.asScala.toList.flatMap {
-      astsForExpression(_, ExpectedType.empty)
+    val updateAsts = stmt.getUpdate.asScala.toList match {
+      case Nil => Nil
+
+      case expressions =>
+        scope.pushBlockScope()
+        scope.addLocalsForPatternsToEnclosingBlock(
+          forContext.typePatternExprsExposedToChild(expressions.head).asScala.toList
+        )
+        val asts = expressions.flatMap(astsForExpression(_, ExpectedType.empty))
+        scope.popBlockScope()
+        asts
     }
 
-    val stmtAsts =
-      astsForStatement(stmt.getBody)
+    val patternLocals = scope.enclosingMethod.get.getAndClearUnaddedPatternLocals().map(Ast(_))
+
+    scope.pushBlockScope()
+    scope.addLocalsForPatternsToEnclosingBlock(patternPartition.patternsIntroducedToBody)
+    val bodyAst = wrapInBlockWithPrefix(Nil, stmt.getBody)
+    scope.popBlockScope()
+
+    scope.addLocalsForPatternsToEnclosingBlock(patternPartition.patternsIntroducedByStatement)
 
     val ast = Ast(forNode)
       .withChildren(initAsts)
       .withChildren(compareAsts)
       .withChildren(updateAsts)
-      .withChildren(stmtAsts)
+      .withChild(bodyAst)
 
-    compareAsts.flatMap(_.root) match {
+    val astWithConditionEdge = compareAsts.flatMap(_.root) match {
       case c :: Nil =>
         ast.withConditionEdge(forNode, c)
       case _ => ast
     }
+
+    patternLocals :+ astWithConditionEdge
   }
 
   def astForForEach(stmt: ForEachStmt): Seq[Ast] = {
@@ -211,9 +232,16 @@ trait AstForForLoopsCreator { this: AstCreator =>
         iterableAsts.head
     }
 
-    val iterableName      = nextIterableName()
-    val iterableLocalNode = localNode(iterableExpression, iterableName, iterableName, iterableType.getOrElse("ANY"))
-    val iterableLocalAst  = Ast(iterableLocalNode)
+    val iterableName     = nextIterableName()
+    val genericSignature = binarySignatureCalculator.unspecifiedClassType
+    val iterableLocalNode = localNode(
+      iterableExpression,
+      iterableName,
+      iterableName,
+      iterableType.getOrElse("ANY"),
+      genericSignature = Option(genericSignature)
+    )
+    val iterableLocalAst = Ast(iterableLocalNode)
 
     val iterableAssignNode =
       newOperatorCallNode(Operators.assignment, code = "", line = lineNo, typeFullName = iterableType)
@@ -231,15 +259,17 @@ trait AstForForLoopsCreator { this: AstCreator =>
   }
 
   private def nativeForEachIdxLocalNode(lineNo: Option[Int]): NewLocal = {
-    val idxName      = nextIndexName()
-    val typeFullName = TypeConstants.Int
+    val idxName          = nextIndexName()
+    val typeFullName     = TypeConstants.Int
+    val genericSignature = binarySignatureCalculator.variableBinarySignature(TypeConstants.Int)
     val idxLocal =
       NewLocal()
         .name(idxName)
         .typeFullName(typeFullName)
         .code(idxName)
         .lineNumber(lineNo)
-    scope.enclosingBlock.get.addLocal(idxLocal)
+        .genericSignature(genericSignature)
+    scope.enclosingBlock.get.addLocal(idxLocal, idxName)
     idxLocal
   }
 
@@ -318,19 +348,24 @@ trait AstForForLoopsCreator { this: AstCreator =>
         Some(variable)
     }
 
+    val genericSignature =
+      maybeVariable.map(variable => binarySignatureCalculator.variableBinarySignature(variable.getType))
     val partialLocalNode = NewLocal().lineNumber(lineNo)
+    genericSignature.foreach(partialLocalNode.genericSignature(_))
 
     maybeVariable match {
       case Some(variable) =>
-        val name = variable.getNameAsString
+        val originalName = variable.getNameAsString
+        // TODO: Name mangling
+        val mangledName = originalName
         val typeFullName =
           tryWithSafeStackOverflow(variable.getType).toOption.flatMap(typeInfoCalc.fullName).getOrElse("ANY")
         val localNode = partialLocalNode
-          .name(name)
-          .code(variable.getNameAsString)
+          .name(mangledName)
+          .code(mangledName)
           .typeFullName(typeFullName)
 
-        scope.enclosingBlock.get.addLocal(localNode)
+        scope.enclosingBlock.get.addLocal(localNode, originalName)
         localNode
 
       case None =>
@@ -341,11 +376,13 @@ trait AstForForLoopsCreator { this: AstCreator =>
 
   private def iteratorLocalForForEach(lineNumber: Option[Int]): NewLocal = {
     val iteratorLocalName = nextIterableName()
+    val genericSignature  = binarySignatureCalculator.variableBinarySignature(TypeConstants.Iterator)
     NewLocal()
       .name(iteratorLocalName)
       .code(iteratorLocalName)
       .typeFullName(TypeConstants.Iterator)
       .lineNumber(lineNumber)
+      .genericSignature(genericSignature)
   }
 
   private def iteratorAssignAstForForEach(

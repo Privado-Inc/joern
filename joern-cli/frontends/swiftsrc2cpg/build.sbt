@@ -1,6 +1,7 @@
+import com.typesafe.config.{Config, ConfigFactory}
+
 import scala.sys.process.stringToProcess
 import scala.util.Try
-import com.typesafe.config.{Config, ConfigFactory}
 
 name := "swiftsrc2cpg"
 
@@ -39,7 +40,7 @@ astGenDlUrl := s"https://github.com/joernio/swiftastgen/releases/download/v${ast
 def hasCompatibleAstGenVersion(astGenVersion: String): Boolean = {
   Try("SwiftAstGen -h".!).toOption match {
     case Some(0) => true
-    case _       => false
+    case _ => false
   }
 }
 
@@ -68,16 +69,15 @@ astGenDlTask := {
   val astGenDir = baseDirectory.value / "bin" / "astgen"
 
   astGenBinaryNames.value.foreach { fileName =>
-    DownloadHelper.ensureIsAvailable(s"${astGenDlUrl.value}$fileName", astGenDir / fileName)
+    val file = astGenDir / fileName
+    DownloadHelper.ensureIsAvailable(s"${astGenDlUrl.value}$fileName", file)
+    // permissions are lost during the download; need to set them manually
+    file.setExecutable(true, false)
   }
 
   val distDir = (Universal / stagingDirectory).value / "bin" / "astgen"
   distDir.mkdirs()
-  IO.copyDirectory(astGenDir, distDir)
-
-  // permissions are lost during the download; need to set them manually
-  astGenDir.listFiles().foreach(_.setExecutable(true, false))
-  distDir.listFiles().foreach(_.setExecutable(true, false))
+  IO.copyDirectory(astGenDir, distDir, preserveExecutable = true)
 }
 
 Compile / compile := ((Compile / compile) dependsOn astGenDlTask).value
@@ -92,3 +92,7 @@ stage := Def
 
 Universal / packageName       := name.value
 Universal / topLevelDirectory := None
+
+/** write the astgen version to the manifest for downstream usage */
+Compile / packageBin / packageOptions +=
+  Package.ManifestAttributes(new java.util.jar.Attributes.Name("Swift-AstGen-Version") -> astGenVersion.value)

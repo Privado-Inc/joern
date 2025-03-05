@@ -45,6 +45,9 @@ object CompilerAPI {
           logger.warn(s"Path to dependency does not point to existing file `${path.path}`.")
         }
       } else {
+        // We have to copy the resource file to a proper file in the file system in order
+        // to satisfy the requirements of `JvmClassPathRoot` which expects a proper `java.io.File`
+        // which in turn cannot represent files in resources.
         val resourceStream = getClass.getClassLoader.getResourceAsStream(path.path)
         if (resourceStream != null) {
           val tempFile = File.createTempFile("kotlin2cpgDependencies", "")

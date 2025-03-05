@@ -4,7 +4,7 @@ import io.joern.x2cpg.passes.controlflow.cfgcreation.Cfg.CfgEdgeType
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, DispatchTypes, EdgeTypes, Operators}
 import io.shiftleft.semanticcpg.language.*
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 /** Translation of abstract syntax trees into control flow graphs
   *
@@ -85,8 +85,12 @@ class CfgCreator(entryNode: Method, diffGraph: DiffGraphBuilder) {
 
   /** Returns true if this node is a child to some `try` control structure, false if otherwise.
     */
-  private def withinATryBlock(x: AstNode): Boolean =
-    x.inAst.isControlStructure.exists(_.controlStructureType == ControlStructureTypes.TRY)
+  private def withinATryBlock(x: AstNode): Boolean = {
+    if (x._astIn.hasNext) {
+      val parentNode = x.parentBlock.astParent
+      parentNode.isControlStructure.isTry.nonEmpty
+    } else false
+  }
 
   /** This method dispatches AST nodes by type and calls corresponding conversion methods.
     */
@@ -174,9 +178,17 @@ class CfgCreator(entryNode: Method, diffGraph: DiffGraphBuilder) {
         cfgForChildren(node)
       case ControlStructureTypes.MATCH =>
         cfgForMatchExpression(node)
+      case ControlStructureTypes.THROW =>
+        cfgForThrowStatement(node)
       case _ =>
         Cfg.empty
     }
+
+  protected def cfgForThrowStatement(node: ControlStructure): Cfg = {
+    val throwExprCfg     = node.astChildren.find(_.order == 1).map(cfgFor).getOrElse(Cfg.empty)
+    val concatedNatedCfg = throwExprCfg ++ Cfg(entryNode = Option(node))
+    concatedNatedCfg.copy(edges = concatedNatedCfg.edges ++ singleEdge(node, exitNode))
+  }
 
   /** The CFG for a break/continue statements contains only the break/continue statement as a single entry node. The
     * fringe is empty, that is, appending another CFG to the break statement will not result in the creation of an edge
@@ -368,16 +380,17 @@ class CfgCreator(entryNode: Method, diffGraph: DiffGraphBuilder) {
     val loopExprCfg  = children.find(_.order == nLocals + 3).map(cfgFor).getOrElse(Cfg.empty)
     val bodyCfg      = children.find(_.order == nLocals + 4).map(cfgFor).getOrElse(Cfg.empty)
 
-    val innerCfg  = conditionCfg ++ bodyCfg ++ loopExprCfg
-    val entryNode = (initExprCfg ++ innerCfg).entryNode
+    val innerCfg      = bodyCfg ++ loopExprCfg
+    val loopEntryNode = conditionCfg.entryNode.orElse(innerCfg.entryNode)
+    val entryNode     = initExprCfg.entryNode.orElse(loopEntryNode)
 
-    val newEdges = edgesFromFringeTo(initExprCfg, innerCfg.entryNode) ++
-      edgesFromFringeTo(innerCfg, innerCfg.entryNode) ++
-      edgesFromFringeTo(conditionCfg, bodyCfg.entryNode, TrueEdge) ++ {
+    val newEdges = edgesFromFringeTo(initExprCfg, loopEntryNode) ++
+      edgesFromFringeTo(innerCfg, loopEntryNode) ++
+      edgesFromFringeTo(conditionCfg, innerCfg.entryNode.orElse(conditionCfg.entryNode), TrueEdge) ++ {
         if (loopExprCfg.entryNode.isDefined) {
           edges(takeCurrentLevel(bodyCfg.continues), loopExprCfg.entryNode)
         } else {
-          edges(takeCurrentLevel(bodyCfg.continues), innerCfg.entryNode)
+          edges(takeCurrentLevel(bodyCfg.continues), loopEntryNode)
         }
       }
 
@@ -385,7 +398,7 @@ class CfgCreator(entryNode: Method, diffGraph: DiffGraphBuilder) {
       .from(initExprCfg, conditionCfg, loopExprCfg, bodyCfg)
       .copy(
         entryNode = entryNode,
-        edges = newEdges ++ initExprCfg.edges ++ innerCfg.edges,
+        edges = newEdges ++ initExprCfg.edges ++ conditionCfg.edges ++ innerCfg.edges,
         fringe = conditionCfg.fringe.withEdgeType(FalseEdge) ++ takeCurrentLevel(bodyCfg.breaks).map((_, AlwaysEdge)),
         breaks = reduceAndFilterLevel(bodyCfg.breaks),
         continues = reduceAndFilterLevel(bodyCfg.continues)
@@ -461,18 +474,32 @@ class CfgCreator(entryNode: Method, diffGraph: DiffGraphBuilder) {
     val diffGraphs = edgesFromFringeTo(conditionCfg, trueCfg.entryNode) ++
       edgesFromFringeTo(conditionCfg, falseCfg.entryNode)
 
-    Cfg
-      .from(conditionCfg, trueCfg, falseCfg)
-      .copy(
-        entryNode = conditionCfg.entryNode,
-        edges = diffGraphs ++ conditionCfg.edges ++ trueCfg.edges ++ falseCfg.edges,
-        fringe = trueCfg.fringe ++ {
+    val ifStatementFringe =
+      if (trueCfg.entryNode.isEmpty && falseCfg.entryNode.isEmpty) {
+        conditionCfg.fringe.withEdgeType(AlwaysEdge)
+      } else {
+        val trueFringe = if (trueCfg.entryNode.isDefined) {
+          trueCfg.fringe
+        } else {
+          conditionCfg.fringe.withEdgeType(TrueEdge)
+        }
+
+        val falseFringe =
           if (falseCfg.entryNode.isDefined) {
             falseCfg.fringe
           } else {
             conditionCfg.fringe.withEdgeType(FalseEdge)
           }
-        }
+
+        trueFringe ++ falseFringe
+      }
+
+    Cfg
+      .from(conditionCfg, trueCfg, falseCfg)
+      .copy(
+        entryNode = conditionCfg.entryNode,
+        edges = diffGraphs ++ conditionCfg.edges ++ trueCfg.edges ++ falseCfg.edges,
+        fringe = ifStatementFringe
       )
   }
 

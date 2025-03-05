@@ -61,13 +61,24 @@ trait AstForTypeDeclsCreator(implicit withSchemaValidation: ValidationMode) { th
   private def astForField(field: SootField): Ast = {
     val typeFullName = registerType(field.getType.toQuotedString)
     val name         = field.getName
-    val code         = if (field.getDeclaration.contains("enum")) name else s"$typeFullName $name"
     val annotations = field.getTags.asScala
       .collect { case x: VisibilityAnnotationTag => x }
       .flatMap(_.getAnnotations.asScala)
-
+    val modifiers = astsForModifiers(field)
+    val constantValue = field.getTags.asScala.collectFirst { case tag: ConstantValueTag =>
+      tag.getConstant.toString
+    }
+    val code =
+      if (field.getDeclaration.contains("enum")) name
+      else {
+        constantValue match {
+          case Some(value) => s"$typeFullName $name = $value"
+          case None        => s"$typeFullName $name"
+        }
+      }
     Ast(memberNode(field, name, code, typeFullName))
       .withChildren(annotations.map(astsForAnnotations(_, field)).toSeq)
+      .withChildren(modifiers)
   }
 
   /** Creates a list of all inherited classes and implemented interfaces. If there are none then a list with a single

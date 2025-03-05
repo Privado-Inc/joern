@@ -1,7 +1,7 @@
 package io.joern.c2cpg.passes.ast
 
 import io.joern.c2cpg.testfixtures.C2CpgSuite
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.FileTraversal
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
@@ -49,7 +49,7 @@ class NamespaceBlockTests extends C2CpgSuite {
       .nameNot(NamespaceTraversal.globalNamespaceName)
       .name
       .l
-      .sorted shouldBe List("ANY", "int", "my_struct", "void")
+      .sorted shouldBe List("ANY", "foo", "int", "my_struct", "void")
   }
 
   "should allow traversing from namespace block to namespace" in {

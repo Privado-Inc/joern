@@ -4,7 +4,8 @@ import better.files.File
 import com.typesafe.config.ConfigFactory
 import io.joern.x2cpg.utils.Environment.ArchitectureType.ArchitectureType
 import io.joern.x2cpg.utils.Environment.OperatingSystemType.OperatingSystemType
-import io.joern.x2cpg.utils.{Environment, ExternalCommand}
+import io.joern.x2cpg.utils.{Environment}
+import io.shiftleft.semanticcpg.utils.ExternalCommand
 import io.joern.x2cpg.{SourceFiles, X2CpgConfig}
 import org.slf4j.LoggerFactory
 import versionsort.VersionHelper
@@ -46,24 +47,14 @@ object AstGenRunner {
     packagePath: URL
   )
 
-  def executableDir(implicit metaData: AstGenProgramMetaData): String = {
-    val dir        = metaData.packagePath.toString
-    val indexOfLib = dir.lastIndexOf("lib")
-    val fixedDir = if (indexOfLib != -1) {
-      new java.io.File(dir.substring("file:".length, indexOfLib)).toString
-    } else {
-      val indexOfTarget = dir.lastIndexOf("target")
-      if (indexOfTarget != -1) {
-        new java.io.File(dir.substring("file:".length, indexOfTarget)).toString
-      } else {
-        "."
-      }
-    }
-    Paths.get(fixedDir, "/bin/astgen").toAbsolutePath.toString
-  }
+  def executableDir(implicit metaData: AstGenProgramMetaData): String =
+    ExternalCommand
+      .executableDir(Paths.get(metaData.packagePath.toURI))
+      .resolve("astgen")
+      .toString
 
   def hasCompatibleAstGenVersion(compatibleVersion: String)(implicit metaData: AstGenProgramMetaData): Boolean = {
-    ExternalCommand.run(s"$metaData.name -version", ".").toOption.map(_.mkString.strip()) match {
+    ExternalCommand.run(Seq(metaData.name, "-version"), Some(".")).successOption.map(_.mkString.strip()) match {
       case Some(installedVersion)
           if installedVersion != "unknown" &&
             Try(VersionHelper.compare(installedVersion, compatibleVersion)).toOption.getOrElse(-1) >= 0 =>
@@ -74,7 +65,8 @@ object AstGenRunner {
           s"Found local ${metaData.name} v$installedVersion in systems PATH but ${metaData.name} requires at least v$compatibleVersion"
         )
         false
-      case _ => false
+      case _ =>
+        false
     }
   }
 
@@ -124,7 +116,9 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
     }
   }
 
-  private def executableName(x86Suffix: String, armSuffix: String)(implicit metaData: AstGenProgramMetaData): String = {
+  protected def executableName(x86Suffix: String, armSuffix: String)(implicit
+    metaData: AstGenProgramMetaData
+  ): String = {
     if (metaData.multiArchitectureBuilds) {
       s"${metaData.name}-$x86Suffix"
     } else {

@@ -2,6 +2,7 @@ package io.shiftleft.semanticcpg.language.nodemethods
 
 import io.shiftleft.Implicits.IterableOnceDeco
 import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.codepropertygraph.generated.nodes.AstNode.PropertyDefaults
 import io.shiftleft.semanticcpg.NodeExtension
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.nodemethods.AstNodeMethods.lastExpressionInBlock
@@ -56,7 +57,7 @@ class AstNodeMethods(val node: AstNode) extends AnyVal with NodeExtension {
     val additionalDepth = if (p(node)) { 1 }
     else { 0 }
 
-    val childDepths = node.astChildren.map(_.depth(p)).l
+    val childDepths = astChildren.map(_.depth(p)).l
     additionalDepth + (if (childDepths.isEmpty) {
                          0
                        } else {
@@ -70,7 +71,7 @@ class AstNodeMethods(val node: AstNode) extends AnyVal with NodeExtension {
   /** Direct children of node in the AST. Siblings are ordered by their `order` fields
     */
   def astChildren: Iterator[AstNode] =
-    node._astOut.cast[AstNode].sortBy(_.order).iterator
+    node._astOut.cast[AstNode].toSeq.sortBy(_.order).iterator
 
   /** Siblings of this node in the AST, ordered by their `order` fields
     */
@@ -93,6 +94,15 @@ class AstNodeMethods(val node: AstNode) extends AnyVal with NodeExtension {
       case call: CallRepr if !call.isInstanceOf[Call] => call.code
     }
 
+  def sourceCode: String = {
+    val maybeSourceCode = for {
+      offset      <- node.offset
+      offsetEnd   <- node.offsetEnd
+      fileContent <- node.file.headOption.map(_.content)
+    } yield fileContent.substring(offset, offsetEnd)
+    maybeSourceCode.getOrElse(AstNode.PropertyDefaults.Code)
+  }
+
   def statement: AstNode =
     statementInternal(node, _.parentExpression.get)
 
@@ -108,8 +118,7 @@ class AstNodeMethods(val node: AstNode) extends AnyVal with NodeExtension {
       case member: Member          => member
       case node: MethodParameterIn => node.method
 
-      case node: MethodParameterOut =>
-        node.method.methodReturn
+      case node: MethodParameterOut => node.method.methodReturn
 
       case node: Call if MemberAccess.isGenericMemberAccessName(node.name) =>
         parentExpansion(node)
