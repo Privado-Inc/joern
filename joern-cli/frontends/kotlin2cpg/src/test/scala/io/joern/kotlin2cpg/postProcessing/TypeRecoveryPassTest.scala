@@ -1,8 +1,9 @@
 package io.joern.kotlin2cpg.postProcessing
 
 import io.joern.kotlin2cpg.testfixtures.KotlinCode2CpgFixture
+import io.joern.x2cpg.Defines
 import io.shiftleft.semanticcpg.language.{ICallResolver, NoResolve}
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 
 class TypeRecoveryPassTest extends KotlinCode2CpgFixture(withPostProcessing = true) {
 
@@ -27,7 +28,8 @@ class TypeRecoveryPassTest extends KotlinCode2CpgFixture(withPostProcessing = tr
     }
 
     "be able to faciliate methodFullName resolution for call made from identifier object" in {
-      cpg.call("getInstance").methodFullName.l shouldBe List("com.firebase.ui.auth.AuthUI.getInstance:ANY()")
+      cpg.call("getInstance").methodFullName.l shouldBe
+        List(s"com.firebase.ui.auth.AuthUI.getInstance:${Defines.UnresolvedSignature}(0)")
     }
 
     "be able to faciliate methodFullName resolution for call chaining" ignore {

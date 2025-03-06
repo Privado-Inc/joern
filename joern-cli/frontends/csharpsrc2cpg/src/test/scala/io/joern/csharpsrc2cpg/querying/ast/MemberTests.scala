@@ -8,73 +8,220 @@ import io.shiftleft.semanticcpg.language.*
 
 class MemberTests extends CSharpCode2CpgFixture {
 
-  "a basic class declaration" should {
-    val cpg = code(
-      """public class Car
+  "class with static and non-static members" should {
+    val cpg = code("""
+        |class Car
         |{
-        |  string color;                // field
-        |  static int maxSpeed = 200;   // field
-        |  public void fullThrottle()   // method
-        |  {
-        |    Console.WriteLine("The car is going as fast as it can!");
-        |  }
-        |}
-        |""".stripMargin,
-      "Car.cs"
-    )
+        |   string color;
+        |   static int maxSpeed = 200;
+        |}""".stripMargin)
 
-    "generate members for fields" in {
-      val x = cpg.typeDecl.nameExact("Car").head
-
-      val color = x.member.nameExact("color").head
-      color.typeFullName shouldBe "System.String"
-      color.code shouldBe "string color"
-      color.modifier.modifierType.l shouldBe ModifierTypes.INTERNAL :: Nil
-
-      val maxSpeed = x.member.nameExact("maxSpeed").head
-      maxSpeed.typeFullName shouldBe "System.Int32"
-      maxSpeed.code shouldBe "int maxSpeed = 200"
-      maxSpeed.modifier.modifierType.l shouldBe ModifierTypes.INTERNAL :: ModifierTypes.STATIC :: Nil
+    "have the non-static member correctly set" in {
+      inside(cpg.member.nameExact("color").l) {
+        case color :: Nil =>
+          color.typeFullName shouldBe "System.String"
+          color.code shouldBe "string color"
+          color.modifier.modifierType.l shouldBe List(ModifierTypes.INTERNAL)
+        case xs =>
+          fail(s"Expected single `color` member, but got $xs")
+      }
     }
 
+    "have the static member correctly set`" in {
+      inside(cpg.member.nameExact("maxSpeed").l) {
+        case maxSpeed :: Nil =>
+          maxSpeed.typeFullName shouldBe "System.Int32"
+          maxSpeed.code shouldBe "int maxSpeed = 200"
+          maxSpeed.modifier.modifierType.toSet shouldBe Set(ModifierTypes.INTERNAL, ModifierTypes.STATIC)
+        case xs =>
+          fail(s"Expected single `maxSpeed` member, but got $xs")
+      }
+    }
   }
 
-  "a basic class declaration with a static constructor" should {
-    val cpg = code(
-      """public class Car
+  "class with initialized static member" should {
+    val cpg = code("""
+        |class Car
         |{
-        |  string color;                // field
-        |  static int maxSpeed = 200;   // field
-        |  static int nonInitMaxSpeed;  // field
-        |
-        |  public void fullThrottle()   // method
-        |  {
-        |    Console.WriteLine("The car is going as fast as it can!");
-        |  }
-        |
-        |  static Car() { // static constructor
-        |     nonInitMaxSpeed = 2000;
-        |  }
-        |
+        | static int nonInitMaxSpeed = 200;
         |}
-        |""".stripMargin,
-      "Car.cs"
-    )
+        |""".stripMargin)
 
-    "generate one static constructor" in {
+    "have the static member correctly set" in {
+      inside(cpg.member.nameExact("nonInitMaxSpeed").l) {
+        case nonInitMaxSpeed :: Nil =>
+          nonInitMaxSpeed.typeFullName shouldBe "System.Int32"
+          nonInitMaxSpeed.code shouldBe "int nonInitMaxSpeed = 200"
+          nonInitMaxSpeed.modifier.modifierType.l shouldBe List(ModifierTypes.INTERNAL, ModifierTypes.STATIC)
+        case xs =>
+          fail(s"Expected single `nonInitMaxSpeed` member, but got $xs")
+      }
+    }
+
+    "have a static constructor" in {
       inside(cpg.typeDecl.nameExact("Car").method.nameExact(Defines.StaticInitMethodName).l) {
-        case m :: Nil =>
-          m.fullName shouldBe s"Car.${Defines.StaticInitMethodName}:void()"
-          m.modifier.modifierType.l shouldBe ModifierTypes.STATIC :: ModifierTypes.CONSTRUCTOR :: Nil
-          m.methodReturn.typeFullName shouldBe "void"
+        case cctor :: Nil =>
+          cctor.fullName shouldBe s"Car.${Defines.StaticInitMethodName}:System.Void()"
+          cctor.modifier.modifierType.toSet shouldBe Set(
+            ModifierTypes.STATIC,
+            ModifierTypes.CONSTRUCTOR,
+            ModifierTypes.INTERNAL
+          )
+          cctor.methodReturn.typeFullName shouldBe "System.Void"
+        case xs =>
+          fail(s"Expected single static constructor, but got $xs")
+      }
+    }
 
-          inside(m.assignment.l) {
-            case maxSpeed :: nonInitMaxSpeed :: Nil =>
-              maxSpeed.code shouldBe "maxSpeed = 200"
-              nonInitMaxSpeed.code shouldBe "nonInitMaxSpeed = 2000"
-            case _ => fail("Exactly 2 assignments expected")
-          }
-        case _ => fail("`Car` has no static initializer method")
+    "have the static member initialization inside the static constructor" in {
+      inside(cpg.method.fullNameExact(s"Car.${Defines.StaticInitMethodName}:System.Void()").body.assignment.l) {
+        case assignment :: Nil =>
+          assignment.target.code shouldBe "nonInitMaxSpeed"
+          assignment.source.code shouldBe "200"
+        case xs =>
+          fail(s"Expected single assignment inside the static constructor, but got $xs")
+      }
+    }
+  }
+
+  "class with initialized member" should {
+    val cpg = code("""
+        |class Car
+        |{
+        | string color = "red";
+        |}
+        |""".stripMargin)
+
+    "have the member correctly set" in {
+      inside(cpg.member.nameExact("color").l) {
+        case color :: Nil =>
+          color.typeFullName shouldBe "System.String"
+          color.code shouldBe "string color = \"red\""
+          color.modifier.modifierType.l shouldBe List(ModifierTypes.INTERNAL)
+        case xs =>
+          fail(s"Expected single `color` member, but got $xs")
+      }
+    }
+
+    "have a constructor" in {
+      inside(cpg.typeDecl.nameExact("Car").method.nameExact(Defines.ConstructorMethodName).l) {
+        case ctor :: Nil =>
+          ctor.fullName shouldBe s"Car.${Defines.ConstructorMethodName}:System.Void()"
+          ctor.modifier.modifierType.toSet shouldBe Set(ModifierTypes.INTERNAL, ModifierTypes.CONSTRUCTOR)
+          ctor.methodReturn.typeFullName shouldBe "System.Void"
+        case xs =>
+          fail(s"Expected single constructor, but got $xs")
+      }
+    }
+
+    "have the member initialization inside the constructor" in {
+      inside(cpg.method.fullNameExact(s"Car.${Defines.ConstructorMethodName}:System.Void()").body.assignment.l) {
+        case assignment :: Nil =>
+          assignment.target.code shouldBe "color"
+          assignment.source.code shouldBe "\"red\""
+        case xs =>
+          fail(s"Expected single assignment inside the constructor, but got $xs")
+      }
+    }
+  }
+
+  "class with static constructor" should {
+    val cpg = code("""
+        |class Car
+        |{
+        | static Car()
+        | {
+        | }
+        |}""".stripMargin)
+    "have a static constructor correctly set" in {
+      inside(cpg.typeDecl.nameExact("Car").method.nameExact(Defines.StaticInitMethodName).l) {
+        case cctor :: Nil =>
+          cctor.fullName shouldBe s"Car.${Defines.StaticInitMethodName}:System.Void()"
+          cctor.modifier.modifierType.toSet shouldBe Set(ModifierTypes.STATIC, ModifierTypes.CONSTRUCTOR)
+          cctor.methodReturn.typeFullName shouldBe "System.Void"
+        case xs =>
+          fail(s"Expected single static constructor, but got $xs")
+      }
+    }
+  }
+
+  "class with static constructor and initialized static member" should {
+    val cpg = code("""
+        |class Car
+        |{
+        | static int maxSpeed = 200;
+        | static Car()
+        | {
+        | }
+        |}""".stripMargin)
+    "have static member initialization inside static constructor" in {
+      inside(cpg.typeDecl.nameExact("Car").method.nameExact(Defines.StaticInitMethodName).body.assignment.l) {
+        case assignment :: Nil =>
+          assignment.code shouldBe "maxSpeed = 200"
+          assignment.source.code shouldBe "200"
+          // TODO: target is currently an identifier. Should it be `Car.maxSpeed` instead?
+          assignment.target.code shouldBe "maxSpeed"
+        case xs =>
+          fail(s"Expected single assignment inside static constructor, but got $xs")
+      }
+    }
+  }
+
+  "class with static constructor initializing a member, plus an initialized static member" should {
+    val cpg = code("""
+        |class Car
+        |{
+        | static int maxSpeed = 200;
+        | static int nonInitMaxSpeed;
+        | static Car()
+        | {
+        |   nonInitMaxSpeed = 300;
+        | }
+        |}
+        |""".stripMargin)
+    "have static constructor with two assignments for initializing the members" in {
+      inside(cpg.typeDecl.nameExact("Car").method.nameExact(Defines.StaticInitMethodName).assignment.sortBy(_.code).l) {
+        case maxSpeedAssignment :: nonInitMaxSpeedAssignment :: Nil =>
+          maxSpeedAssignment.code shouldBe "maxSpeed = 200"
+          nonInitMaxSpeedAssignment.code shouldBe "nonInitMaxSpeed = 300"
+
+          // TODO: They should have the same representation
+          maxSpeedAssignment.target.code shouldBe "maxSpeed"
+          nonInitMaxSpeedAssignment.target.code shouldBe "Car.nonInitMaxSpeed"
+        case xs =>
+          fail(s"Expected two assignments, but got $xs")
+      }
+    }
+  }
+
+  "class with initialized member and default constructor" should {
+    val cpg = code("""
+        |class Car
+        |{
+        | string color = "red";
+        | Car()
+        | {
+        | }
+        |}""".stripMargin)
+    "have a constructor" in {
+      inside(cpg.typeDecl.nameExact("Car").method.nameExact(Defines.ConstructorMethodName).l) {
+        case ctor :: Nil =>
+          ctor.fullName shouldBe s"Car.${Defines.ConstructorMethodName}:System.Void()"
+          ctor.modifier.modifierType.toSet shouldBe Set(ModifierTypes.CONSTRUCTOR)
+          ctor.methodReturn.typeFullName shouldBe "System.Void"
+        case xs =>
+          fail(s"Expected single constructor, but got $xs")
+      }
+    }
+
+    "have the member initialization inside the constructor" in {
+      inside(cpg.method.fullNameExact(s"Car.${Defines.ConstructorMethodName}:System.Void()").body.assignment.l) {
+        case assignment :: Nil =>
+          // TODO: test LHS: shouldn't it resemble `this.color`?
+          assignment.target.code shouldBe "color"
+          assignment.source.code shouldBe "\"red\""
+        case xs =>
+          fail(s"Expected single assignment inside the constructor, but got $xs")
       }
     }
   }
@@ -105,9 +252,9 @@ class MemberTests extends CSharpCode2CpgFixture {
     "generate one constructor" in {
       inside(cpg.typeDecl.nameExact("Car").method.nameExact(Defines.ConstructorMethodName).l) {
         case m :: Nil =>
-          m.fullName shouldBe s"Car.${Defines.ConstructorMethodName}:void()"
+          m.fullName shouldBe s"Car.${Defines.ConstructorMethodName}:System.Void()"
           m.modifier.modifierType.l shouldBe ModifierTypes.PUBLIC :: ModifierTypes.CONSTRUCTOR :: Nil
-          m.methodReturn.typeFullName shouldBe "void"
+          m.methodReturn.typeFullName shouldBe "System.Void"
 
           inside(m.assignment.l) {
             case color :: initMaxSpeed :: Nil =>
@@ -146,9 +293,9 @@ class MemberTests extends CSharpCode2CpgFixture {
     "generate one constructor with necessary parameters" in {
       inside(cpg.typeDecl.nameExact("Car").method.nameExact(Defines.ConstructorMethodName).l) {
         case m :: Nil =>
-          m.fullName shouldBe s"Car.${Defines.ConstructorMethodName}:void(System.Int32)"
+          m.fullName shouldBe s"Car.${Defines.ConstructorMethodName}:System.Void(System.Int32)"
           m.modifier.modifierType.l shouldBe ModifierTypes.PUBLIC :: ModifierTypes.CONSTRUCTOR :: Nil
-          m.methodReturn.typeFullName shouldBe "void"
+          m.methodReturn.typeFullName shouldBe "System.Void"
 
           inside(m.assignment.l) {
             case color :: initMaxSpeed :: Nil =>
@@ -181,7 +328,7 @@ class MemberTests extends CSharpCode2CpgFixture {
         |  int b;
         |
         |  static Car() { // static constructor
-        |     this.nonInitMaxSpeed = 2000;
+        |     nonInitMaxSpeed = 2000;
         |  }
         |
         |  public Car() {
@@ -200,7 +347,7 @@ class MemberTests extends CSharpCode2CpgFixture {
           inside(m.body.astChildren.isCall.l) {
             case staticImplicit :: staticExplicit :: Nil =>
               staticExplicit.methodFullName shouldBe Operators.assignment
-              staticExplicit.code shouldBe "this.nonInitMaxSpeed = 2000"
+              staticExplicit.code shouldBe "nonInitMaxSpeed = 2000"
 
               inside(staticExplicit.argument.fieldAccess.l) {
                 case fieldAccess :: Nil =>
@@ -297,7 +444,9 @@ class MemberTests extends CSharpCode2CpgFixture {
     }
   }
 
-  "a basic class declaration with a PropertyDeclaration member" should {
+  // TODO: Getters/Setters are currently being lowered into get_/set_ methods.
+  //  Adapt this unit-test once that is finished.
+  "a basic class declaration with a PropertyDeclaration member" ignore {
     val cpg = code("""
         |public class Foo {
         | public int Bar {get; set;}
@@ -310,6 +459,28 @@ class MemberTests extends CSharpCode2CpgFixture {
           inside(fooClass.astChildren.isMember.nameExact("Bar").l) {
             case bar :: Nil =>
               bar.code shouldBe "public int Bar"
+              bar.typeFullName shouldBe "System.Int32"
+              bar.astParent shouldBe fooClass
+            case _ => fail("No member named Bar found inside Foo")
+          }
+        case _ => fail("No class named Foo found.")
+      }
+    }
+  }
+
+  "a basic class declaration with a FieldDeclaration member" should {
+    val cpg = code("""
+        |public class Foo {
+        | public int Bar;
+        |}
+        |""".stripMargin)
+
+    "create a member for Bar with appropriate properties" in {
+      inside(cpg.typeDecl.nameExact("Foo").l) {
+        case fooClass :: Nil =>
+          inside(fooClass.astChildren.isMember.nameExact("Bar").l) {
+            case bar :: Nil =>
+              bar.code shouldBe "int Bar"
               bar.typeFullName shouldBe "System.Int32"
               bar.astParent shouldBe fooClass
             case _ => fail("No member named Bar found inside Foo")
