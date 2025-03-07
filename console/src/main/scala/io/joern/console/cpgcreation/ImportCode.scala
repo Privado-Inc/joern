@@ -1,14 +1,17 @@
 package io.joern.console.cpgcreation
 
-import better.files.File
 import io.joern.console.workspacehandling.Project
 import io.joern.console.{ConsoleException, FrontendConfig, Reporting}
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.Languages
-import overflowdb.traversal.help.Table
-import overflowdb.traversal.help.Table.AvailableWidthProvider
+import flatgraph.help.Table
+import flatgraph.help.Table.AvailableWidthProvider
 
-import java.nio.file.Path
+import io.joern.x2cpg.utils.FileUtil
+import io.joern.x2cpg.utils.FileUtil.*
+
+import java.nio.file.{Path, Files, Paths}
+
 import scala.util.{Failure, Success, Try}
 
 class ImportCode[T <: Project](console: io.joern.console.Console[T])(implicit
@@ -21,7 +24,7 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T])(implicit
   protected val generatorFactory = new CpgGeneratorFactory(config)
 
   private def checkInputPath(inputPath: String): Unit = {
-    if (!File(inputPath).exists) {
+    if (!Files.exists(Paths.get(inputPath))) {
       throw new ConsoleException(s"Input path does not exist: '$inputPath'")
     }
   }
@@ -52,7 +55,7 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T])(implicit
     new BinaryFrontend("jvm", Languages.JAVA, "Java/Dalvik Bytecode Frontend (based on SOOT's jimple)")
   def ghidra: Frontend = new BinaryFrontend("ghidra", Languages.GHIDRA, "ghidra reverse engineering frontend")
   def kotlin: SourceBasedFrontend =
-    new SourceBasedFrontend("kotlin", Languages.KOTLIN, "Kotlin Source Frontend", "kotlin")
+    new SourceBasedFrontend("kotlin", Languages.KOTLIN, "Kotlin Source Frontend", "kt")
   def python: SourceBasedFrontend =
     new SourceBasedFrontend("python", Languages.PYTHONSRC, "Python Source Frontend", "py")
   def golang: SourceBasedFrontend = new SourceBasedFrontend("golang", Languages.GOLANG, "Golang Source Frontend", "go")
@@ -62,11 +65,12 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T])(implicit
     new JsFrontend("jssrc", Languages.JSSRC, "Javascript/Typescript Source Frontend based on astgen", "js")
   def swiftsrc: SourceBasedFrontend =
     new SwiftSrcFrontend("swiftsrc", Languages.SWIFTSRC, "Swift Source Frontend based on swiftastgen", "swift")
-  def csharp: Frontend          = new BinaryFrontend("csharp", Languages.CSHARP, "C# Source Frontend (Roslyn)")
+  def csharp: Frontend = new BinaryFrontend("csharp", Languages.CSHARP, "C# Source Frontend (Roslyn)")
+  def csharpsrc: SourceBasedFrontend =
+    new SourceBasedFrontend("csharpsrc", Languages.CSHARPSRC, "C# Source Frontend based on DotNetAstGen", "cs")
   def llvm: Frontend            = new BinaryFrontend("llvm", Languages.LLVM, "LLVM Bitcode Frontend")
   def php: SourceBasedFrontend  = new SourceBasedFrontend("php", Languages.PHP, "PHP source frontend", "php")
-  def ruby: SourceBasedFrontend = new RubyFrontend("Ruby source frontend", false)
-  def rubyDeprecated: SourceBasedFrontend = new RubyFrontend("Ruby source deprecated frontend", true)
+  def ruby: SourceBasedFrontend = SourceBasedFrontend("ruby", Languages.RUBYSRC, "Ruby source frontend", "rb")
 
   private def allFrontends: List[Frontend] =
     List(
@@ -85,7 +89,7 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T])(implicit
       python,
       csharp,
       ruby,
-      rubyDeprecated
+      csharpsrc
     )
 
   // this is only abstract to force people adding frontends to make a decision whether the frontend consumes binaries or source
@@ -105,11 +109,11 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T])(implicit
 
     protected def fromFile(inputPath: String, projectName: String = "", args: List[String] = List()): Cpg = {
       checkInputPath(inputPath)
-      if (File(inputPath).isDirectory) {
+      if (Files.isDirectory(Paths.get(inputPath))) {
         throw new ConsoleException(s"Input path is a directory: '$inputPath'")
       }
       withFileInTmpFile(inputPath) { dir =>
-        this.apply(dir.pathAsString, projectName, args)
+        this.apply(dir.toString, projectName, args)
       } match {
         case Failure(exception) =>
           throw new ConsoleException(s"unable to generate cpg from file '$inputPath'", exception)
@@ -132,7 +136,7 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T])(implicit
 
     def fromString(str: String, args: List[String] = List()): Cpg = {
       withCodeInTmpFile(str, s"tmp.$extension") { dir =>
-        super.apply(dir.pathAsString, args = args)
+        super.apply(dir.toString, args = args)
       } match {
         case Failure(exception) => throw new ConsoleException(s"unable to generate cpg from given String", exception)
         case Success(value)     => value
@@ -140,34 +144,10 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T])(implicit
     }
   }
 
-  /** Only a wrapper so as to more easily pick the deprecated variant without having to provide the
-    * `--useDeprecatedFrontend` flag each time.
-    *
-    * @param useDeprecatedFrontend
-    *   If set, will invoke the frontend with the `--useDeprecatedFrontend` flag
-    */
-  private class RubyFrontend(description: String, useDeprecatedFrontend: Boolean = false)
-      extends SourceBasedFrontend("ruby", Languages.RUBYSRC, description, "rb") {
-    private val deprecatedFlag = "--useDeprecatedFrontend"
-
-    private def addDeprecatedFlagIfNeeded(args: List[String]): List[String] = {
-      Option.when(useDeprecatedFrontend && !args.contains(deprecatedFlag))(deprecatedFlag).toList ++ args
-    }
-
-    override def cpgGeneratorForLanguage(
-      language: String,
-      config: FrontendConfig,
-      rootPath: Path,
-      args: List[String]
-    ): Option[CpgGenerator] = {
-      super.cpgGeneratorForLanguage(language, config, rootPath, addDeprecatedFlagIfNeeded(args))
-    }
-  }
-
   class SwiftSrcFrontend(name: String, language: String, description: String, extension: String)
       extends SourceBasedFrontend(name, language, description, extension) {
     override def apply(inputPath: String, projectName: String, args: List[String]): Cpg = {
-      if (!File(inputPath).isDirectory) {
+      if (!Files.isDirectory(Paths.get(inputPath))) {
         // The Swift frontend does not support importing a single file.
         // Hence, we have to copy it into a temporary folder with super.fromFile and import that folder.
         super.fromFile(inputPath, projectName, args)
@@ -180,7 +160,7 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T])(implicit
   class JsFrontend(name: String, language: String, description: String, extension: String)
       extends SourceBasedFrontend(name, language, description, extension) {
     override def apply(inputPath: String, projectName: String, args: List[String]): Cpg = {
-      if (!File(inputPath).isDirectory) {
+      if (!Files.isDirectory(Paths.get(inputPath))) {
         // The JS frontend does not support importing a single file.
         // Hence, we have to copy it into a temporary folder with super.fromFile and import that folder.
         super.fromFile(inputPath, projectName, args)
@@ -193,24 +173,32 @@ class ImportCode[T <: Project](console: io.joern.console.Console[T])(implicit
   class CFrontend(name: String, extension: String = "c")
       extends SourceBasedFrontend(name, Languages.NEWC, "Eclipse CDT Based Frontend for C/C++", extension)
 
-  private def withCodeInTmpFile(str: String, filename: String)(f: File => Cpg): Try[Cpg] = {
-    val dir = File.newTemporaryDirectory("console")
+  private def withCodeInTmpFile(str: String, filename: String)(f: Path => Cpg): Try[Cpg] = {
+    val dir = Files.createTempDirectory("console")
+
     val result = Try {
-      (dir / filename).write(str)
+      Files.writeString((dir / filename), str)
       f(dir)
     }
-    dir.deleteOnExit(swallowIOExceptions = true)
+
+    FileUtil.deleteOnExit(dir, swallowIOExceptions = true)
     result
   }
 
-  private def withFileInTmpFile(inputPath: String)(f: File => Cpg): Try[Cpg] = {
-    val dir = File.newTemporaryDirectory("console")
-    val result = Try {
-      File(inputPath).copyToDirectory(dir)
-      f(dir)
+  private def withFileInTmpFile(inputPath: String)(f: Path => Cpg): Try[Cpg] = {
+    val dir = Files.createTempDirectory("console")
+
+    try {
+      val result = Try {
+        Paths.get(inputPath).copyToDirectory(dir)
+        f(dir)
+      }
+
+      result
+    } finally {
+      // Always attempt to clean up, regardless of success or failure
+      FileUtil.deleteOnExit(dir)
     }
-    dir.deleteOnExit(swallowIOExceptions = true)
-    result
   }
 
   /** Provide an overview of the available CPG generators (frontends)
