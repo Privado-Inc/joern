@@ -1,31 +1,29 @@
 package io.joern.rubysrc2cpg
 
 import io.joern.rubysrc2cpg.Frontend.*
+import io.joern.x2cpg.astgen.AstGenConfig
 import io.joern.x2cpg.passes.frontend.{TypeRecoveryParserConfig, XTypeRecovery, XTypeRecoveryConfig}
 import io.joern.x2cpg.typestub.TypeStubConfig
+import io.joern.x2cpg.utils.server.FrontendHTTPServer
 import io.joern.x2cpg.{DependencyDownloadConfig, X2CpgConfig, X2CpgMain}
 import scopt.OParser
 
-final case class Config(
-  antlrCacheMemLimit: Double = 0.6d,
-  useDeprecatedFrontend: Boolean = false,
-  downloadDependencies: Boolean = false,
-  useTypeStubs: Boolean = true
-) extends X2CpgConfig[Config]
+import java.nio.file.Paths
+
+final case class Config(downloadDependencies: Boolean = false, useTypeStubs: Boolean = true)
+    extends X2CpgConfig[Config]
     with DependencyDownloadConfig[Config]
     with TypeRecoveryParserConfig[Config]
-    with TypeStubConfig[Config] {
+    with TypeStubConfig[Config]
+    with AstGenConfig[Config] {
 
-  this.defaultIgnoredFilesRegex = List("spec", "test", "tests").flatMap { directory =>
-    List(s"(^|\\\\)$directory($$|\\\\)".r.unanchored, s"(^|/)$directory($$|/)".r.unanchored)
-  }
+  override val astGenProgramName: String        = "ruby_ast_gen"
+  override val astGenConfigPrefix: String       = "rubysrc2cpg"
+  override val multiArchitectureBuilds: Boolean = true
 
-  def withAntlrCacheMemoryLimit(value: Double): Config = {
-    copy(antlrCacheMemLimit = value).withInheritedFields(this)
-  }
-
-  def withUseDeprecatedFrontend(value: Boolean): Config = {
-    copy(useDeprecatedFrontend = value).withInheritedFields(this)
+  this.defaultIgnoredFilesRegex = List("spec", "tests?", "vendor", "db(\\\\|/)([\\w_]*)migrate([_\\w]*)").flatMap {
+    directory =>
+      List(s"(^|\\\\)$directory($$|\\\\)".r.unanchored, s"(^|/)$directory($$|/)".r.unanchored)
   }
 
   override def withDownloadDependencies(value: Boolean): Config = {
@@ -46,21 +44,9 @@ private object Frontend {
     import builder.*
     OParser.sequence(
       programName("rubysrc2cpg"),
-      opt[Double]("antlrCacheMemLimit")
-        .hidden()
-        .action((x, c) => c.withAntlrCacheMemoryLimit(x))
-        .validate {
-          case x if x < 0.3 =>
-            failure(s"$x may result in too many evictions and reduce performance, try a value between 0.3 - 0.8.")
-          case x if x > 0.8 =>
-            failure(s"$x may result in too much memory usage and thrashing, try a value between 0.3 - 0.8.")
-          case x =>
-            success
-        }
-        .text("sets the heap usage threshold at which the ANTLR DFA cache is cleared during parsing (default 0.6)"),
-      opt[Unit]("useDeprecatedFrontend")
-        .action((_, c) => c.withUseDeprecatedFrontend(true))
-        .text("uses the original (but deprecated) Ruby frontend (default false)"),
+      opt[Unit]("enable-file-content")
+        .action((_, c) => c.withDisableFileContent(false))
+        .text("Enable file content"),
       DependencyDownloadConfig.parserOptions,
       XTypeRecoveryConfig.parserOptionsForParserConfig,
       TypeStubConfig.parserOptions
@@ -68,8 +54,12 @@ private object Frontend {
   }
 }
 
-object Main extends X2CpgMain(cmdLineParser, new RubySrc2Cpg()) {
+object Main extends X2CpgMain(cmdLineParser, new RubySrc2Cpg()) with FrontendHTTPServer[Config, RubySrc2Cpg] {
+
+  override protected def newDefaultConfig(): Config = Config()
+
   def run(config: Config, rubySrc2Cpg: RubySrc2Cpg): Unit = {
-    rubySrc2Cpg.run(config)
+    if (config.serverMode) { startup() }
+    else { rubySrc2Cpg.run(config) }
   }
 }

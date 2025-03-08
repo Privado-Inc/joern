@@ -1,63 +1,39 @@
 package io.joern.c2cpg.astcreation
 
-import io.joern.x2cpg.{Ast, ValidationMode}
+import io.joern.x2cpg.Ast
 import io.joern.x2cpg.datastructures.Stack.*
 import io.joern.x2cpg.utils.NodeBuilders.newModifierNode
+import io.shiftleft.codepropertygraph.generated.EvaluationStrategies
+import io.shiftleft.codepropertygraph.generated.ModifierTypes
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.codepropertygraph.generated.{EvaluationStrategies, ModifierTypes}
-import org.apache.commons.lang3.StringUtils
+import io.shiftleft.codepropertygraph.generated.EdgeTypes
 import org.eclipse.cdt.core.dom.ast.*
-import org.eclipse.cdt.core.dom.ast.cpp.{ICPPASTLambdaExpression, ICPPFunction}
+import org.eclipse.cdt.core.dom.ast.cpp.ICPPASTCompositeTypeSpecifier
+import org.eclipse.cdt.core.dom.ast.cpp.ICPPASTFunctionDefinition
+import org.eclipse.cdt.core.dom.ast.cpp.ICPPASTLambdaExpression
+import org.eclipse.cdt.core.dom.ast.cpp.ICPPASTLambdaExpression.CaptureDefault
+import org.eclipse.cdt.core.dom.ast.cpp.ICPPASTQualifiedName
+import org.eclipse.cdt.core.dom.ast.cpp.ICPPBinding
 import org.eclipse.cdt.core.dom.ast.gnu.c.ICASTKnRFunctionDeclarator
-import org.eclipse.cdt.internal.core.dom.parser.c.{CASTFunctionDeclarator, CASTParameterDeclaration, CTypedef}
-import org.eclipse.cdt.internal.core.dom.parser.cpp.{
-  CPPASTFunctionDeclarator,
-  CPPASTFunctionDefinition,
-  CPPASTParameterDeclaration,
-  CPPFunction
-}
+import org.eclipse.cdt.internal.core.dom.parser.c.CASTFunctionDeclarator
+import org.eclipse.cdt.internal.core.dom.parser.c.CASTParameterDeclaration
+import org.eclipse.cdt.internal.core.dom.parser.c.CVariable
+import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPASTFunctionDeclarator
+import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPASTFunctionDefinition
+import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPASTParameterDeclaration
+import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPASTQualifiedName
+import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPClassType
+import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPEnumeration
+import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPStructuredBindingComposite
+import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPVariable
 import org.eclipse.cdt.internal.core.model.ASTStringUtil
 
 import scala.annotation.tailrec
-import scala.collection.mutable
+import scala.util.Try
 
-trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
+trait AstForFunctionsCreator { this: AstCreator =>
 
-  private val seenFunctionFullnames = mutable.HashSet.empty[String]
-
-  private def createFunctionTypeAndTypeDecl(
-    node: IASTNode,
-    method: NewMethod,
-    methodName: String,
-    methodFullName: String,
-    signature: String
-  ): Ast = {
-    val normalizedName     = StringUtils.normalizeSpace(methodName)
-    val normalizedFullName = StringUtils.normalizeSpace(methodFullName)
-
-    val parentNode: NewTypeDecl = methodAstParentStack.collectFirst { case t: NewTypeDecl => t }.getOrElse {
-      val astParentType     = methodAstParentStack.head.label
-      val astParentFullName = methodAstParentStack.head.properties("FULL_NAME").toString
-      val typeDeclNode_ = typeDeclNode(
-        node,
-        normalizedName,
-        normalizedFullName,
-        method.filename,
-        normalizedName,
-        astParentType,
-        astParentFullName
-      )
-      Ast.storeInDiffGraph(Ast(typeDeclNode_), diffGraph)
-      typeDeclNode_
-    }
-
-    method.astParentFullName = parentNode.fullName
-    method.astParentType = parentNode.label
-    val functionBinding = NewBinding().name(normalizedName).methodFullName(normalizedFullName).signature(signature)
-    Ast(functionBinding).withBindsEdge(parentNode, functionBinding).withRefEdge(functionBinding, method)
-  }
-
-  private def parameters(functionNode: IASTNode): Seq[IASTNode] = functionNode match {
+  final protected def parameters(functionNode: IASTNode): Seq[IASTNode] = functionNode match {
     case arr: IASTArrayDeclarator       => parameters(arr.getNestedDeclarator)
     case decl: CPPASTFunctionDeclarator => decl.getParameters.toIndexedSeq ++ parameters(decl.getNestedDeclarator)
     case decl: CASTFunctionDeclarator   => decl.getParameters.toIndexedSeq ++ parameters(decl.getNestedDeclarator)
@@ -70,21 +46,189 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) { th
   }
 
   @tailrec
-  private def isVariadic(functionNode: IASTNode): Boolean = functionNode match {
-    case decl: CPPASTFunctionDeclarator            => decl.takesVarArgs()
-    case decl: CASTFunctionDeclarator              => decl.takesVarArgs()
-    case defn: IASTFunctionDefinition              => isVariadic(defn.getDeclarator)
-    case lambdaExpression: ICPPASTLambdaExpression => isVariadic(lambdaExpression.getDeclarator)
-    case _                                         => false
+  final protected def isVariadic(functionNode: IASTNode): Boolean = functionNode match {
+    case decl: CPPASTFunctionDeclarator             => decl.takesVarArgs()
+    case decl: CASTFunctionDeclarator               => decl.takesVarArgs()
+    case functionDefinition: IASTFunctionDefinition => isVariadic(functionDefinition.getDeclarator)
+    case lambdaExpression: ICPPASTLambdaExpression  => isVariadic(lambdaExpression.getDeclarator)
+    case _                                          => false
   }
 
-  private def parameterListSignature(func: IASTNode): String = {
-    val variadic = if (isVariadic(func)) "..." else ""
-    val elements = parameters(func).map {
-      case p: IASTParameterDeclaration => typeForDeclSpecifier(p.getDeclSpecifier)
-      case other                       => typeForDeclSpecifier(other)
+  protected def astForFunctionDeclarator(funcDecl: IASTFunctionDeclarator): Ast = {
+    safeGetBinding(funcDecl.getName) match {
+      case Some(_: IFunction) =>
+        val MethodFullNameInfo(name, fullName, signature, returnType) = methodFullNameInfo(funcDecl)
+        val codeString                                                = code(funcDecl.getParent)
+        val filename                                                  = fileName(funcDecl)
+
+        val parameterNodeInfos = thisForCPPFunctions(funcDecl) ++ withIndex(parameters(funcDecl)) { (p, i) =>
+          parameterNodeInfo(p, i)
+        }
+        setVariadicParameterInfo(parameterNodeInfos, funcDecl)
+
+        val (astParentType, astParentFullName) = methodDeclarationParentInfo()
+        val methodInfo = CGlobal.MethodInfo(
+          name,
+          code = codeString,
+          fileName = filename,
+          returnType = registerType(returnType),
+          astParentType = astParentType,
+          astParentFullName = astParentFullName,
+          lineNumber = line(funcDecl),
+          columnNumber = column(funcDecl),
+          lineNumberEnd = lineEnd(funcDecl),
+          columnNumberEnd = columnEnd(funcDecl),
+          signature = signature,
+          offset(funcDecl),
+          parameter = parameterNodeInfos,
+          modifier = modifierFor(funcDecl).map(_.modifierType)
+        )
+        registerMethodDeclaration(fullName, methodInfo)
+        Ast()
+      case Some(cVariable: CVariable) =>
+        val name       = shortName(funcDecl)
+        val tpe        = cleanType(safeGetType(cVariable.getType))
+        val codeString = code(funcDecl.getParent)
+        val node       = localNode(funcDecl, name, codeString, registerType(tpe))
+        scope.addVariable(name, node, tpe, C2CpgScope.ScopeType.BlockScope)
+        Ast(node)
+      case Some(cppVariable: CPPVariable) =>
+        val name       = shortName(funcDecl)
+        val tpe        = cleanType(safeGetType(cppVariable.getType))
+        val codeString = code(funcDecl.getParent)
+        val node       = localNode(funcDecl, name, codeString, registerType(tpe))
+        scope.addVariable(name, node, tpe, C2CpgScope.ScopeType.BlockScope)
+        Ast(node)
+      case Some(field: IField) =>
+        // TODO create a member for the field
+        // We get here a least for function pointer member declarations in classes like:
+        // class A {
+        //   public:
+        //     void (*foo)(int);
+        // };
+        Ast()
+      case Some(typeDef: ITypedef) =>
+        // TODO handle typeDecl for now we just ignore this.
+        Ast()
+      case _ =>
+        notHandledYet(funcDecl)
     }
-    s"(${elements.mkString(",")}$variadic)"
+
+  }
+
+  protected def isCppConstructor(funcDef: IASTFunctionDefinition): Boolean = {
+    funcDef match {
+      case cppFunc: CPPASTFunctionDefinition => cppFunc.getMemberInitializers.nonEmpty
+      case _                                 => false
+    }
+  }
+
+  protected def astForFunctionDefinition(funcDef: IASTFunctionDefinition): Ast = {
+    val filename                                                  = fileName(funcDef)
+    val MethodFullNameInfo(name, fullName, signature, returnType) = methodFullNameInfo(funcDef)
+    registerMethodDefinition(fullName)
+
+    val shouldCreateFunctionReference = typeRefIdStack.headOption.isEmpty
+    val methodRefNode_ = if (!shouldCreateFunctionReference) { None }
+    else { Option(methodRefNode(funcDef, name, fullName, fullName)) }
+
+    val codeString      = code(funcDef)
+    val methodBlockNode = blockNode(funcDef)
+    val methodNode_     = methodNode(funcDef, name, codeString, fullName, Some(signature), filename)
+    val capturingRefNode = if (shouldCreateFunctionReference) { methodRefNode_ }
+    else { typeRefIdStack.headOption }
+
+    methodAstParentStack.push(methodNode_)
+    scope.pushNewMethodScope(fullName, name, methodBlockNode, capturingRefNode)
+
+    val implicitThisParam = thisForCPPFunctions(funcDef).map { thisParam =>
+      val parameterNode = parameterInNode(
+        funcDef,
+        thisParam.name,
+        thisParam.code,
+        thisParam.index,
+        thisParam.isVariadic,
+        thisParam.evaluationStrategy,
+        thisParam.typeFullName
+      )
+      scope.addVariable(thisParam.name, parameterNode, thisParam.typeFullName, C2CpgScope.ScopeType.MethodScope)
+      parameterNode
+    }
+    val parameterNodes = implicitThisParam ++ withIndex(parameters(funcDef)) { (p, i) =>
+      parameterNode(p, i)
+    }
+    setVariadic(parameterNodes, funcDef)
+
+    val astForMethod = methodAst(
+      methodNode_,
+      parameterNodes.map(Ast(_)),
+      astForMethodBody(Option(funcDef.getBody), methodBlockNode),
+      methodReturnNode(funcDef, registerType(returnType)),
+      modifiers = modifierFor(funcDef)
+    )
+
+    scope.popScope()
+    methodAstParentStack.pop()
+
+    methodRefNode_ match {
+      case Some(ref) =>
+        createFunctionTypeAndTypeDecl(funcDef, methodNode_)
+        Ast.storeInDiffGraph(astForMethod, diffGraph)
+        diffGraph.addEdge(methodAstParentStack.head, methodNode_, EdgeTypes.AST)
+        Ast(ref)
+      case None =>
+        val typeDeclAst = createFunctionTypeAndTypeDecl(methodNode_)
+        astForMethod.merge(typeDeclAst)
+    }
+  }
+
+  protected def astForLambdaExpression(lambdaExpression: ICPPASTLambdaExpression): Ast = {
+    val (lambdaMethodNode, lambdaMethodRef) = createAndPushLambdaMethod(lambdaExpression)
+    createAndPushLambdaTypeDecl(lambdaExpression, lambdaMethodNode)
+    Ast(lambdaMethodRef)
+  }
+
+  private def methodDeclarationParentInfo(): (String, String) = {
+    methodAstParentStack.collectFirst { case t: NewTypeDecl => (t.label, t.fullName) }.getOrElse {
+      (methodAstParentStack.head.label, methodAstParentStack.head.properties("FULL_NAME").toString)
+    }
+  }
+
+  private def createFunctionTypeAndTypeDecl(method: NewMethod): Ast = {
+    val parentNode: NewTypeDecl = methodAstParentStack.collectFirst { case t: NewTypeDecl => t }.get
+    method.astParentFullName = parentNode.fullName
+    method.astParentType = parentNode.label
+    val functionBinding = NewBinding().name(method.name).methodFullName(method.fullName).signature(method.signature)
+    Ast(functionBinding).withBindsEdge(parentNode, functionBinding).withRefEdge(functionBinding, method)
+  }
+
+  private def createFunctionTypeAndTypeDecl(funcDef: IASTFunctionDefinition, methodNode: NewMethod): Unit = {
+    registerType(methodNode.fullName)
+    val (astParentType, astParentFullName) = methodDeclarationParentInfo()
+    val methodTypeDeclNode = typeDeclNode(
+      funcDef,
+      methodNode.name,
+      methodNode.fullName,
+      methodNode.filename,
+      methodNode.fullName,
+      astParentType,
+      astParentFullName
+    )
+
+    methodNode.astParentFullName = astParentFullName
+    methodNode.astParentType = astParentType
+
+    val functionBinding = NewBinding()
+      .name(methodNode.name)
+      .methodFullName(methodNode.fullName)
+      .signature(methodNode.signature)
+
+    val functionBindAst = Ast(functionBinding)
+      .withBindsEdge(methodTypeDeclNode, functionBinding)
+      .withRefEdge(functionBinding, methodNode)
+
+    Ast.storeInDiffGraph(Ast(methodTypeDeclNode), diffGraph)
+    Ast.storeInDiffGraph(functionBindAst, diffGraph)
   }
 
   private def setVariadic(parameterNodes: Seq[NewMethodParameterIn], func: IASTNode): Unit = {
@@ -96,156 +240,73 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) { th
     }
   }
 
-  protected def astForMethodRefForLambda(lambdaExpression: ICPPASTLambdaExpression): Ast = {
-    val filename = fileName(lambdaExpression)
-
-    val returnType = lambdaExpression.getDeclarator match {
-      case declarator: IASTDeclarator =>
-        declarator.getTrailingReturnType match {
-          case id: IASTTypeId => typeForDeclSpecifier(id.getDeclSpecifier)
-          case null           => Defines.anyTypeName
-        }
-      case null => Defines.anyTypeName
-    }
-    val name        = nextClosureName()
-    val fullname    = s"${fullName(lambdaExpression)}$name"
-    val signature   = s"$returnType${parameterListSignature(lambdaExpression)}"
-    val codeString  = code(lambdaExpression)
-    val methodNode_ = methodNode(lambdaExpression, name, codeString, fullname, Some(signature), filename)
-
-    scope.pushNewScope(methodNode_)
-    val parameterNodes = withIndex(parameters(lambdaExpression.getDeclarator)) { (p, i) =>
-      parameterNode(p, i)
-    }
-    setVariadic(parameterNodes, lambdaExpression)
-
-    scope.popScope()
-
-    val astForLambda = methodAst(
-      methodNode_,
-      parameterNodes.map(Ast(_)),
-      astForMethodBody(Option(lambdaExpression.getBody)),
-      newMethodReturnNode(lambdaExpression, registerType(returnType)),
-      newModifierNode(ModifierTypes.LAMBDA) :: Nil
-    )
-    val typeDeclAst = createFunctionTypeAndTypeDecl(lambdaExpression, methodNode_, name, fullname, signature)
-    Ast.storeInDiffGraph(astForLambda.merge(typeDeclAst), diffGraph)
-
-    Ast(methodRefNode(lambdaExpression, codeString, fullname, methodNode_.astParentFullName))
-  }
-
-  protected def astForFunctionDeclarator(funcDecl: IASTFunctionDeclarator): Ast = {
-    funcDecl.getName.resolveBinding() match {
-      case function: IFunction =>
-        val returnType = typeForDeclSpecifier(funcDecl.getParent.asInstanceOf[IASTSimpleDeclaration].getDeclSpecifier)
-        val fullname   = fullName(funcDecl)
-        val templateParams = templateParameters(funcDecl).getOrElse("")
-        val signature =
-          s"$returnType${parameterListSignature(funcDecl)}"
-
-        if (seenFunctionFullnames.add(fullname)) {
-          val name        = shortName(funcDecl)
-          val codeString  = code(funcDecl.getParent)
-          val filename    = fileName(funcDecl)
-          val methodNode_ = methodNode(funcDecl, name, codeString, fullname, Some(signature), filename)
-
-          scope.pushNewScope(methodNode_)
-
-          val parameterNodes = withIndex(parameters(funcDecl)) { (p, i) =>
-            parameterNode(p, i)
-          }
-          setVariadic(parameterNodes, funcDecl)
-
-          scope.popScope()
-
-          val stubAst =
-            methodStubAst(
-              methodNode_,
-              parameterNodes.map(Ast(_)),
-              newMethodReturnNode(funcDecl, registerType(returnType))
-            )
-          val typeDeclAst = createFunctionTypeAndTypeDecl(funcDecl, methodNode_, name, fullname, signature)
-          stubAst.merge(typeDeclAst)
-        } else {
-          Ast()
-        }
-      case field: IField =>
-        // TODO create a member for the field
-        // We get here a least for function pointer member declarations in classes like:
-        // class A {
-        //   public:
-        //     void (*foo)(int);
-        // };
-        Ast()
-      case typeDef: ITypedef =>
-        // TODO handle typeDecl for now we just ignore this.
-        Ast()
-    }
-
-  }
-
-  private def isCppConstructor(funcDef: IASTFunctionDefinition): Boolean = {
-    funcDef match {
-      case cppFunc: CPPASTFunctionDefinition => cppFunc.getMemberInitializers.nonEmpty
-      case _                                 => false
+  private def setVariadicParameterInfo(parameterNodeInfos: Seq[CGlobal.ParameterInfo], func: IASTNode): Unit = {
+    parameterNodeInfos.lastOption.foreach {
+      case p: CGlobal.ParameterInfo if isVariadic(func) =>
+        p.isVariadic = true
+        p.code = s"${p.code}..."
+      case _ =>
     }
   }
 
-  protected def astForFunctionDefinition(funcDef: IASTFunctionDefinition): Ast = {
-    val filename = fileName(funcDef)
-    val returnType = if (isCppConstructor(funcDef)) {
-      typeFor(funcDef.asInstanceOf[CPPASTFunctionDefinition].getMemberInitializers.head.getInitializer)
-    } else typeForDeclSpecifier(funcDef.getDeclSpecifier)
-    val name           = shortName(funcDef)
-    val fullname       = fullName(funcDef)
-    val templateParams = templateParameters(funcDef).getOrElse("")
-
-    val signature =
-      s"$returnType${parameterListSignature(funcDef)}"
-    seenFunctionFullnames.add(fullname)
-
-    val codeString  = code(funcDef)
-    val methodNode_ = methodNode(funcDef, name, codeString, fullname, Some(signature), filename)
-
-    methodAstParentStack.push(methodNode_)
-    scope.pushNewScope(methodNode_)
-
-    val parameterNodes = withIndex(parameters(funcDef)) { (p, i) =>
-      parameterNode(p, i)
+  private def modifierFromString(image: String): List[NewModifier] = {
+    image match {
+      case "static" => List(newModifierNode(ModifierTypes.STATIC))
+      case _        => Nil
     }
-    setVariadic(parameterNodes, funcDef)
+  }
 
-    val modifiers = if (isCppConstructor(funcDef)) {
+  private def modifierFor(funcDef: IASTFunctionDefinition): List[NewModifier] = {
+    val constructorModifier = if (isCppConstructor(funcDef)) {
       List(newModifierNode(ModifierTypes.CONSTRUCTOR), newModifierNode(ModifierTypes.PUBLIC))
     } else Nil
-
-    val astForMethod = methodAst(
-      methodNode_,
-      parameterNodes.map(Ast(_)),
-      astForMethodBody(Option(funcDef.getBody)),
-      newMethodReturnNode(funcDef, registerType(returnType)),
-      modifiers = modifiers
-    )
-
-    scope.popScope()
-    methodAstParentStack.pop()
-
-    val typeDeclAst = createFunctionTypeAndTypeDecl(funcDef, methodNode_, name, fullname, signature)
-    astForMethod.merge(typeDeclAst)
+    val visibilityModifier = Try(modifierFromString(funcDef.getSyntax.getImage)).getOrElse(Nil)
+    constructorModifier ++ visibilityModifier
   }
 
-  private def parameterNode(parameter: IASTNode, paramIndex: Int): NewMethodParameterIn = {
+  private def modifierFor(funcDecl: IASTFunctionDeclarator): List[NewModifier] = {
+    Try(modifierFromString(funcDecl.getParent.getSyntax.getImage)).getOrElse(Nil)
+  }
+
+  private def thisForCPPFunctions(func: IASTNode): Seq[CGlobal.ParameterInfo] = {
+    func match {
+      case cppFunc: ICPPASTFunctionDefinition if !modifierFor(cppFunc).exists(_.modifierType == ModifierTypes.STATIC) =>
+        val maybeOwner = safeGetBinding(cppFunc.getDeclarator.getName) match {
+          case Some(o: ICPPBinding) if o.getOwner.isInstanceOf[CPPClassType] =>
+            Some(o.getOwner.asInstanceOf[CPPClassType].getQualifiedName.mkString("."))
+          case Some(o: ICPPBinding) if o.getOwner.isInstanceOf[CPPEnumeration] =>
+            Some(o.getOwner.asInstanceOf[CPPEnumeration].getQualifiedName.mkString("."))
+          case Some(o: ICPPBinding) if o.getOwner.isInstanceOf[CPPStructuredBindingComposite] =>
+            Some(o.getOwner.asInstanceOf[CPPStructuredBindingComposite].getQualifiedName.mkString("."))
+          case _ if cppFunc.getDeclarator.getName.isInstanceOf[ICPPASTQualifiedName] =>
+            Some(cppFunc.getDeclarator.getName.asInstanceOf[CPPASTQualifiedName].getQualifier.mkString("."))
+          case _ if cppFunc.getParent.isInstanceOf[ICPPASTCompositeTypeSpecifier] =>
+            Some(fullName(cppFunc.getParent))
+          case _ => None
+        }
+        maybeOwner.toSeq.map { owner =>
+          new CGlobal.ParameterInfo(
+            "this",
+            "this",
+            0,
+            false,
+            EvaluationStrategies.BY_VALUE,
+            line(cppFunc),
+            column(cppFunc),
+            registerType(s"$owner*")
+          )
+        }
+      case _ => Seq.empty
+    }
+  }
+
+  private def parameterNodeInfo(parameter: IASTNode, paramIndex: Int): CGlobal.ParameterInfo = {
     val (name, codeString, tpe, variadic) = parameter match {
       case p: CASTParameterDeclaration =>
-        (
-          ASTStringUtil.getSimpleName(p.getDeclarator.getName),
-          code(p),
-          cleanType(typeForDeclSpecifier(p.getDeclSpecifier)),
-          false
-        )
+        (shortName(p.getDeclarator), code(p), cleanType(typeForDeclSpecifier(p.getDeclSpecifier)), false)
       case p: CPPASTParameterDeclaration =>
         (
-          ASTStringUtil.getSimpleName(p.getDeclarator.getName),
+          shortName(p.getDeclarator),
           code(p),
           cleanType(typeForDeclSpecifier(p.getDeclSpecifier)),
           p.getDeclarator.declaresParameterPack()
@@ -254,7 +315,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) { th
         (
           s.getDeclarators.headOption
             .map(n => ASTStringUtil.getSimpleName(n.getName))
-            .getOrElse(uniqueName("parameter", "", "")._1),
+            .getOrElse(uniqueName("", "", "param")._1),
           code(s),
           cleanType(typeForDeclSpecifier(s)),
           false
@@ -262,25 +323,146 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) { th
       case other =>
         (code(other), code(other), cleanType(typeForDeclSpecifier(other)), false)
     }
+    new CGlobal.ParameterInfo(
+      name,
+      codeString,
+      paramIndex,
+      variadic,
+      EvaluationStrategies.BY_VALUE,
+      lineNumber = line(parameter),
+      columnNumber = column(parameter),
+      typeFullName = registerType(tpe)
+    )
+  }
 
+  private def parameterNode(parameter: IASTNode, paramIndex: Int): NewMethodParameterIn = {
+    val parameterInfo = parameterNodeInfo(parameter, paramIndex)
     val parameterNode =
       parameterInNode(
         parameter,
-        name,
-        codeString,
-        paramIndex,
-        variadic,
-        EvaluationStrategies.BY_VALUE,
-        registerType(tpe)
+        parameterInfo.name,
+        parameterInfo.code,
+        parameterInfo.index,
+        parameterInfo.isVariadic,
+        parameterInfo.evaluationStrategy,
+        parameterInfo.typeFullName
       )
-    scope.addToScope(name, (parameterNode, tpe))
+    scope.addVariable(parameterInfo.name, parameterNode, parameterInfo.typeFullName, C2CpgScope.ScopeType.MethodScope)
     parameterNode
   }
 
-  private def astForMethodBody(body: Option[IASTStatement]): Ast = body match {
-    case Some(b: IASTCompoundStatement) => astForBlockStatement(b)
-    case Some(b)                        => astForNode(b)
-    case None                           => blockAst(NewBlock())
+  private def astForMethodBody(body: Option[IASTStatement], blockNode: NewBlock): Ast = body match {
+    case Some(b: IASTCompoundStatement) =>
+      astForBlockStatement(b, blockNode)
+    case Some(b) =>
+      scope.pushNewBlockScope(blockNode)
+      val childAst = astForNode(b)
+      scope.popScope()
+      blockAst(blockNode).withChild(childAst)
+    case None =>
+      blockAst(blockNode)
+  }
+
+  private def setEvaluationStrategyForCaptures(lambdaExpression: ICPPASTLambdaExpression, bodyAst: Ast): Unit = {
+    val captureDefault = lambdaExpression.getCaptureDefault
+    val strategyMapping = captureDefault match {
+      case CaptureDefault.BY_REFERENCE => EvaluationStrategies.BY_REFERENCE
+      case _                           => EvaluationStrategies.BY_VALUE
+    }
+    lambdaExpression.getCaptures match {
+      case captures if captures.isEmpty && captureDefault == CaptureDefault.UNSPECIFIED => // do nothing
+      case captures if captures.isEmpty =>
+        bodyAst.nodes.foreach {
+          case i: NewIdentifier if !scope.variableIsInMethodScope(i.name) =>
+            scope.updateVariableReference(i, strategyMapping)
+          case _ => // do nothing
+        }
+      case other =>
+        val validCaptures = other.filter(_.getIdentifier != null)
+        bodyAst.nodes.foreach {
+          case i: NewIdentifier if !scope.variableIsInMethodScope(i.name) =>
+            val maybeInCaptures = validCaptures.find(c => code(c.getIdentifier) == i.name)
+            val strategy = maybeInCaptures match {
+              case Some(c) if c.isByReference => EvaluationStrategies.BY_REFERENCE
+              case _                          => strategyMapping
+            }
+            scope.updateVariableReference(i, strategy)
+          case _ => // do nothing
+        }
+    }
+  }
+
+  private def createAndPushLambdaMethod(lambdaExpression: ICPPASTLambdaExpression): (NewMethod, NewMethodRef) = {
+    val MethodFullNameInfo(name, fullName, signature, returnType) = methodFullNameInfo(lambdaExpression)
+    val filename                                                  = fileName(lambdaExpression)
+    val codeString                                                = code(lambdaExpression)
+
+    val methodRef        = methodRefNode(lambdaExpression, fullName, fullName, fullName)
+    val lambdaMethodNode = methodNode(lambdaExpression, name, codeString, fullName, Some(signature), filename)
+
+    val lambdaMethodBlockNode = blockNode(lambdaExpression)
+    methodAstParentStack.push(lambdaMethodNode)
+    scope.pushNewMethodScope(fullName, name, lambdaMethodBlockNode, Some(methodRef))
+
+    val parameterNodes = withIndex(parameters(lambdaExpression.getDeclarator)) { (p, i) => parameterNode(p, i) }
+    setVariadic(parameterNodes, lambdaExpression)
+    val parameterAsts = parameterNodes.map(Ast(_))
+    val lambdaBodyAst = astForMethodBody(Option(lambdaExpression.getBody), lambdaMethodBlockNode)
+    setEvaluationStrategyForCaptures(lambdaExpression, lambdaBodyAst)
+
+    scope.popScope()
+    methodAstParentStack.pop()
+
+    val isStatic        = !lambdaExpression.getCaptures.exists(c => c.capturesThisPointer())
+    val returnNode      = methodReturnNode(lambdaExpression, registerType(returnType))
+    val virtualModifier = Some(newModifierNode(ModifierTypes.VIRTUAL))
+    val staticModifier  = Option.when(isStatic)(newModifierNode(ModifierTypes.STATIC))
+    val privateModifier = Some(newModifierNode(ModifierTypes.PRIVATE))
+    val lambdaModifier  = Some(newModifierNode(ModifierTypes.LAMBDA))
+    val modifiers       = List(virtualModifier, staticModifier, privateModifier, lambdaModifier).flatten.map(Ast(_))
+
+    val lambdaMethodAst = Ast(lambdaMethodNode)
+      .withChildren(parameterAsts)
+      .withChild(lambdaBodyAst)
+      .withChild(Ast(returnNode))
+      .withChildren(modifiers)
+
+    val parentNode = methodAstParentStack.collectFirst { case t: NewTypeDecl => t }
+    Ast.storeInDiffGraph(lambdaMethodAst, diffGraph)
+    parentNode.foreach { typeDeclNode =>
+      diffGraph.addEdge(typeDeclNode, lambdaMethodNode, EdgeTypes.AST)
+    }
+    (lambdaMethodNode, methodRef)
+  }
+
+  private def createAndPushLambdaTypeDecl(
+    lambdaExpression: ICPPASTLambdaExpression,
+    lambdaMethodNode: NewMethod
+  ): Unit = {
+    registerType(lambdaMethodNode.fullName)
+    val (astParentType, astParentFullName) = methodDeclarationParentInfo()
+    val lambdaTypeDeclNode = typeDeclNode(
+      lambdaExpression,
+      lambdaMethodNode.name,
+      lambdaMethodNode.fullName,
+      lambdaMethodNode.filename,
+      lambdaMethodNode.fullName,
+      astParentType,
+      astParentFullName,
+      Seq(registerType(Defines.Function))
+    )
+
+    val functionBinding = NewBinding()
+      .name(Defines.OperatorCall)
+      .methodFullName(lambdaMethodNode.fullName)
+      .signature(lambdaMethodNode.signature)
+
+    val functionBindAst = Ast(functionBinding)
+      .withBindsEdge(lambdaTypeDeclNode, functionBinding)
+      .withRefEdge(functionBinding, lambdaMethodNode)
+
+    Ast.storeInDiffGraph(Ast(lambdaTypeDeclNode), diffGraph)
+    Ast.storeInDiffGraph(functionBindAst, diffGraph)
   }
 
 }
