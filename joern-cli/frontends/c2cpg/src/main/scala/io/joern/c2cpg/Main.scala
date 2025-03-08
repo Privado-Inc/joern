@@ -1,11 +1,11 @@
 package io.joern.c2cpg
 
-import io.joern.c2cpg.Frontend._
+import io.joern.c2cpg.Frontend.*
 import io.joern.x2cpg.{X2CpgConfig, X2CpgMain}
+import io.joern.x2cpg.utils.server.FrontendHTTPServer
+import io.joern.x2cpg.SourceFiles
 import org.slf4j.LoggerFactory
 import scopt.OParser
-
-import scala.util.control.NonFatal
 
 final case class Config(
   includePaths: Set[String] = Set.empty,
@@ -16,8 +16,8 @@ final case class Config(
   printIfDefsOnly: Boolean = false,
   includePathsAutoDiscovery: Boolean = false,
   skipFunctionBodies: Boolean = false,
-  noImageLocations: Boolean = false,
-  withPreprocessedFiles: Boolean = false
+  withPreprocessedFiles: Boolean = false,
+  compilationDatabase: Option[String] = None
 ) extends X2CpgConfig[Config] {
   def withIncludePaths(includePaths: Set[String]): Config = {
     this.copy(includePaths = includePaths).withInheritedFields(this)
@@ -51,12 +51,12 @@ final case class Config(
     this.copy(skipFunctionBodies = value).withInheritedFields(this)
   }
 
-  def withNoImageLocations(value: Boolean): Config = {
-    this.copy(noImageLocations = value).withInheritedFields(this)
-  }
-
   def withPreprocessedFiles(value: Boolean): Config = {
     this.copy(withPreprocessedFiles = value).withInheritedFields(this)
+  }
+
+  def withCompilationDatabase(value: String): Config = {
+    this.copy(compilationDatabase = Some(value)).withInheritedFields(this)
   }
 }
 
@@ -94,38 +94,38 @@ private object Frontend {
         .text("instructs the parser to skip function and method bodies.")
         .action((_, c) => c.withSkipFunctionBodies(true)),
       opt[Unit]("no-image-locations")
-        .text(
-          "performance optimization, allows the parser not to create image-locations. An image location explains how a name made it into the translation unit. Eg: via macro expansion or preprocessor."
-        )
-        .action((_, c) => c.withNoImageLocations(true)),
+        // deprecated, won't be removed for now to avoid breaking existing scripts
+        .hidden(),
       opt[Unit]("with-preprocessed-files")
         .text("includes *.i files and gives them priority over their unprocessed origin source files.")
         .action((_, c) => c.withPreprocessedFiles(true)),
       opt[String]("define")
         .unbounded()
         .text("define a name")
-        .action((d, c) => c.withDefines(c.defines + d))
+        .action((d, c) => c.withDefines(c.defines + d)),
+      opt[String]("compilation-database")
+        .text("""enables the processing of compilation database files (e.g., compile_commands.json).
+            | This allows to automatically extract compiler options, source files, and other build information from the specified database
+            | and ensuring consistency with the build configuration.
+            | For a cmake based build such a file is generated with the environment variable CMAKE_EXPORT_COMPILE_COMMANDS being present.
+            | Clang based build are supported e.g., with https://github.com/rizsotto/Bear
+            | """.stripMargin)
+        .action((d, c) => c.withCompilationDatabase(SourceFiles.toAbsolutePath(d, c.inputPath)))
     )
   }
 
 }
 
-object Main extends X2CpgMain(cmdLineParser, new C2Cpg()) {
+object Main extends X2CpgMain(cmdLineParser, new C2Cpg()) with FrontendHTTPServer[Config, C2Cpg] {
 
-  private val logger = LoggerFactory.getLogger(classOf[C2Cpg])
-
-  def run(config: Config, c2cpg: C2Cpg): Unit = {
-    if (config.printIfDefsOnly) {
-      try {
-        c2cpg.printIfDefsOnly(config)
-      } catch {
-        case NonFatal(ex) =>
-          logger.error("Failed to print preprocessor statements.", ex)
-          throw ex
-      }
-    } else {
-      c2cpg.run(config)
+  override def run(config: Config, c2cpg: C2Cpg): Unit = {
+    config match {
+      case c if c.serverMode      => startup()
+      case c if c.printIfDefsOnly => c2cpg.printIfDefsOnly(config)
+      case _                      => c2cpg.run(config)
     }
   }
+
+  override protected def newDefaultConfig(): Config = Config()
 
 }

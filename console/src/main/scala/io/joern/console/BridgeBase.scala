@@ -1,11 +1,13 @@
 package io.joern.console
 
-import better.files.*
+import io.joern.x2cpg.utils.FileUtil
+import io.joern.x2cpg.utils.FileUtil.*
 import io.shiftleft.codepropertygraph.generated.Languages
 import org.apache.commons.text.StringEscapeUtils
 import replpp.scripting.ScriptRunner
 
 import java.nio.file.{Files, Path}
+import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
 
@@ -13,7 +15,8 @@ case class Config(
   scriptFile: Option[Path] = None,
   command: Option[String] = None,
   params: Map[String, String] = Map.empty,
-  additionalImports: Seq[Path] = Nil,
+  predefFiles: Seq[Path] = Nil,
+  runBefore: Seq[String] = Nil,
   additionalClasspathEntries: Seq[String] = Seq.empty,
   addPlugin: Option[String] = None,
   rmPlugin: Option[String] = None,
@@ -29,7 +32,7 @@ case class Config(
   serverAuthUsername: Option[String] = None,
   serverAuthPassword: Option[String] = None,
   nocolors: Boolean = false,
-  cpgToLoad: Option[File] = None,
+  cpgToLoad: Option[Path] = None,
   forInputPath: Option[String] = None,
   frontendArgs: Array[String] = Array.empty,
   verbose: Boolean = false,
@@ -70,8 +73,15 @@ trait BridgeBase extends InteractiveShell with ScriptExecution with PluginHandli
         .valueName("script1.sc")
         .unbounded()
         .optional()
-        .action((x, c) => c.copy(additionalImports = c.additionalImports :+ x))
-        .text("import (and run) additional script(s) on startup - may be passed multiple times")
+        .action((x, c) => c.copy(predefFiles = c.predefFiles :+ x))
+        .text("given source files will be compiled and added to classpath - this may be passed multiple times")
+
+      opt[String]("runBefore")
+        .valueName("'import Int.MaxValue'")
+        .unbounded()
+        .optional()
+        .action((x, c) => c.copy(runBefore = c.runBefore :+ x))
+        .text("given code will be executed on startup - this may be passed multiple times")
 
       opt[String]("classpathEntry")
         .valueName("path/to/classpath")
@@ -158,9 +168,9 @@ trait BridgeBase extends InteractiveShell with ScriptExecution with PluginHandli
 
       note("Misc")
 
-      arg[java.io.File]("<cpg.bin>")
+      arg[java.nio.file.Path]("<cpg.bin>")
         .optional()
-        .action((x, c) => c.copy(cpgToLoad = Some(x.toScala)))
+        .action((x, c) => c.copy(cpgToLoad = Some(x)))
         .text("CPG to load")
 
       opt[String]("for-input-path")
@@ -211,14 +221,21 @@ trait BridgeBase extends InteractiveShell with ScriptExecution with PluginHandli
     }
   }
 
-  protected def createPredefFile(additionalLines: Seq[String] = Nil): Path = {
-    val tmpFile = Files.createTempFile("joern-predef", "sc")
-    Files.write(tmpFile, (predefLines ++ additionalLines).asJava)
-    tmpFile.toAbsolutePath
-  }
-
   /** code that is executed on startup */
-  protected def predefLines: Seq[String]
+  protected def runBeforeCode: Seq[String]
+
+  protected def buildRunBeforeCode(config: Config): Seq[String] = {
+    val builder = Seq.newBuilder[String]
+    builder ++= runBeforeCode
+    config.cpgToLoad.foreach { cpgFile =>
+      builder += s"""importCpg("$cpgFile")"""
+    }
+    config.forInputPath.foreach { name =>
+      builder += s"""openForInputPath("$name")""".stripMargin
+    }
+    builder ++= config.runBefore
+    builder.result()
+  }
 
   protected def greeting: String
 
@@ -229,19 +246,10 @@ trait BridgeBase extends InteractiveShell with ScriptExecution with PluginHandli
 
 trait InteractiveShell { this: BridgeBase =>
   protected def startInteractiveShell(config: Config) = {
-    val replConfig = config.cpgToLoad.map { cpgFile =>
-      "importCpg(\"" + cpgFile + "\")"
-    } ++ config.forInputPath.map { name =>
-      s"""
-         |openForInputPath(\"$name\")
-         |""".stripMargin
-    }
-
-    val predefFile = createPredefFile(replConfig.toSeq)
-
     replpp.InteractiveShell.run(
       replpp.Config(
-        predefFiles = predefFile +: config.additionalImports,
+        predefFiles = config.predefFiles,
+        runBefore = buildRunBeforeCode(config),
         nocolors = config.nocolors,
         verbose = config.verbose,
         classpathConfig = replpp.Config
@@ -268,10 +276,10 @@ trait ScriptExecution { this: BridgeBase =>
     if (!Files.exists(scriptFile)) {
       Try(throw new AssertionError(s"given script file `$scriptFile` does not exist"))
     } else {
-      val predefFile = createPredefFile(importCpgCode(config))
       val scriptReturn = ScriptRunner.exec(
         replpp.Config(
-          predefFiles = predefFile +: config.additionalImports,
+          predefFiles = config.predefFiles,
+          runBefore = buildRunBeforeCode(config),
           scriptFile = Option(scriptFile),
           command = config.command,
           params = config.params,
@@ -284,18 +292,6 @@ trait ScriptExecution { this: BridgeBase =>
         println(scriptReturn.failed.get.getMessage)
       }
       scriptReturn
-    }
-  }
-
-  /** For the given config, generate a list of commands to import the CPG
-    */
-  private def importCpgCode(config: Config): List[String] = {
-    config.cpgToLoad.map { cpgFile =>
-      "importCpg(\"" + cpgFile + "\")"
-    }.toList ++ config.forInputPath.map { name =>
-      s"""
-         |openForInputPath(\"$name\")
-         |""".stripMargin
     }
   }
 }
@@ -311,7 +307,7 @@ trait PluginHandling { this: BridgeBase =>
     println("Available layer creators")
     println()
     withTemporaryScript(codeToListPlugins()) { file =>
-      runScript(config.copy(scriptFile = Some(file.path))).get
+      runScript(config.copy(scriptFile = Some(file))).get
     }
   }
 
@@ -330,7 +326,7 @@ trait PluginHandling { this: BridgeBase =>
     }
     val code = loadOrCreateCpg(config, applicationName)
     withTemporaryScript(code) { file =>
-      runScript(config.copy(scriptFile = Some(file.path))).get
+      runScript(config.copy(scriptFile = Some(file))).get
     }
   }
 
@@ -393,10 +389,10 @@ trait PluginHandling { this: BridgeBase =>
     }
   }
 
-  private def withTemporaryScript(code: String)(f: File => Unit): Unit = {
-    File.usingTemporaryDirectory(applicationName + "-bundle") { dir =>
+  private def withTemporaryScript(code: String)(f: Path => Unit): Unit = {
+    FileUtil.usingTemporaryDirectory(applicationName + "-bundle") { dir =>
       val file = dir / "script.sc"
-      file.write(code)
+      Files.writeString(file, code)
       f(file)
     }
   }
@@ -406,10 +402,9 @@ trait PluginHandling { this: BridgeBase =>
 trait ServerHandling { this: BridgeBase =>
 
   protected def startHttpServer(config: Config): Unit = {
-    val predefFile = createPredefFile(Nil)
-
     val baseConfig = replpp.Config(
-      predefFiles = predefFile +: config.additionalImports,
+      predefFiles = config.predefFiles,
+      runBefore = buildRunBeforeCode(config),
       verbose = true, // always print what's happening - helps debugging
       classpathConfig = replpp.Config
         .ForClasspath(inheritClasspath = true, dependencies = config.dependencies, resolvers = config.resolvers)

@@ -1,16 +1,20 @@
 package io.joern.x2cpg.passes.callgraph
 
 import io.joern.x2cpg.Defines.DynamicCallUnknownFullName
+import io.shiftleft.codepropertygraph.generated.DispatchTypes
+import io.shiftleft.codepropertygraph.generated.EdgeTypes
+import io.shiftleft.codepropertygraph.generated.PropertyNames
 import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Method, TypeDecl}
-import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, PropertyNames}
+import io.shiftleft.codepropertygraph.generated.nodes.Call
+import io.shiftleft.codepropertygraph.generated.nodes.Method
+import io.shiftleft.codepropertygraph.generated.nodes.StoredNode
+import io.shiftleft.codepropertygraph.generated.nodes.TypeDecl
 import io.shiftleft.passes.CpgPass
-import io.shiftleft.semanticcpg.language._
-import org.slf4j.{Logger, LoggerFactory}
-import overflowdb.{NodeDb, NodeRef}
+import io.shiftleft.semanticcpg.language.*
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 
 import scala.collection.mutable
-import scala.jdk.CollectionConverters._
 
 /** We compute the set of possible call-targets for each dynamic call, and add them as CALL edges to the graph, based on
   * call.methodFullName, method.name and method.signature, the inheritance hierarchy and the AST of typedecls and
@@ -24,7 +28,7 @@ import scala.jdk.CollectionConverters._
   */
 class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
 
-  import DynamicCallLinker._
+  import DynamicCallLinker.*
   // Used to track potential method candidates for a given method fullname. Since our method full names contain the type
   // decl we don't need to specify an addition map to wrap this in. LinkedHashSets are used here to preserve order in
   // the best interest of reproducibility during debugging.
@@ -56,10 +60,10 @@ class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
     initMaps()
     // ValidM maps class C and method name N to the set of
     // func ptrs implementing N for C and its subclasses
-    for (
-      typeDecl <- cpg.typeDecl;
+    for {
+      typeDecl <- cpg.typeDecl
       method   <- typeDecl._methodViaAstOut
-    ) {
+    } {
       val methodName = method.fullName
       val candidates = allSubclasses(typeDecl.fullName).flatMap { staticLookup(_, method) }
       validM.put(methodName, candidates)
@@ -114,8 +118,8 @@ class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
     if (visitedNodes.contains(cur)) return visitedNodes
     visitedNodes.addOne(cur)
 
-    (if (inSuperDirection) cpg.typeDecl.fullNameExact(cur.fullName).flatMap(_.inheritsFromOut.referencedTypeDecl)
-     else cpg.typ.fullNameExact(cur.fullName).flatMap(_.inheritsFromIn))
+    (if (inSuperDirection) cpg.typeDecl.fullNameExact(cur.fullName)._typeViaInheritsFromOut.referencedTypeDecl
+     else cpg.typ.fullNameExact(cur.fullName).inheritsFromIn)
       .collectAll[TypeDecl]
       .to(mutable.LinkedHashSet) match {
       case classesToEval if classesToEval.isEmpty => visitedNodes
@@ -174,16 +178,8 @@ class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
 
     validM.get(call.methodFullName) match {
       case Some(tgts) =>
-        val callsOut = call.callOut.fullName.toSetImmutable
-        val tgtMs = tgts
-          .flatMap(destMethod =>
-            if (cpg.graph.indexManager.isIndexed(PropertyNames.FULL_NAME)) {
-              methodFullNameToNode(destMethod)
-            } else {
-              cpg.method.fullNameExact(destMethod).headOption
-            }
-          )
-          .toSet
+        val callsOut = call._callOut.cast[Method].fullName.toSetImmutable
+        val tgtMs    = tgts.flatMap(destMethod => methodFullNameToNode(destMethod)).toSet
         // Non-overridden methods linked as external stubs should be excluded if they are detected
         val (externalMs, internalMs) = tgtMs.partition(_.isExternal)
         (if (externalMs.nonEmpty && internalMs.nonEmpty) internalMs else tgtMs)
@@ -209,8 +205,8 @@ class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
     }
   }
 
-  private def nodesWithFullName(x: String): Iterable[NodeRef[? <: NodeDb]] =
-    cpg.graph.indexManager.lookup(PropertyNames.FULL_NAME, x).asScala
+  private def nodesWithFullName(x: String): Iterator[StoredNode] =
+    cpg.graph.nodesWithProperty(PropertyNames.FULL_NAME, x).cast[StoredNode]
 
   private def methodFullNameToNode(x: String): Option[Method] =
     nodesWithFullName(x).collectFirst { case x: Method => x }
