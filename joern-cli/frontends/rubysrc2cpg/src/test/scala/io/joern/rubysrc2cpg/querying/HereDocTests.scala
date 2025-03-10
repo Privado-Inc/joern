@@ -1,8 +1,8 @@
 package io.joern.rubysrc2cpg.querying
 
+import io.joern.rubysrc2cpg.passes.Defines
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
-import io.joern.rubysrc2cpg.passes.GlobalTypes.kernelPrefix
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Literal, Local, Method, Return}
+import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 
 class HereDocTests extends RubyCode2CpgFixture {
@@ -26,7 +26,7 @@ class HereDocTests extends RubyCode2CpgFixture {
               localAst.code shouldBe "a"
               callAst.code shouldBe "a = 10"
 
-              literalAst.typeFullName shouldBe s"$kernelPrefix.String"
+              literalAst.typeFullName shouldBe Defines.prefixAsCoreType("String")
 
               returnAst.code shouldBe "a"
             case _ =>
@@ -55,7 +55,7 @@ class HereDocTests extends RubyCode2CpgFixture {
               inside(assignmentCall.argument.l) {
                 case lhsArg :: (rhsArg: Literal) :: Nil =>
                   lhsArg.code shouldBe "a"
-                  rhsArg.typeFullName shouldBe s"$kernelPrefix.String"
+                  rhsArg.typeFullName shouldBe Defines.prefixAsCoreType("String")
                 case _ => fail("Expected LHS and RHS for assignment")
               }
             case _ => fail("Expected call for assignment")
@@ -65,7 +65,7 @@ class HereDocTests extends RubyCode2CpgFixture {
     }
   }
 
-  "HereDoc as a function argument" ignore {
+  "HereDoc as a function argument" should {
     val cpg = code("""
         |def foo(arg)
         |  bar(arg, <<-SOME_HEREDOC, arg + 1)
@@ -74,7 +74,11 @@ class HereDocTests extends RubyCode2CpgFixture {
         |end
         |""".stripMargin)
 
-    // TODO: This creates a syntax error
+    "create a string literal in the 2nd argument position" in {
+      val barCall = cpg.call("bar").head
+      val hereDoc = barCall.argument(2).asInstanceOf[Literal]
+      hereDoc.code shouldBe "   inside here doc\n"
+    }
   }
 
 }

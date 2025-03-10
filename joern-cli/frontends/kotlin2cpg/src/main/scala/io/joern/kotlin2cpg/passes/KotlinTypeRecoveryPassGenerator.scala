@@ -7,7 +7,7 @@ import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.PropertyNames
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
-import overflowdb.BatchedUpdate.DiffGraphBuilder
+import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
 class KotlinTypeRecoveryPassGenerator(cpg: Cpg, config: XTypeRecoveryConfig = XTypeRecoveryConfig())
     extends XTypeRecoveryPassGenerator[File](cpg, config) {
@@ -41,7 +41,7 @@ private class RecoverForKotlinFile(cpg: Cpg, cu: File, builder: DiffGraphBuilder
 
     val alias    = i.importedAs.getOrElse("")
     val fullName = i.importedEntity.getOrElse("")
-    if (alias != Constants.wildcardImportName) {
+    if (alias != Constants.WildcardImportName) {
       symbolTable.append(CallAlias(alias), fullName)
       symbolTable.append(LocalVar(alias), fullName)
     }

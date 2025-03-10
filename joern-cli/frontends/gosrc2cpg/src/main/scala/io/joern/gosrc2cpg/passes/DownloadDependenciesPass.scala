@@ -1,13 +1,13 @@
 package io.joern.gosrc2cpg.passes
 
-import better.files.File
 import io.joern.gosrc2cpg.Config
 import io.joern.gosrc2cpg.datastructures.GoGlobal
 import io.joern.gosrc2cpg.model.{GoModDependency, GoModHelper}
 import io.joern.gosrc2cpg.parser.GoAstJsonParser
 import io.joern.gosrc2cpg.utils.AstGenRunner
 import io.joern.gosrc2cpg.utils.AstGenRunner.{GoAstGenRunnerResult, getClass}
-import io.joern.x2cpg.utils.ExternalCommand
+import io.joern.x2cpg.utils.FileUtil
+import io.shiftleft.semanticcpg.utils.ExternalCommand
 import io.shiftleft.codepropertygraph.generated.Cpg
 import org.slf4j.LoggerFactory
 
@@ -22,18 +22,18 @@ class DownloadDependenciesPass(cpg: Cpg, parentGoMod: GoModHelper, goGlobal: GoG
     val processor       = new DependencyProcessorQueue()
     val processorThread = new Thread(processor)
     processorThread.start()
-    File.usingTemporaryDirectory("go-temp-download") { tmpDir =>
-      val projDir = tmpDir.pathAsString
+    FileUtil.usingTemporaryDirectory("go-temp-download") { tmpDir =>
+      val projDir = tmpDir.toString
       parentGoMod
         .getModMetaData()
         .foreach(mod => {
-          ExternalCommand.run("go mod init joern.io/temp", projDir) match {
+          ExternalCommand.run(Seq("go", "mod", "init", "joern.io/temp"), Option(projDir)).toTry match {
             case Success(_) =>
               mod.dependencies
                 .filter(dep => dep.beingUsed)
                 .map(dependency => {
-                  val cmd     = s"go get ${dependency.dependencyStr()}"
-                  val results = ExternalCommand.run(cmd, projDir)
+                  val cmd     = Seq("go", "get", dependency.dependencyStr())
+                  val results = ExternalCommand.run(cmd, Option(projDir)).toTry
                   results match {
                     case Success(_) =>
                       print(". ")
@@ -77,16 +77,17 @@ class DownloadDependenciesPass(cpg: Cpg, parentGoMod: GoModHelper, goGlobal: GoG
       val gopath = Try(sys.env("GOPATH")).getOrElse(Seq(os.home, "go").mkString(JFile.separator))
       val dependencyLocation =
         (Seq(gopath, "pkg", "mod") ++ dependency.dependencyStr().split("/")).mkString(JFile.separator)
-      File.usingTemporaryDirectory("godep") { astLocation =>
+      FileUtil.usingTemporaryDirectory("godep") { astLocation =>
         val depConfig = Config()
           .withInputPath(dependencyLocation)
           .withIgnoredFilesRegex(config.ignoredFilesRegex.toString())
           .withIgnoredFiles(config.ignoredFiles.toList)
         val astGenResult = new AstGenRunner(depConfig, dependency.getIncludePackagesList())
-          .execute(astLocation)
-          .asInstanceOf[GoAstGenRunnerResult]
+          .executeForGo(astLocation)
+          .headOption
+          .getOrElse(GoAstGenRunnerResult())
         val goMod = new GoModHelper(
-          Some(depConfig),
+          Some(dependencyLocation),
           astGenResult.parsedModFile.flatMap(modFile => GoAstJsonParser.readModFile(Paths.get(modFile)).map(x => x))
         )
         DependencySrcProcessorPass(cpg, astGenResult.parsedFiles, depConfig, goMod, goGlobal, astLocation)
