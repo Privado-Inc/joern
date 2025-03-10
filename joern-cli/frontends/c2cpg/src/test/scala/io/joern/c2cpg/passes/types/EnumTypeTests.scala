@@ -6,10 +6,10 @@ import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.codepropertygraph.generated.nodes.Call
 import io.shiftleft.codepropertygraph.generated.nodes.FieldIdentifier
 import io.shiftleft.codepropertygraph.generated.nodes.Identifier
-import io.shiftleft.semanticcpg.language._
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
-class EnumTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
+class EnumTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CppExt) {
 
   "Enums" should {
 
@@ -135,7 +135,7 @@ class EnumTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CPP_EXT) {
          |    f
          |};""".stripMargin)
       inside(cpg.typeDecl.nameNot(NamespaceTraversal.globalNamespaceName).internal.l) { case List(anon) =>
-        anon.name shouldBe "anonymous_enum_0"
+        anon.name shouldBe "<enum>0"
         anon.code should startWith("enum")
         inside(anon.member.l) { case List(d, e, f) =>
           d.name shouldBe "d"

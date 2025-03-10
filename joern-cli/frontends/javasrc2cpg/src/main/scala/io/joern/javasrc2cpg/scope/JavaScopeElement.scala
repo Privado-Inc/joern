@@ -1,28 +1,55 @@
 package io.joern.javasrc2cpg.scope
 
+import com.github.javaparser.ast.body.Parameter
+import com.github.javaparser.ast.expr.TypePatternExpr
 import io.joern.javasrc2cpg.scope.Scope.*
 import io.joern.javasrc2cpg.scope.JavaScopeElement.*
 import io.shiftleft.codepropertygraph.generated.nodes.{NewImport, NewMethod, NewNamespaceBlock, NewTypeDecl}
 
 import scala.collection.mutable
 import io.joern.javasrc2cpg.astcreation.ExpectedType
+import io.joern.javasrc2cpg.scope.TypeType.{ReferenceTypeType, TypeVariableType}
 import io.joern.javasrc2cpg.util.MultiBindingTableAdapterForJavaparser.JavaparserBindingDeclType
 import io.shiftleft.codepropertygraph.generated.nodes.NewMethodParameterIn
 import io.shiftleft.codepropertygraph.generated.nodes.NewLocal
 import io.shiftleft.codepropertygraph.generated.nodes.NewMember
 import io.joern.javasrc2cpg.util.{BindingTable, BindingTableEntry, NameConstants}
-import io.shiftleft.passes.IntervalKeyPool
-import io.joern.x2cpg.Ast
+import io.joern.x2cpg.utils.IntervalKeyPool
+import io.joern.x2cpg.{Ast, ValidationMode}
 
-trait JavaScopeElement {
+import java.util
+import scala.jdk.CollectionConverters.*
+
+enum TypeType:
+  case ReferenceTypeType, TypeVariableType
+
+trait JavaScopeElement(disableTypeFallback: Boolean) {
   private val variables                        = mutable.Map[String, ScopeVariable]()
   private val types                            = mutable.Map[String, ScopeType]()
   private var wildcardImports: WildcardImports = NoWildcard
+  // TODO: This is almost a duplicate of types, but not quite since this stores type variables and local types
+  //  with original names. See if there's a way to combine them
+  private val declaredTypeTypes = mutable.Map[String, TypeType]()
 
   def isStatic: Boolean
 
   private[JavaScopeElement] def addVariableToScope(variable: ScopeVariable): Unit = {
     variables.put(variable.name, variable)
+  }
+
+  def addDeclaredTypeType(typeSimpleName: String, isTypeVariable: Boolean): Unit = {
+    val typeType =
+      if (isTypeVariable)
+        TypeVariableType
+      else {
+        ReferenceTypeType
+      }
+
+    declaredTypeTypes.put(typeSimpleName, typeType)
+  }
+
+  def getDeclaredTypeType(typeSimpleName: String): Option[TypeType] = {
+    declaredTypeTypes.get(typeSimpleName)
   }
 
   def lookupVariable(name: String): VariableLookupResult = {
@@ -35,14 +62,14 @@ trait JavaScopeElement {
 
   def lookupType(name: String, includeWildcards: Boolean): Option[ScopeType] = {
     types.get(name) match {
-      case None if includeWildcards => getNameWithWildcardPrefix(name)
-      case result                   => result
+      case None if includeWildcards && !disableTypeFallback => getNameWithWildcardPrefix(name)
+      case result                                           => result
     }
   }
 
   def getNameWithWildcardPrefix(name: String): Option[ScopeType] = {
     wildcardImports match {
-      case SingleWildcard(prefix) => Some(ScopeTopLevelType(s"$prefix.$name"))
+      case SingleWildcard(prefix) => Some(ScopeTopLevelType(s"$prefix.$name", name))
 
       case _ => None
     }
@@ -61,6 +88,15 @@ trait JavaScopeElement {
   def getVariables(): List[ScopeVariable] = variables.values.toList
 }
 
+case class PatternVariableInfo(
+  typePatternExpr: TypePatternExpr,
+  typeVariableLocal: NewLocal,
+  typeVariableInitializer: Ast,
+  localAddedToAst: Boolean = false,
+  initializerAddedToAst: Boolean = false,
+  index: Int
+)
+
 object JavaScopeElement {
   sealed trait WildcardImports
   case object NoWildcard                    extends WildcardImports
@@ -73,35 +109,80 @@ object JavaScopeElement {
     def getNextAnonymousClassIndex(): Long = anonymousClassKeyPool.next
   }
 
-  class NamespaceScope(val namespace: NewNamespaceBlock) extends JavaScopeElement with TypeDeclContainer {
+  class NamespaceScope(val namespace: NewNamespaceBlock)(implicit disableTypeFallback: Boolean)
+      extends JavaScopeElement(disableTypeFallback)
+      with TypeDeclContainer {
     val isStatic = false
   }
 
-  class BlockScope extends JavaScopeElement {
+  class BlockScope(implicit disableTypeFallback: Boolean) extends JavaScopeElement(disableTypeFallback) {
+    private val hoistedPatternLocals: mutable.Set[NewLocal] = mutable.Set()
+
     val isStatic = false
 
-    def addLocal(local: NewLocal): Unit = {
-      addVariableToScope(ScopeLocal(local))
+    def addLocal(local: NewLocal, originalName: String): Unit = {
+      addVariableToScope(ScopeLocal(local, originalName))
+    }
+
+    def addHoistedPatternLocal(local: NewLocal): Unit = {
+      hoistedPatternLocals.addOne(local)
+    }
+
+    def getHoistedPatternLocals: Set[NewLocal] = {
+      hoistedPatternLocals.toSet
     }
   }
 
-  class MethodScope(val method: NewMethod, val returnType: ExpectedType, override val isStatic: Boolean)
-      extends JavaScopeElement
+  class MethodScope(val method: NewMethod, val returnType: ExpectedType, override val isStatic: Boolean)(implicit
+    val withSchemaValidation: ValidationMode,
+    disableTypeFallback: Boolean
+  ) extends JavaScopeElement(disableTypeFallback)
       with AnonymousClassCounter {
-    def addParameter(parameter: NewMethodParameterIn): Unit = {
-      addVariableToScope(ScopeParameter(parameter))
+
+    private val patternLocalsToAddToCpg: mutable.ListBuffer[NewLocal] = mutable.ListBuffer()
+    private val patternLocalMap       = new util.IdentityHashMap[TypePatternExpr, NewLocal]().asScala
+    private val mangledNameIdxKeyPool = IntervalKeyPool(0, Long.MaxValue)
+
+    def addParameter(parameter: NewMethodParameterIn, genericSignature: String): Unit = {
+      addVariableToScope(ScopeParameter(parameter, genericSignature))
+    }
+
+    def registerPatternLocal(typePatternExpr: TypePatternExpr, local: NewLocal): Unit = {
+      patternLocalMap.put(typePatternExpr, local)
+    }
+
+    def registerLocalToAddToCpg(local: NewLocal): Unit = {
+      patternLocalsToAddToCpg.addOne(local)
+    }
+
+    def getAndClearUnaddedPatternLocals(): List[NewLocal] = {
+      val ret = patternLocalsToAddToCpg.toList
+      patternLocalsToAddToCpg.clear()
+      ret
+    }
+
+    def getLocalForPattern(typePatternExpr: TypePatternExpr): Option[NewLocal] = {
+      patternLocalMap.get(typePatternExpr)
+    }
+
+    def mangleLocalName(originalName: String): String = {
+      s"$originalName$$${mangledNameIdxKeyPool.next}"
     }
   }
 
-  class FieldDeclScope(override val isStatic: Boolean, val name: String) extends JavaScopeElement
+  class FieldDeclScope(override val isStatic: Boolean, val name: String)(implicit disableTypeFallback: Boolean)
+      extends JavaScopeElement(disableTypeFallback)
 
   class TypeDeclScope(
     val typeDecl: NewTypeDecl,
     override val isStatic: Boolean,
     private[scope] val capturedVariables: Map[String, CapturedVariable],
     outerClassType: Option[String],
-    val declaredMethodNames: Set[String]
-  ) extends JavaScopeElement
+    outerClassGenericSignature: Option[String],
+    val declaredMethodNames: Set[String],
+    val recordParameters: List[Parameter]
+  )(implicit disableTypeFallback: Boolean)
+      extends JavaScopeElement(disableTypeFallback)
       with TypeDeclContainer
       with AnonymousClassCounter {
     private val bindingTableEntries            = mutable.ListBuffer[BindingTableEntry]()
@@ -141,7 +222,9 @@ object JavaScopeElement {
 
     def getUsedCaptures(): List[ScopeVariable] = {
       val outerScope = outerClassType.map(typ =>
-        ScopeLocal(NewLocal().name(NameConstants.OuterClass).typeFullName(typ).code(NameConstants.OuterClass))
+        val localNode = NewLocal().name(NameConstants.OuterClass).typeFullName(typ).code(NameConstants.OuterClass)
+        outerClassGenericSignature.foreach(localNode.genericSignature(_))
+        ScopeLocal(localNode, NameConstants.OuterClass)
       )
 
       val sortedUsedCaptures = usedCaptureParams.toList.sortBy(_.name)
