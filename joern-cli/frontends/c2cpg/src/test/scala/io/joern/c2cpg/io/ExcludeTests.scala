@@ -1,15 +1,18 @@
 package io.joern.c2cpg.io
 
-import better.files.File
 import io.joern.c2cpg.Config
 import io.joern.c2cpg.C2Cpg
 import io.joern.x2cpg.X2Cpg
-import io.shiftleft.semanticcpg.language._
+import io.joern.x2cpg.utils.FileUtil
+import io.joern.x2cpg.utils.FileUtil.*
+import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.FileTraversal
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.wordspec.AnyWordSpec
 import org.scalatest.BeforeAndAfterAll
+
+import java.nio.file.{Path, Files}
 
 import java.util.regex.Pattern
 
@@ -33,20 +36,20 @@ class ExcludeTests extends AnyWordSpec with Matchers with TableDrivenPropertyChe
       "CMakeFiles/sub/foo.c"
     )
 
-  private val projectUnderTest: File = {
-    val dir = File.newTemporaryDirectory("c2cpgTestsExcludeTest")
+  private val projectUnderTest: Path = {
+    val dir = Files.createTempDirectory("c2cpgTestsExcludeTest")
     TestFiles.foreach { testFile =>
       val file = dir / testFile
-      file.createIfNotExists(createParents = true)
+      file.createWithParentsIfNotExists(createParents = true)
     }
     dir
   }
 
-  override def afterAll(): Unit = projectUnderTest.delete(swallowIOExceptions = true)
+  override def afterAll(): Unit = FileUtil.delete(projectUnderTest, swallowIoExceptions = true)
 
   private def testWithArguments(exclude: Seq[String], excludeRegex: String, expectedFiles: Set[String]): Unit = {
-    val cpgOutFile = File.newTemporaryFile("c2cpg.bin")
-    cpgOutFile.deleteOnExit()
+    val cpgOutFile = FileUtil.newTemporaryFile("c2cpg.bin")
+    FileUtil.deleteOnExit(cpgOutFile)
 
     val config = Config()
       .withInputPath(projectUnderTest.toString)
@@ -60,6 +63,25 @@ class ExcludeTests extends AnyWordSpec with Matchers with TableDrivenPropertyChe
     cpg.file.nameNot(FileTraversal.UNKNOWN, "<includes>").name.l should contain theSameElementsAs expectedFiles.map(
       _.replace("/", java.io.File.separator)
     )
+  }
+
+  "Using case sensitive excludes" should {
+    "exclude the given files correctly" in {
+      if (scala.util.Properties.isWin || scala.util.Properties.isMac) {
+        // both are written uppercase and are ignored nevertheless because
+        // the file systems are case-insensitive by default
+        testWithArguments(Seq("Folder", "Index.c"), "", Set("a.c", "foo.bar/d.c"))
+      }
+      if (scala.util.Properties.isLinux) {
+        // both are written uppercase and are not ignored because
+        // ext3/ext4 and many other Linux filesystems are case-sensitive by default
+        testWithArguments(
+          Seq("Folder", "Index.c"),
+          "",
+          Set("a.c", "folder/b.c", "folder/c.c", "foo.bar/d.c", "index.c")
+        )
+      }
+    }
   }
 
   "Using different excludes via program arguments" should {
