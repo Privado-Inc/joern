@@ -2,9 +2,11 @@ package io.joern.dumpq
 
 import io.joern.console.{DefaultArgumentProvider, QueryDatabase}
 import io.joern.dataflowengineoss.queryengine.{EngineConfig, EngineContext}
-import io.joern.dataflowengineoss.semanticsloader.Semantics
+import io.joern.dataflowengineoss.semanticsloader.NoSemantics
 import org.json4s.{Formats, NoTypeHints}
 import org.json4s.native.Serialization
+
+import java.nio.file.{Files, Paths}
 
 object Main {
 
@@ -13,15 +15,13 @@ object Main {
   }
 
   def dumpQueries(): Unit = {
-    implicit val engineContext: EngineContext = EngineContext(Semantics.empty)
+    implicit val engineContext: EngineContext = EngineContext(NoSemantics)
     implicit val formats: AnyRef & Formats =
       Serialization.formats(NoTypeHints)
     val queryDb = new QueryDatabase(new JoernDefaultArgumentProvider(0))
     // TODO allow specifying file from the outside and make this portable
     val outFileName = "/tmp/querydb.json"
-    better.files
-      .File(outFileName)
-      .write(Serialization.write(queryDb.allQueries))
+    Files.writeString(Paths.get(outFileName), Serialization.write(queryDb.allQueries))
     println(s"Queries written to: $outFileName")
   }
 

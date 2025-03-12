@@ -1,11 +1,11 @@
 package io.joern.kotlin2cpg.compiler
 
-import better.files.File
 import io.joern.kotlin2cpg.Config
 import io.joern.kotlin2cpg.DefaultContentRootJarPath
 import io.joern.kotlin2cpg.Kotlin2Cpg
-import io.joern.x2cpg.utils.ExternalCommand
+import io.shiftleft.semanticcpg.utils.{ExternalCommand, FileUtil}
 import io.joern.x2cpg.Defines
+import FileUtil.*
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.utils.ProjectRoot
 import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
@@ -49,10 +49,11 @@ class CompilerAPITests extends AnyFreeSpec with Matchers {
         DefaultContentRootJarPath("jars/kotlin-stdlib-jdk8-1.9.0.jar", isResource = true)
       )
 
-      val defaultContentRootJarsDir = File(projectDependenciesPath)
-      val contentRoots = defaultContentRootJarsDir.listRecursively
-        .filter(_.pathAsString.endsWith("jar"))
-        .map { f => DefaultContentRootJarPath(f.pathAsString, false) }
+      val contentRoots = projectDependenciesPath
+        .walk()
+        .filterNot(_ == projectDependenciesPath)
+        .filter(_.toString.endsWith("jar"))
+        .map { f => DefaultContentRootJarPath(f.toString, false) }
         .toSeq ++ jarResources
       val messageCollector = new ErrorCountMessageCollector()
       val environment      = CompilerAPI.makeEnvironment(Seq(projectDirPath), Seq(), contentRoots, messageCollector)
@@ -77,8 +78,9 @@ class CompilerAPITests extends AnyFreeSpec with Matchers {
 
     "should not contain methods with unresolved types/namespaces" in {
       val command =
-        if (scala.util.Properties.isWin) "cmd.exe /C gradlew.bat gatherDependencies" else "./gradlew gatherDependencies"
-      ExternalCommand.run(command, projectDirPath) shouldBe Symbol("success")
+        if (scala.util.Properties.isWin) Seq("cmd.exe", "/C", "gradlew.bat", "gatherDependencies")
+        else Seq("./gradlew", "gatherDependencies")
+      ExternalCommand.run(command, Option(projectDirPath)).toTry shouldBe Symbol("success")
       val config = Config(classpath = Set(projectDependenciesPath.toString))
       val cpg = new Kotlin2Cpg().createCpg(projectDirPath)(config).getOrElse {
         fail("Could not create a CPG!")

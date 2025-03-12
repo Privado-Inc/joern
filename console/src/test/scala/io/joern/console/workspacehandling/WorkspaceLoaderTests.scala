@@ -1,7 +1,9 @@
 package io.joern.console.workspacehandling
 
-import better.files.Dsl.mkdir
-import better.files.File
+import io.shiftleft.semanticcpg.utils.FileUtil.*
+import io.shiftleft.semanticcpg.utils.FileUtil
+
+import java.nio.file.Files
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 
@@ -12,29 +14,30 @@ class WorkspaceLoaderTests extends AnyWordSpec with Matchers {
   "WorkspaceLoader" should {
 
     "create workspace and workspace directory if nonexistent" in {
-      val dir = File.newTemporaryDirectory(tmpDirPrefix)
-      dir.delete()
-      TestLoader().load(dir.path.toString)
+      val dir = Files.createTempDirectory(tmpDirPrefix)
+      FileUtil.delete(dir)
+      TestLoader().load(dir.toString)
       try {
-        dir.exists shouldBe true
+        Files.exists(dir) shouldBe true
       } finally {
-        dir.delete()
+        FileUtil.delete(dir)
       }
     }
 
     "handle broken project.json gracefully by skipping project" in {
-      File.usingTemporaryDirectory(tmpDirPrefix) { tmpDir =>
-        mkdir(tmpDir / "1")
-        (tmpDir / "1" / "project.json").write("{foo")
-        TestLoader().load(tmpDir.path.toString).numberOfProjects shouldBe 0
+      FileUtil.usingTemporaryDirectory(tmpDirPrefix) { tmpDir =>
+        Files.createDirectory(tmpDir / "1")
+        val jsonPath = (tmpDir / "1" / "project.json")
+        Files.writeString(jsonPath, "{foo")
+        TestLoader().load(tmpDir.toString).numberOfProjects shouldBe 0
       }
     }
 
     "load project correctly" in {
-      File.usingTemporaryDirectory(tmpDirPrefix) { tmpDir =>
+      FileUtil.usingTemporaryDirectory(tmpDirPrefix) { tmpDir =>
         val projectName = "foo"
         WorkspaceTests.createFakeProject(tmpDir, projectName)
-        val project = TestLoader().loadProject((tmpDir / projectName).path)
+        val project = TestLoader().loadProject((tmpDir / projectName))
         project match {
           case Some(p) =>
             p.name shouldBe "foo"
@@ -46,7 +49,7 @@ class WorkspaceLoaderTests extends AnyWordSpec with Matchers {
     }
 
     "initialize workspace's project list correctly" in {
-      File.usingTemporaryDirectory(tmpDirPrefix) { tmpDir =>
+      FileUtil.usingTemporaryDirectory(tmpDirPrefix) { tmpDir =>
         val projectName = "foo"
         WorkspaceTests.createFakeProject(tmpDir, projectName)
         val workspace = TestLoader().load(tmpDir.toString)

@@ -1,10 +1,12 @@
 package io.joern.jimple2cpg.testfixtures
 
-import io.joern.dataflowengineoss.semanticsloader.FlowSemantic
+import io.joern.dataflowengineoss.DefaultSemantics
+import io.joern.dataflowengineoss.semanticsloader.{FlowSemantic, Semantics}
 import io.joern.dataflowengineoss.testfixtures.{SemanticCpgTestFixture, SemanticTestCpg}
 import io.joern.jimple2cpg.{Config, Jimple2Cpg}
 import io.joern.x2cpg.X2Cpg
 import io.joern.x2cpg.testfixtures.{Code2CpgFixture, DefaultTestCpg, LanguageFrontend, TestCpg}
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.codepropertygraph.generated.Cpg
 
 import java.io.File
@@ -23,9 +25,9 @@ trait Jimple2CpgFrontend extends LanguageFrontend {
   }
 }
 
-class JimpleCode2CpgFixture(withOssDataflow: Boolean = false, extraFlows: List[FlowSemantic] = List.empty)
-    extends Code2CpgFixture(() => new JimpleTestCpg().withOssDataflow(withOssDataflow).withExtraFlows(extraFlows))
-    with SemanticCpgTestFixture(extraFlows) {}
+class JimpleCode2CpgFixture(withOssDataflow: Boolean = false, semantics: Semantics = DefaultSemantics())
+    extends Code2CpgFixture(() => new JimpleTestCpg().withOssDataflow(withOssDataflow).withSemantics(semantics))
+    with SemanticCpgTestFixture(semantics) {}
 
 class JimpleTestCpg extends DefaultTestCpg with Jimple2CpgFrontend with SemanticTestCpg {
 
@@ -48,20 +50,24 @@ object JimpleCodeToCpgFixture {
   def compileJava(root: Path, sourceCodeFiles: List[File]): Unit = {
     val javac       = getJavaCompiler
     val fileManager = javac.getStandardFileManager(null, null, null)
-    javac
-      .getTask(
-        null,
-        fileManager,
-        null,
-        Seq("-g", "-d", root.toString).asJava,
-        null,
-        fileManager.getJavaFileObjectsFromFiles(sourceCodeFiles.asJava)
-      )
-      .call()
+    try {
+      javac
+        .getTask(
+          null,
+          fileManager,
+          null,
+          Seq("-g", "-d", root.toString).asJava,
+          null,
+          fileManager.getJavaFileObjectsFromFiles(sourceCodeFiles.asJava)
+        )
+        .call()
 
-    fileManager
-      .list(StandardLocation.CLASS_OUTPUT, "", Collections.singleton(JavaFileObject.Kind.CLASS), true)
-      .forEach(x => new File(x.toUri).deleteOnExit())
+      fileManager
+        .list(StandardLocation.CLASS_OUTPUT, "", Collections.singleton(JavaFileObject.Kind.CLASS), true)
+        .forEach(x => new File(x.toUri).deleteOnExit())
+    } finally {
+      fileManager.close()
+    }
   }
 
   /** Programmatically obtains the system Java compiler.

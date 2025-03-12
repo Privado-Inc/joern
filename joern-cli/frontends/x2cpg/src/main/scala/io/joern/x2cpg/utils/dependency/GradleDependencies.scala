@@ -1,129 +1,108 @@
 package io.joern.x2cpg.utils.dependency
 
-import better.files._
+import io.shiftleft.semanticcpg.utils.FileUtil.*
+import io.shiftleft.semanticcpg.utils.FileUtil
+
+import java.nio.charset.Charset
 import org.gradle.tooling.{GradleConnector, ProjectConnection}
-import org.gradle.tooling.model.GradleProject
+import org.gradle.tooling.model.{GradleProject, ProjectIdentifier, Task}
 import org.gradle.tooling.model.build.BuildEnvironment
 import org.slf4j.LoggerFactory
 
-import java.io.ByteArrayOutputStream
-import java.nio.file.{Files, Path}
-import java.io.{File => JFile}
+import java.io.{ByteArrayOutputStream, IOException, File as JFile}
+import java.nio.file.{Files, Path, Paths}
 import java.util.stream.Collectors
-import scala.jdk.CollectionConverters._
+import scala.collection.mutable
+import scala.io.Source
+import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Random, Success, Try, Using}
 
-case class GradleProjectInfo(gradleVersion: String, tasks: Seq[String], hasAndroidSubproject: Boolean = false) {
-  def gradleVersionMajorMinor(): (Int, Int) = {
-    def isValidPart(part: String) = part.forall(Character.isDigit)
-    val parts                     = gradleVersion.split('.')
-    if (parts.length == 1 && isValidPart(parts(0))) {
-      (parts(0).toInt, 0)
-    } else if (parts.length >= 2 && isValidPart(parts(0)) && isValidPart(parts(1))) {
-      (parts(0).toInt, parts(1).toInt)
-    } else {
-      (-1, -1)
-    }
+case class ProjectNameInfo(projectName: String, parentName: Option[String]) {
+  override def toString: String = {
+    parentName.map(parentName => s"$parentName:$projectName").getOrElse(projectName)
+  }
+
+  def makeGradleTaskName(taskName: String): String = {
+    parentName.map(parentName => s"$parentName:$projectName:$taskName").getOrElse(taskName)
   }
 }
 
-object Constants {
-  val aarFileExtension            = "aar"
-  val gradleAndroidPropertyPrefix = "android."
-  val gradlePropertiesTaskName    = "properties"
-  val jarInsideAarFileName        = "classes.jar"
-}
+case class GradleVersion(major: Int, minor: Int)
 
 case class GradleDepsInitScript(contents: String, taskName: String, destinationDir: Path)
 
 object GradleDependencies {
-  private val logger           = LoggerFactory.getLogger(getClass)
-  private val initScriptPrefix = "x2cpg.init.gradle"
-  private val taskNamePrefix   = "x2cpgCopyDeps"
-  private val tempDirPrefix    = "x2cpgDependencies"
+  private val aarFileExtension            = "aar"
+  private val gradleAndroidPropertyPrefix = "android"
+  private val gradlePropertiesTaskName    = "properties"
+  private val jarInsideAarFileName        = "classes.jar"
+  private val defaultConfigurationName    = "releaseRuntimeClasspath"
+  private val initScriptPrefix            = "x2cpg.init.gradle"
+  private val taskNamePrefix              = "x2cpgCopyDeps"
+  private val tempDirPrefix               = "x2cpgDependencies"
+  private val defaultGradleAppName        = "app"
+
+  private val logger = LoggerFactory.getLogger(getClass)
 
   // works with Gradle 5.1+ because the script makes use of `task.register`:
   //   https://docs.gradle.org/current/userguide/task_configuration_avoidance.html
-  private def gradle5OrLaterAndroidInitScript(
+  private def getInitScriptContent(
     taskName: String,
-    destination: String,
-    gradleProjectName: String,
-    gradleConfigurationName: String
+    destinationDir: String,
+    gradleVersion: GradleVersion,
+    projectNameOverride: Option[String],
+    configurationNameOverride: Option[String]
   ): String = {
-    s"""
-       |allprojects {
-       |  afterEvaluate { project ->
-       |    def taskName = "$taskName"
-       |    def destinationDir = "${destination.replaceAll("\\\\", "/")}"
-       |    def gradleProjectName = "$gradleProjectName"
-       |    def gradleConfigurationName = "$gradleConfigurationName"
-       |
-       |    if (project.name.equals(gradleProjectName)) {
-       |      def compileDepsCopyTaskName = taskName + "_compileDeps"
-       |      tasks.register(compileDepsCopyTaskName, Copy) {
-       |        def selectedConfig = project.configurations.find { it.name.equals(gradleConfigurationName) }
-       |        def componentIds = []
-       |        if (selectedConfig != null) {
-       |          componentIds = selectedConfig.incoming.resolutionResult.allDependencies.collect { it.selected.id }
-       |        }
-       |        def result = dependencies.createArtifactResolutionQuery()
-       |                                 .forComponents(componentIds)
-       |                                 .withArtifacts(JvmLibrary, SourcesArtifact)
-       |                                 .execute()
-       |        duplicatesStrategy = 'include'
-       |        into destinationDir
-       |        from result.resolvedComponents.collect { it.getArtifacts(SourcesArtifact).collect { it.file } }
-       |      }
-       |      def androidDepsCopyTaskName = taskName + "_androidDeps"
-       |      tasks.register(androidDepsCopyTaskName, Copy) {
-       |        duplicatesStrategy = 'include'
-       |        into destinationDir
-       |        from project.configurations.find { it.name.equals("androidApis") }
-       |      }
-       |      tasks.register(taskName, Copy) {
-       |        dependsOn androidDepsCopyTaskName
-       |        dependsOn compileDepsCopyTaskName
-       |      }
-       |    }
-       |  }
-       |}
-       |""".stripMargin
+    val taskCreationFunction = gradleVersion match {
+      case GradleVersion(major, minor) if major >= 5 && minor >= 1 => "tasks.register"
+      case _                                                       => "tasks.create"
+    }
+
+    def addSurroundingQuotes(input: String): String = s"\"$input\""
+    val projectNameOverrideString       = s"[${projectNameOverride.map(addSurroundingQuotes).getOrElse("")}]"
+    val configurationNameOverrideString = s"[${configurationNameOverride.map(addSurroundingQuotes).getOrElse("")}]"
+
+    Source
+      .fromResource("io/joern/x2cpg/utils/dependency/dependency-fetcher-init.gradle")
+      .getLines()
+      .mkString(System.lineSeparator())
+      .replaceAll("__projectNameOverrides__", projectNameOverrideString)
+      .replaceAll("__configurationNameOverrides__", configurationNameOverrideString)
+      .replaceAll("__taskNameString__", addSurroundingQuotes(taskName))
+      .replaceAll("__destinationDirString__", addSurroundingQuotes(destinationDir))
+      .replaceAll("__defaultProjectNameString__", addSurroundingQuotes(defaultGradleAppName))
+      .replaceAll("tasks.register", taskCreationFunction)
   }
 
-  // this init script _should_ work with Gradle >=4, but has not been tested thoroughly
-  // TODO: add test cases for older Gradle versions
-  private def gradle5OrLaterInitScript(
-    taskName: String,
-    destination: String,
-    gradleConfigurationName: String
-  ): String = {
-    val into = destination.replaceAll("\\\\", "/")
-    val fromConfigurations =
-      Set(s"from configurations.$gradleConfigurationName", "from configurations.runtimeClasspath").mkString("\n")
-    s"""
-     |allprojects {
-     |  apply plugin: 'java'
-     |  task $taskName(type: Copy) {
-     |    $fromConfigurations
-     |    into "$into"
-     |  }
-     |}
-     |""".stripMargin
+  private def getGradleVersionMajorMinor(connection: ProjectConnection): GradleVersion = {
+    val buildEnv      = connection.getModel[BuildEnvironment](classOf[BuildEnvironment])
+    val gradleVersion = buildEnv.getGradle.getGradleVersion
+
+    def isValidPart(part: String) = part.forall(Character.isDigit)
+    val parts                     = gradleVersion.split('.')
+    if (parts.length == 1 && isValidPart(parts(0))) {
+      GradleVersion(parts(0).toInt, 0)
+    } else if (parts.length >= 2 && isValidPart(parts(0)) && isValidPart(parts(1))) {
+      GradleVersion(parts(0).toInt, parts(1).toInt)
+    } else {
+      GradleVersion(-1, -1)
+    }
   }
 
   private def makeInitScript(
     destinationDir: Path,
-    forAndroid: Boolean,
-    gradleProjectName: String,
-    gradleConfigurationName: String
+    gradleVersion: GradleVersion,
+    projectNameOverride: Option[String],
+    configurationNameOverride: Option[String]
   ): GradleDepsInitScript = {
     val taskName = taskNamePrefix + "_" + (Random.alphanumeric take 8).toList.mkString
-    val content =
-      if (forAndroid) {
-        gradle5OrLaterAndroidInitScript(taskName, destinationDir.toString, gradleProjectName, gradleConfigurationName)
-      } else {
-        gradle5OrLaterInitScript(taskName, destinationDir.toString, gradleConfigurationName)
-      }
+    val content = getInitScriptContent(
+      taskName,
+      destinationDir.toString,
+      gradleVersion,
+      projectNameOverride,
+      configurationNameOverride
+    )
     GradleDepsInitScript(content, taskName, destinationDir)
   }
 
@@ -131,126 +110,102 @@ object GradleDependencies {
     GradleConnector.newConnector().forProjectDirectory(projectDir).connect()
   }
 
-  private def getGradleProjectInfo(projectDir: Path, projectName: String): Option[GradleProjectInfo] = {
-    Try(makeConnection(projectDir.toFile)) match {
-      case Success(gradleConnection) =>
-        Using.resource(gradleConnection) { connection =>
-          try {
-            val buildEnv = connection.getModel[BuildEnvironment](classOf[BuildEnvironment])
-            val project  = connection.getModel[GradleProject](classOf[GradleProject])
-            val hasAndroidPrefixGradleProperty =
-              runGradleTask(connection, Constants.gradlePropertiesTaskName) match {
-                case Some(out) =>
-                  out.split('\n').exists(_.startsWith(Constants.gradleAndroidPropertyPrefix))
-                case None => false
-              }
-            val info = GradleProjectInfo(
-              buildEnv.getGradle.getGradleVersion,
-              project.getTasks.asScala.map(_.getName).toSeq,
-              hasAndroidPrefixGradleProperty
-            )
-            if (hasAndroidPrefixGradleProperty) {
-              val validProjectNames = List(project.getName) ++ project.getChildren.getAll.asScala.map(_.getName)
-              logger.debug(s"Found Gradle projects: ${validProjectNames.mkString(",")}")
-              if (!validProjectNames.contains(projectName)) {
-                val validProjectNamesStr = validProjectNames.mkString(",")
-                logger.warn(
-                  s"The provided Gradle project name `$projectName` is is not part of the valid project names: `$validProjectNamesStr`"
-                )
-                None
-              } else {
-                Some(info)
-              }
-            } else {
-              Some(info)
-            }
-          } catch {
-            case t: Throwable =>
-              logger.warn(s"Caught exception while trying use Gradle connection: ${t.getMessage}")
-              logger.debug(s"Full exception: ", t)
-              None
-          }
-        }
-      case Failure(t) =>
-        logger.warn(s"Caught exception while trying fetch Gradle project information: ${t.getMessage}")
-        logger.debug(s"Full exception: ", t)
-        None
-    }
-  }
+  private def dependencyMapFromOutputDir(outputDir: Path): Map[String, List[String]] = {
+    val dependencyMap = mutable.Map.empty[String, List[String]]
 
-  private def runGradleTask(connection: ProjectConnection, taskName: String): Option[String] = {
-    Using.resource(new ByteArrayOutputStream()) { out =>
-      Try(
-        connection
-          .newBuild()
-          .forTasks(taskName)
-          .setStandardOutput(out)
-          .run()
-      ) match {
-        case Success(_) => Some(out.toString)
-        case Failure(ex) =>
-          logger.warn(s"Caught exception while executing Gradle task named `$taskName`:", ex.getMessage)
-          logger.debug(s"Full exception: ", ex)
-          None
-      }
+    Try(Files.walk(outputDir)) match {
+      case Success(fileStreamResource) =>
+        Using.resource(fileStreamResource) { fileStream =>
+          fileStream
+            .collect(Collectors.toList)
+            .asScala
+            .groupBy(path => path.getParent.toString)
+            .foreach { case (parentStr, paths) =>
+              paths.collect {
+                case path if !Files.isDirectory(path) =>
+                  dependencyMap.put(
+                    parentStr,
+                    path.toAbsolutePath.toString :: dependencyMap.getOrElseUpdate(parentStr, Nil)
+                  )
+              }
+            }
+        }
+      case Failure(e: Throwable) =>
+        logger.warn(s"Encountered exception while walking dependency fetcher output: ${e.getMessage}")
     }
+
+    dependencyMap.toMap
   }
 
   private def runGradleTask(
     connection: ProjectConnection,
-    initScript: GradleDepsInitScript,
+    taskName: String,
+    destinationDir: Path,
     initScriptPath: String
-  ): Option[collection.Seq[String]] = {
+  ): Map[String, List[String]] = {
     Using.resources(new ByteArrayOutputStream, new ByteArrayOutputStream) { case (stdoutStream, stderrStream) =>
-      logger.info(s"Executing gradle task '${initScript.taskName}'...")
+      logger.debug(s"Executing gradle task '${taskName}'...")
       Try(
         connection
           .newBuild()
-          .forTasks(initScript.taskName)
+          .forTasks(taskName)
           .withArguments("--init-script", initScriptPath)
           .setStandardOutput(stdoutStream)
           .setStandardError(stderrStream)
           .run()
       ) match {
         case Success(_) =>
-          val result =
-            Files
-              .list(initScript.destinationDir)
-              .collect(Collectors.toList[Path])
-              .asScala
-              .map(_.toAbsolutePath.toString)
-          logger.info(s"Resolved `${result.size}` dependency files.")
-          Some(result)
+          val result          = dependencyMapFromOutputDir(destinationDir)
+          val dependencyCount = result.values.flatten.size
+          logger.info(s"Task $taskName resolved `$dependencyCount` dependency files.")
+          result
         case Failure(ex) =>
           logger.warn(s"Caught exception while executing Gradle task: ${ex.getMessage}")
+          val androidSdkError = "Define a valid SDK location with an ANDROID_HOME environment variable"
+          if (stderrStream.toString.contains(androidSdkError)) {
+            logger.warn(
+              "A missing Android SDK configuration caused gradle dependency fetching failures. Please define a valid SDK location with an ANDROID_HOME environment variable or by setting the sdk.dir path in your project's local properties file"
+            )
+          }
+          if (stderrStream.toString.contains("Could not compile initialization script")) {
+
+            val scriptContents = new String(Files.readAllBytes(Paths.get(initScriptPath)), Charset.defaultCharset())
+            logger.debug(
+              s"########## INITIALIZATION_SCRIPT ##########\n$scriptContents\n###########################################"
+            )
+          }
           logger.debug(s"Gradle task execution stdout: \n$stdoutStream")
           logger.debug(s"Gradle task execution stderr: \n$stderrStream")
-          None
+          Map.empty
       }
     }
   }
 
-  private def extractClassesJarFromAar(aar: File): Option[Path] = {
-    val newPath           = aar.path.toString.replaceFirst(Constants.aarFileExtension + "$", "jar")
+  private def extractClassesJarFromAar(aar: Path): Option[Path] = {
+    val newPath           = aar.toString.replaceFirst(aarFileExtension + "$", "jar")
     val aarUnzipDirSuffix = ".unzipped"
-    val outDir            = File(aar.path.toString + aarUnzipDirSuffix)
-    aar.unzipTo(outDir, _.getName == Constants.jarInsideAarFileName)
-    val outFile = File(newPath)
+    val outDir            = Paths.get(aar.toString + aarUnzipDirSuffix)
+    aar.unzipTo(outDir, _.getName == jarInsideAarFileName)
+    val outFile = Paths.get(newPath)
     val classesJarEntries =
-      outDir.listRecursively
-        .filter(_.path.getFileName.toString == Constants.jarInsideAarFileName)
+      Files
+        .walk(outDir)
+        .iterator()
+        .asScala
+        .filterNot(_ == outDir)
+        .filter(_.fileName == jarInsideAarFileName)
         .toList
     if (classesJarEntries.size != 1) {
-      logger.warn(s"Found aar file without `classes.jar` inside at path ${aar.path}")
-      outDir.delete()
+      logger.warn(s"Found aar file without `classes.jar` inside at path ${aar}")
+      FileUtil.delete(outDir)
       None
     } else {
       val classesJar = classesJarEntries.head
-      logger.trace(s"Copying `classes.jar` for aar at `${aar.path.toString}` into `$newPath`")
+      logger.trace(s"Copying `classes.jar` for aar at `${aar.toString}` into `$newPath`")
       classesJar.copyTo(outFile)
-      outDir.delete()
-      aar.delete()
-      Some(outFile.path)
+      FileUtil.delete(outDir)
+      FileUtil.delete(aar)
+      Some(outFile)
     }
   }
 
@@ -258,60 +213,50 @@ object GradleDependencies {
   // a destination directory.
   private[dependency] def get(
     projectDir: Path,
-    projectName: String,
-    configurationName: String
-  ): Option[collection.Seq[String]] = {
-    logger.info(s"Fetching Gradle project information at path `$projectDir` with project name `$projectName`.")
-    getGradleProjectInfo(projectDir, projectName) match {
-      case Some(projectInfo) if projectInfo.gradleVersionMajorMinor()._1 < 5 =>
-        logger.warn(s"Unsupported Gradle version `${projectInfo.gradleVersion}`")
-        None
-      case Some(projectInfo) =>
-        Try(File.newTemporaryDirectory(tempDirPrefix).deleteOnExit()) match {
-          case Success(destinationDir) =>
-            Try(File.newTemporaryFile(initScriptPrefix).deleteOnExit()) match {
-              case Success(initScriptFile) =>
-                val initScript =
-                  makeInitScript(destinationDir.path, projectInfo.hasAndroidSubproject, projectName, configurationName)
-                initScriptFile.write(initScript.contents)
-
-                logger.info(
-                  s"Downloading dependencies for configuration `$configurationName` of project `$projectName` at `$projectDir` into `$destinationDir`..."
-                )
-                Try(makeConnection(projectDir.toFile)) match {
-                  case Success(connection) =>
-                    Using.resource(connection) { c =>
-                      runGradleTask(c, initScript, initScriptFile.pathAsString) match {
-                        case Some(deps) =>
-                          Some(deps.map { d =>
-                            if (!d.endsWith(Constants.aarFileExtension)) d
-                            else
-                              extractClassesJarFromAar(File(d)) match {
-                                case Some(path) => path.toString
-                                case None       => d
-                              }
-                          })
-                        case None => None
+    projectNameOverride: Option[String],
+    configurationNameOverride: Option[String]
+  ): Map[String, collection.Seq[String]] = {
+    logger.info(s"Fetching Gradle project information at path `$projectDir`.")
+    Try(Files.createTempDirectory(tempDirPrefix)) match {
+      case Success(destinationDir) =>
+        FileUtil.deleteOnExit(destinationDir)
+        Try(Files.createTempFile(initScriptPrefix, "")) match {
+          case Success(initScriptFile) =>
+            FileUtil.deleteOnExit(initScriptFile)
+            Try(makeConnection(projectDir.toFile)) match {
+              case Success(connection) =>
+                Using.resource(connection) { c =>
+                  val gradleVersion = getGradleVersionMajorMinor(connection)
+                  val initScript =
+                    makeInitScript(destinationDir, gradleVersion, projectNameOverride, configurationNameOverride)
+                  Files.writeString(initScriptFile, initScript.contents)
+                  runGradleTask(c, initScript.taskName, initScript.destinationDir, initScriptFile.toString).map {
+                    case (projectName, dependencies) =>
+                      projectName -> dependencies.map { dependency =>
+                        if (!dependency.endsWith(aarFileExtension))
+                          dependency
+                        else
+                          extractClassesJarFromAar(Paths.get(dependency)) match {
+                            case Some(path) => path.toString
+                            case None       => dependency
+                          }
                       }
-                    }
-                  case Failure(ex) =>
-                    logger.warn(s"Caught exception while trying to establish a Gradle connection: ${ex.getMessage}")
-                    logger.debug(s"Full exception: ", ex)
-                    None
+                  }
                 }
               case Failure(ex) =>
-                logger.warn(s"Could not create temporary file for Gradle init script: ${ex.getMessage}")
+                logger.warn(s"Caught exception while trying to establish a Gradle connection: ${ex.getMessage}")
                 logger.debug(s"Full exception: ", ex)
-                None
+                Map.empty
             }
           case Failure(ex) =>
-            logger.warn(s"Could not create temporary directory for saving dependency files: ${ex.getMessage}")
-            logger.debug("Full exception: ", ex)
-            None
+            logger.warn(s"Could not create temporary file for Gradle init script: ${ex.getMessage}")
+            logger.debug(s"Full exception: ", ex)
+            Map.empty
         }
-      case None =>
-        logger.warn("Could not fetch Gradle project information")
-        None
+      case Failure(ex) =>
+        logger.warn(s"Could not create temporary directory for saving dependency files: ${ex.getMessage}")
+        logger.debug("Full exception: ", ex)
+        Map.empty
     }
   }
 }

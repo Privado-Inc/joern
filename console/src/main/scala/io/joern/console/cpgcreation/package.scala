@@ -1,9 +1,10 @@
 package io.joern.console
 
-import better.files.File
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.codepropertygraph.generated.Languages
+import io.shiftleft.semanticcpg.utils.FileUtil
 
-import java.nio.file.Path
+import java.nio.file.{Path, Paths, Files}
 import scala.collection.mutable
 import scala.util.Try
 
@@ -19,12 +20,13 @@ package object cpgcreation {
   ): Option[CpgGenerator] = {
     lazy val conf = config.withArgs(args)
     language match {
-      case Languages.CSHARP | Languages.CSHARPSRC => Some(CSharpCpgGenerator(conf, rootPath))
-      case Languages.C | Languages.NEWC           => Some(CCpgGenerator(conf, rootPath))
-      case Languages.LLVM                         => Some(LlvmCpgGenerator(conf, rootPath))
-      case Languages.GOLANG                       => Some(GoCpgGenerator(conf, rootPath))
-      case Languages.JAVA                         => Some(JavaCpgGenerator(conf, rootPath))
-      case Languages.JAVASRC                      => Some(JavaSrcCpgGenerator(conf, rootPath))
+      case Languages.CSHARP             => Some(CSharpCpgGenerator(conf, rootPath))
+      case Languages.CSHARPSRC          => Some(CSharpSrcCpgGenerator(conf, rootPath))
+      case Languages.C | Languages.NEWC => Some(CCpgGenerator(conf, rootPath))
+      case Languages.LLVM               => Some(LlvmCpgGenerator(conf, rootPath))
+      case Languages.GOLANG             => Some(GoCpgGenerator(conf, rootPath))
+      case Languages.JAVA               => Some(JavaCpgGenerator(conf, rootPath))
+      case Languages.JAVASRC            => Some(JavaSrcCpgGenerator(conf, rootPath))
       case Languages.JSSRC | Languages.JAVASCRIPT =>
         val jssrc = JsSrcCpgGenerator(conf, rootPath)
         if (jssrc.isAvailable) Some(jssrc)
@@ -43,8 +45,8 @@ package object cpgcreation {
   /** Heuristically determines language by inspecting file/dir at path.
     */
   def guessLanguage(path: String): Option[String] = {
-    val file = File(path)
-    if (file.isDirectory) {
+    val file = Paths.get(path)
+    if (Files.isDirectory(file)) {
       guessMajorityLanguageInDir(file)
     } else {
       guessLanguageForRegularFile(file)
@@ -55,13 +57,13 @@ package object cpgcreation {
     * files. Rationale: many projects contain files from different languages, but most often one language is standing
     * out in numbers.
     */
-  private def guessMajorityLanguageInDir(directory: File): Option[String] = {
-    assert(directory.isDirectory, s"$directory must be a directory, but wasn't")
+  private def guessMajorityLanguageInDir(directory: Path): Option[String] = {
+    assert(Files.isDirectory(directory), s"$directory must be a directory, but wasn't")
     val groupCount = mutable.Map.empty[String, Int].withDefaultValue(0)
 
     for {
-      file <- directory.listRecursively
-      if file.isRegularFile
+      file <- directory.walk().filterNot(_ == directory)
+      if Files.isRegularFile(file)
       guessedLanguage <- guessLanguageForRegularFile(file)
     } {
       val oldValue = groupCount(guessedLanguage)
@@ -92,8 +94,8 @@ package object cpgcreation {
   private def isCFile(filename: String): Boolean =
     Seq(".c", ".cc", ".cpp", ".h", ".hpp", ".hh").exists(filename.endsWith)
 
-  private def guessLanguageForRegularFile(file: File): Option[String] = {
-    file.name.toLowerCase match {
+  private def guessLanguageForRegularFile(file: Path): Option[String] = {
+    file.fileName.toLowerCase match {
       case f if isJavaBinary(f)      => Some(Languages.JAVA)
       case f if isCsharpFile(f)      => Some(Languages.CSHARPSRC)
       case f if isGoFile(f)          => Some(Languages.GOLANG)
@@ -111,11 +113,11 @@ package object cpgcreation {
     }
   }
 
-  def withFileInTmpFile(inputPath: String)(f: File => Try[String]): Try[String] = {
-    val dir = File.newTemporaryDirectory("cpgcreation")
-    File(inputPath).copyToDirectory(dir)
+  def withFileInTmpFile(inputPath: String)(f: Path => Try[String]): Try[String] = {
+    val dir = Files.createTempDirectory("cpgcreation")
+    Paths.get(inputPath).copyToDirectory(dir)
     val result = f(dir)
-    dir.deleteOnExit(swallowIOExceptions = true)
+    FileUtil.deleteOnExit(dir, swallowIOExceptions = true)
     result
   }
 

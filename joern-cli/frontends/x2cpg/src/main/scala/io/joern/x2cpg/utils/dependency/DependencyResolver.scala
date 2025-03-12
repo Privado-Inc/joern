@@ -1,11 +1,11 @@
 package io.joern.x2cpg.utils.dependency
 
-import better.files.File
-import io.joern.x2cpg.utils.ExternalCommand
+import io.shiftleft.semanticcpg.utils.{ExternalCommand, FileUtil}
 import io.joern.x2cpg.utils.dependency.GradleConfigKeys.GradleConfigKey
+import FileUtil.*
 import org.slf4j.LoggerFactory
 
-import java.nio.file.Path
+import java.nio.file.{Files, Path}
 import scala.util.{Failure, Success}
 
 object GradleConfigKeys extends Enumeration {
@@ -18,10 +18,8 @@ case class DependencyResolverParams(
 )
 
 object DependencyResolver {
-  private val logger                         = LoggerFactory.getLogger(getClass)
-  private val defaultGradleProjectName       = "app"
-  private val defaultGradleConfigurationName = "compileClasspath"
-  private val MaxSearchDepth: Int            = 4
+  private val logger              = LoggerFactory.getLogger(getClass)
+  private val MaxSearchDepth: Int = 4
 
   def getCoordinates(
     projectDir: Path,
@@ -31,9 +29,10 @@ object DependencyResolver {
       if (isMavenBuildFile(buildFile))
         // TODO: implement
         None
-      else if (isGradleBuildFile(buildFile))
-        getCoordinatesForGradleProject(buildFile.getParent, defaultGradleConfigurationName)
-      else {
+      else if (isGradleBuildFile(buildFile)) {
+        // TODO: Don't limit this to the default configuration name
+        getCoordinatesForGradleProject(buildFile.getParent, "compileClasspath")
+      } else {
         logger.warn(s"Found unsupported build file $buildFile")
         Nil
       }
@@ -46,7 +45,9 @@ object DependencyResolver {
     projectDir: Path,
     configuration: String
   ): Option[collection.Seq[String]] = {
-    val lines = ExternalCommand.run(s"gradle dependencies --configuration $configuration", projectDir.toString) match {
+    val lines = ExternalCommand
+      .run(Seq("gradle", "dependencies", "--configuration,", configuration), Option(projectDir.toString))
+      .toTry match {
       case Success(lines) => lines
       case Failure(exception) =>
         logger.warn(
@@ -84,38 +85,40 @@ object DependencyResolver {
     projectDir: Path
   ): Option[collection.Seq[String]] = {
     logger.info("resolving Gradle dependencies at {}", projectDir)
-    val gradleProjectName = params.forGradle.getOrElse(GradleConfigKeys.ProjectName, defaultGradleProjectName)
-    val gradleConfiguration =
-      params.forGradle.getOrElse(GradleConfigKeys.ConfigurationName, defaultGradleConfigurationName)
-    GradleDependencies.get(projectDir, gradleProjectName, gradleConfiguration) match {
-      case Some(deps) => Some(deps)
-      case None =>
+    val maybeProjectNameOverride   = params.forGradle.get(GradleConfigKeys.ProjectName)
+    val maybeConfigurationOverride = params.forGradle.get(GradleConfigKeys.ConfigurationName)
+
+    GradleDependencies.get(projectDir, maybeProjectNameOverride, maybeConfigurationOverride) match {
+      case dependenciesMap if dependenciesMap.values.exists(_.nonEmpty) =>
+        Option(dependenciesMap.values.flatten.toList.distinctBy(path => path.split(java.io.File.separatorChar).last))
+
+      case _ =>
         logger.warn(s"Could not download Gradle dependencies for project at path `$projectDir`")
         None
     }
   }
 
-  private def isGradleBuildFile(file: File): Boolean = {
-    val pathString = file.pathAsString
+  private def isGradleBuildFile(file: Path): Boolean = {
+    val pathString = file.toString
     pathString.endsWith(".gradle") || pathString.endsWith(".gradle.kts")
   }
 
-  private def isMavenBuildFile(file: File): Boolean = {
-    file.pathAsString.endsWith("pom.xml")
+  private def isMavenBuildFile(file: Path): Boolean = {
+    file.toString.endsWith("pom.xml")
   }
 
-  private def findSupportedBuildFiles(currentDir: File, depth: Int = 0): List[Path] = {
+  private def findSupportedBuildFiles(currentDir: Path, depth: Int = 0): List[Path] = {
     if (depth >= MaxSearchDepth) {
       logger.info("findSupportedBuildFiles reached max depth before finding build files")
       Nil
     } else {
-      val (childDirectories, childFiles) = currentDir.children.partition(_.isDirectory)
+      val (childDirectories, childFiles) = currentDir.listFiles().partition(Files.isDirectory(_))
       // Only fetch dependencies once for projects with both a build.gradle and a pom.xml file
       val childFileList = childFiles.toList
       childFileList
         .find(isGradleBuildFile)
         .orElse(childFileList.find(isMavenBuildFile)) match {
-        case Some(buildFile) => buildFile.path :: Nil
+        case Some(buildFile) => buildFile :: Nil
 
         case None if childDirectories.isEmpty => Nil
 
