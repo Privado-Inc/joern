@@ -1,12 +1,12 @@
 package io.joern.c2cpg.astcreation
 
-import io.joern.x2cpg.utils.NodeBuilders.{newMethodReturnNode => newMethodReturnNode_}
-import io.shiftleft.codepropertygraph.generated.nodes._
-import org.eclipse.cdt.core.dom.ast.{IASTLabelStatement, IASTNode}
-import org.eclipse.cdt.core.dom.ast.IASTPreprocessorIncludeStatement
+import io.shiftleft.codepropertygraph.generated.nodes.*
+import org.eclipse.cdt.core.dom.ast.IASTLabelStatement
+import org.eclipse.cdt.core.dom.ast.IASTNode
 import org.eclipse.cdt.internal.core.model.ASTStringUtil
 
 trait AstNodeBuilder { this: AstCreator =>
+
   protected def newCommentNode(node: IASTNode, code: String, filename: String): NewComment = {
     NewComment().code(code).filename(filename).lineNumber(line(node)).columnNumber(column(node))
   }
@@ -14,7 +14,7 @@ trait AstNodeBuilder { this: AstCreator =>
   protected def newNamespaceBlockNode(
     node: IASTNode,
     name: String,
-    fullname: String,
+    fullName: String,
     code: String,
     filename: String
   ): NewNamespaceBlock = {
@@ -24,12 +24,7 @@ trait AstNodeBuilder { this: AstCreator =>
       .columnNumber(column(node))
       .filename(filename)
       .name(name)
-      .fullName(fullname)
-  }
-
-  // TODO: We should get rid of this method as its being used at multiple places and use it from x2cpg/AstNodeBuilder "methodReturnNode"
-  protected def newMethodReturnNode(node: IASTNode, typeFullName: String): NewMethodReturn = {
-    newMethodReturnNode_(typeFullName, None, line(node), column(node))
+      .fullName(fullName)
   }
 
   protected def newJumpTargetNode(node: IASTNode): NewJumpTarget = {

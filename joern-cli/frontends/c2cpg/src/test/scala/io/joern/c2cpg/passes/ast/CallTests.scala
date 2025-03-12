@@ -6,10 +6,7 @@ import io.joern.x2cpg.Defines as X2CpgDefines
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
 import io.shiftleft.codepropertygraph.generated.nodes.Call
 import io.shiftleft.codepropertygraph.generated.nodes.Literal
-import io.shiftleft.semanticcpg.language.NoResolve
 import io.shiftleft.semanticcpg.language.*
-
-import java.nio.file.{Files, Path}
 
 class CallTests extends C2CpgSuite {
 
@@ -112,7 +109,7 @@ class CallTests extends C2CpgSuite {
     "have the correct callIn" in {
       val List(m) = cpg.method.nameNot("<global>").where(_.ast.isReturn.code(".*nullptr.*")).l
       val List(c) = cpg.call.codeExact("b->GetObj()").l
-      c.callee.head shouldBe m
+      c.callee.l should contain(m)
       val List(callIn) = m.callIn.l
       callIn.code shouldBe "b->GetObj()"
     }
@@ -300,7 +297,32 @@ class CallTests extends C2CpgSuite {
       call.receiver.isEmpty shouldBe true
     }
 
-    "have correct call for call on lambda function" in {
+    "have correct call for call on lambda function with explicit return type" in {
+      val cpg = code(
+        """
+          |void outer() {
+          |  [](int a) -> int { return a; }(1);
+          |}
+          |""".stripMargin,
+        "test.cpp"
+      )
+
+      val List(call) = cpg.call.nameExact("<operator>()").l
+      call.signature shouldBe "int(int)"
+      call.methodFullName shouldBe "<operator>():int(int)"
+      call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
+      call.typeFullName shouldBe "int"
+
+      val List(arg1) = call.argument.l
+      arg1.code shouldBe "1"
+      arg1.argumentIndex shouldBe 1
+
+      val List(receiver) = call.receiver.l
+      receiver.isMethodRef shouldBe true
+      receiver.argumentIndex shouldBe -1
+    }
+
+    "have correct call for call on lambda function without explicit return type" in {
       val cpg = code(
         """
           |void outer() {
@@ -341,9 +363,9 @@ class CallTests extends C2CpgSuite {
         "test.cpp"
       )
 
-      val List(call) = cpg.call.nameExact(Defines.operatorPointerCall).l
+      val List(call) = cpg.call.nameExact(Defines.OperatorPointerCall).l
       call.signature shouldBe ""
-      call.methodFullName shouldBe Defines.operatorPointerCall
+      call.methodFullName shouldBe Defines.OperatorPointerCall
       call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
       call.typeFullName shouldBe "void"
 
@@ -408,9 +430,9 @@ class CallTests extends C2CpgSuite {
         "test.c"
       )
 
-      val List(call) = cpg.call.nameExact(Defines.operatorPointerCall).l
+      val List(call) = cpg.call.nameExact(Defines.OperatorPointerCall).l
       call.signature shouldBe ""
-      call.methodFullName shouldBe Defines.operatorPointerCall
+      call.methodFullName shouldBe Defines.OperatorPointerCall
       call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
       call.typeFullName shouldBe "void"
 
@@ -562,9 +584,9 @@ class CallTests extends C2CpgSuite {
         "test.c"
       )
 
-      val List(call) = cpg.call.nameExact(Defines.operatorPointerCall).l
+      val List(call) = cpg.call.nameExact(Defines.OperatorPointerCall).l
       call.signature shouldBe ""
-      call.methodFullName shouldBe Defines.operatorPointerCall
+      call.methodFullName shouldBe Defines.OperatorPointerCall
       call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
       call.typeFullName shouldBe X2CpgDefines.Any
 
@@ -610,9 +632,9 @@ class CallTests extends C2CpgSuite {
         "test.c"
       )
 
-      val List(call) = cpg.call.nameExact(Defines.operatorPointerCall).l
+      val List(call) = cpg.call.nameExact(Defines.OperatorPointerCall).l
       call.signature shouldBe ""
-      call.methodFullName shouldBe Defines.operatorPointerCall
+      call.methodFullName shouldBe Defines.OperatorPointerCall
       call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
       call.typeFullName shouldBe X2CpgDefines.Any
 

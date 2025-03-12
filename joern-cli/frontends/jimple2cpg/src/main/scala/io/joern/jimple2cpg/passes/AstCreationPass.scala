@@ -4,14 +4,15 @@ import io.joern.jimple2cpg.Config
 import io.joern.jimple2cpg.astcreation.AstCreator
 import io.joern.jimple2cpg.util.ProgramHandlingUtil.ClassFile
 import io.joern.x2cpg.datastructures.Global
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.passes.ForkJoinParallelCpgPass
 import org.slf4j.LoggerFactory
-import better.files.{DefaultCharset, File}
 import io.shiftleft.utils.IOUtils
 import soot.Scene
 
 import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Paths}
 import scala.util.Try
 
 /** Creates the AST layer from the given class file and stores all types in the given global parameter.
@@ -33,24 +34,26 @@ class AstCreationPass(classFiles: List[ClassFile], cpg: Cpg, config: Config)
       val sootClass = Scene.v().loadClassAndSupport(classFile.fullyQualifiedClassName.get)
       sootClass.setApplicationClass()
 
-      val file = File(classFile.file.pathAsString.replace(".class", ".java"))
+      val file = Paths.get(classFile.file.toString.replace(".class", ".java"))
 
       val fileContent = Option
-        .when(!config.disableFileContent && file.exists) {
-          Try(IOUtils.readEntireFile(file.path))
-            .orElse(Try(file.contentAsString(DefaultCharset)))
-            .orElse(Try(file.contentAsString(StandardCharsets.ISO_8859_1)))
+        .when(!config.disableFileContent && Files.exists(file)) {
+          Try(IOUtils.readEntireFile(file))
+            .orElse(Try(file.fileContent()))
+            .orElse(Try(file.fileContent(StandardCharsets.ISO_8859_1)))
             .toOption
         }
         .flatten
 
       val localDiff =
-        AstCreator(classFile.file.canonicalPath, sootClass, global, fileContent = fileContent)(config.schemaValidation)
+        AstCreator(classFile.file.absolutePathAsString, sootClass, global, fileContent = fileContent)(
+          config.schemaValidation
+        )
           .createAst()
       builder.absorb(localDiff)
     } catch {
       case e: Exception =>
-        logger.warn(s"Exception on AST creation for ${classFile.file.canonicalPath}", e)
+        logger.warn(s"Exception on AST creation for ${classFile.file.absolutePathAsString}", e)
         Iterator()
     }
   }

@@ -1,6 +1,5 @@
 package io.joern.console
 
-import better.files.File
 import dotty.tools.repl.State
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.cpgloading.CpgLoader
@@ -12,14 +11,16 @@ import io.shiftleft.codepropertygraph.cpgloading.CpgLoader
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.dotextension.ImageViewer
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext}
-import overflowdb.traversal.help.Doc
-import overflowdb.traversal.help.Table.AvailableWidthProvider
+import io.shiftleft.codepropertygraph.generated.help.Doc
+import flatgraph.help.Table.AvailableWidthProvider
+import io.shiftleft.semanticcpg.utils.FileUtil.*
+import io.shiftleft.semanticcpg.utils.{ExternalCommand, FileUtil}
 
-import scala.sys.process.Process
+import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import scala.util.control.NoStackTrace
 import scala.util.{Failure, Success, Try}
 
-class Console[T <: Project](loader: WorkspaceLoader[T], baseDir: File = File.currentWorkingDirectory)(implicit
+class Console[T <: Project](loader: WorkspaceLoader[T], baseDir: Path = FileUtil.currentWorkingDirectory)(implicit
   availableWidthProvider: AvailableWidthProvider
 ) extends Reporting {
 
@@ -30,7 +31,7 @@ class Console[T <: Project](loader: WorkspaceLoader[T], baseDir: File = File.cur
   def console: Console[T]   = this
 
   protected var workspaceManager: WorkspaceManager[T] = scala.compiletime.uninitialized
-  switchWorkspace(baseDir.path.resolve("workspace").toString)
+  switchWorkspace(baseDir.resolve("workspace").toString)
   protected def workspacePathName: String = workspaceManager.getPath
 
   private val nameOfCpgInProject = "cpg.bin"
@@ -39,12 +40,15 @@ class Console[T <: Project](loader: WorkspaceLoader[T], baseDir: File = File.cur
     def view(imagePathStr: String): Try[String] = {
       // We need to copy the file as the original one is only temporary
       // and gets removed immediately after running this viewer instance asynchronously via .run().
-      val tmpFile = File(imagePathStr).copyTo(File.newTemporaryFile(suffix = ".svg"), overwrite = true)
-      tmpFile.deleteOnExit(swallowIOExceptions = true)
+      val tmpFile = FileUtil.newTemporaryFile(suffix = ".svg")
+      Paths.get(imagePathStr).copyTo(tmpFile, copyOption = StandardCopyOption.REPLACE_EXISTING)
+
+      FileUtil.deleteOnExit(tmpFile, swallowIOExceptions = true)
       Try {
         val command = if (scala.util.Properties.isWin) { Seq("cmd.exe", "/C", config.tools.imageViewer) }
         else { Seq(config.tools.imageViewer) }
-        Process(command :+ tmpFile.path.toAbsolutePath.toString).run()
+        ExternalCommand
+          .run(command :+ tmpFile.absolutePathAsString)
       } match {
         case Success(_) =>
           // We never handle the actual result anywhere.
@@ -194,7 +198,7 @@ class Console[T <: Project](loader: WorkspaceLoader[T], baseDir: File = File.cur
                  |"""
   )
   def openForInputPath(inputPath: String): Option[Project] = {
-    val absInputPath = File(inputPath).path.toAbsolutePath.toString
+    val absInputPath = Paths.get(inputPath).absolutePathAsString
     workspace.projects
       .filter(x => x.inputPath == absInputPath)
       .map(_.name)
@@ -331,9 +335,9 @@ class Console[T <: Project](loader: WorkspaceLoader[T], baseDir: File = File.cur
   def importCpg(inputPath: String, projectName: String = "", enhance: Boolean = true): Option[Cpg] = {
     val name =
       Option(projectName).filter(_.nonEmpty).getOrElse(deriveNameFromInputPath(inputPath, workspace))
-    val cpgFile = File(inputPath)
+    val cpgFile = Paths.get(inputPath)
 
-    if (!cpgFile.exists) {
+    if (!Files.exists(cpgFile)) {
       report(s"CPG at $inputPath does not exist. Bailing out.")
       return None
     }
@@ -349,17 +353,21 @@ class Console[T <: Project](loader: WorkspaceLoader[T], baseDir: File = File.cur
 
     val cpgDestinationPath = cpgDestinationPathOpt.get
 
-    if (CpgLoader.isLegacyCpg(cpgFile)) {
-      report("You have provided a legacy proto CPG. Attempting conversion.")
+    val isProtoFormat      = CpgLoader.isProtoFormat(cpgFile)
+    val isOverflowDbFormat = CpgLoader.isOverflowDbFormat(cpgFile)
+    if (isProtoFormat || isOverflowDbFormat) {
+      if (isProtoFormat) report("You have provided a legacy proto CPG. Attempting conversion.")
+      else if (isOverflowDbFormat) report("You have provided a legacy overflowdb CPG. Attempting conversion.")
       try {
-        CpgConverter.convertProtoCpgToOverflowDb(cpgFile.path.toString, cpgDestinationPath.toString)
+        val cpg = CpgLoader.load(cpgFile, cpgDestinationPath)
+        cpg.close()
       } catch {
         case exc: Exception =>
           report("Error converting legacy CPG: " + exc.getMessage)
           return None
       }
     } else {
-      cpgFile.copyTo(cpgDestinationPath, overwrite = true)
+      cpgFile.copyTo(cpgDestinationPath, StandardCopyOption.REPLACE_EXISTING)
     }
 
     val cpgOpt = open(name).flatMap(_.cpg)
@@ -430,7 +438,8 @@ class Console[T <: Project](loader: WorkspaceLoader[T], baseDir: File = File.cur
       if (projectOpt.get.appliedOverlays.contains(creator.overlayName)) {
         report(s"Overlay ${creator.overlayName} already exists - skipping")
       } else {
-        File(overlayDirName).createDirectories()
+        val overlayDir = Paths.get(overlayDirName)
+        Files.createDirectories(overlayDir)
         runCreator(creator, Some(overlayDirName))
       }
     }
@@ -465,7 +474,7 @@ object Console {
   val nameOfLegacyCpgInProject = "cpg.bin.zip"
 
   def deriveNameFromInputPath[T <: Project](inputPath: String, workspace: WorkspaceManager[T]): String = {
-    val name    = File(inputPath).name
+    val name    = Paths.get(inputPath).fileName
     val project = workspace.project(name)
     if (project.isDefined && project.exists(_.inputPath != inputPath)) {
       var i = 1

@@ -1,8 +1,9 @@
 package io.shiftleft.semanticcpg.language.dotextension
 
-import better.files.File
+import io.shiftleft.semanticcpg.utils.{ExternalCommand, FileUtil}
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 
-import scala.sys.process.Process
+import java.nio.file.{Files, Path}
 import scala.util.{Failure, Success, Try}
 
 trait ImageViewer {
@@ -13,18 +14,21 @@ object Shared {
 
   def plotAndDisplay(dotStrings: List[String], viewer: ImageViewer): Unit = {
     dotStrings.foreach { dotString =>
-      File.usingTemporaryFile("semanticcpg") { dotFile =>
-        File.usingTemporaryFile("semanticcpg") { svgFile =>
-          dotFile.write(dotString)
-          createSvgFile(dotFile, svgFile).toOption.foreach(_ => viewer.view(svgFile.path.toAbsolutePath.toString))
+      FileUtil.usingTemporaryFile("semanticcpg") { dotFile =>
+        FileUtil.usingTemporaryFile("semanticcpg") { svgFile =>
+          Files.writeString(dotFile, dotString)
+          createSvgFile(dotFile, svgFile).toOption.foreach(_ => viewer.view(svgFile.absolutePathAsString))
         }
       }
     }
   }
 
-  private def createSvgFile(in: File, out: File): Try[String] = {
+  private def createSvgFile(in: Path, out: Path): Try[String] = {
     Try {
-      Process(Seq("dot", "-Tsvg", in.path.toAbsolutePath.toString, "-o", out.path.toAbsolutePath.toString)).!!
+      ExternalCommand
+        .run(Seq("dot", "-Tsvg", in.absolutePathAsString, "-o", out.absolutePathAsString))
+        .stdOut
+        .mkString("\n")
     } match {
       case Success(v) => Success(v)
       case Failure(exc) =>

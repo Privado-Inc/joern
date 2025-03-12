@@ -1,6 +1,5 @@
 package io.joern.javasrc2cpg.passes
 
-import better.files.File
 import com.github.javaparser.{JavaParser, ParserConfiguration}
 import com.github.javaparser.ParserConfiguration.LanguageLevel
 import com.github.javaparser.ast.CompilationUnit
@@ -22,14 +21,16 @@ import io.joern.javasrc2cpg.util.{Delombok, SourceParser}
 import io.joern.javasrc2cpg.{Config, JavaSrc2Cpg}
 import io.joern.x2cpg.SourceFiles
 import io.joern.x2cpg.datastructures.Global
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.joern.x2cpg.passes.frontend.XTypeRecoveryConfig
 import io.joern.x2cpg.utils.dependency.DependencyResolver
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.passes.ForkJoinParallelCpgPass
+import io.shiftleft.semanticcpg.utils.FileUtil
 import org.slf4j.LoggerFactory
 
 import java.net.URLClassLoader
-import java.nio.file.{Path, Paths}
+import java.nio.file.{Files, Path, Paths}
 import java.util.concurrent.ConcurrentHashMap
 import scala.collection.parallel.CollectionConverters.*
 import scala.collection.concurrent
@@ -63,7 +64,7 @@ class AstCreationPass(config: Config, cpg: Cpg, sourcesOverride: Option[List[Str
             symbolSolver,
             config.keepTypeArguments,
             loggedExceptionCounts
-          )(config.schemaValidation)
+          )(config.schemaValidation, config.disableTypeFallback)
             .createAst()
         )
 
@@ -87,7 +88,10 @@ class AstCreationPass(config: Config, cpg: Cpg, sourcesOverride: Option[List[Str
 
   private def getDependencyList(inputPath: String): List[String] = {
     val envVarValue = Option(System.getenv(JavaSrcEnvVar.FetchDependencies.name))
-    val shouldFetch = if (envVarValue.exists(_.nonEmpty)) {
+    val shouldFetch = if (envVarValue.contains("no-fetch")) {
+      logger.info(s"Disabling dependency fetching as envvar is set to \"no-fetch\"")
+      false
+    } else if (envVarValue.exists(_.nonEmpty)) {
       logger.info(s"Enabling dependency fetching: Environment variable ${JavaSrcEnvVar.FetchDependencies.name} is set")
       true
     } else if (config.fetchDependencies) {
@@ -164,15 +168,17 @@ class AstCreationPass(config: Config, cpg: Cpg, sourcesOverride: Option[List[Str
   }
 
   private def recursiveJarsFromPath(path: String): List[String] = {
-    Try(File(path)) match {
-      case Success(file) if file.isDirectory =>
-        file.listRecursively
-          .map(_.canonicalPath)
+    Try(Paths.get(path)) match {
+      case Success(file) if Files.isDirectory(file) =>
+        file
+          .walk()
+          .filterNot(_ == file)
+          .map(_.absolutePathAsString)
           .filter(_.endsWith(".jar"))
           .toList
 
-      case Success(file) if file.canonicalPath.endsWith(".jar") =>
-        List(file.canonicalPath)
+      case Success(file) if file.absolutePathAsString.endsWith(".jar") =>
+        List(file.absolutePathAsString)
 
       case _ =>
         Nil

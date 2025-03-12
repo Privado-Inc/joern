@@ -1,14 +1,15 @@
 package io.joern.javasrc2cpg.util
 
-import better.files.File
-import io.joern.x2cpg.utils.ExternalCommand
 import io.joern.javasrc2cpg.util.Delombok.DelombokMode.*
+import io.shiftleft.semanticcpg.utils.FileUtil.*
+import io.shiftleft.semanticcpg.utils.{ExternalCommand, FileUtil}
 import org.slf4j.LoggerFactory
 
-import java.nio.file.{Path, Paths}
-import scala.collection.mutable
-import scala.util.matching.Regex
-import scala.util.{Failure, Success, Try}
+import java.nio.file.{Files, Path, Paths}
+import scala.util.Failure
+import scala.util.Success
+import scala.util.Try
+import scala.collection.parallel.CollectionConverters.*
 
 object Delombok {
 
@@ -29,21 +30,23 @@ object Delombok {
     sys.env
       .get("JAVA_HOME")
       .flatMap { javaHome =>
-        val javaExecutable = File(javaHome, "bin", "java")
-        Option.when(javaExecutable.exists && javaExecutable.isExecutable) {
-          javaExecutable.canonicalPath
+        val javaExecutable = Paths.get(javaHome, "bin", "java")
+
+        Option.when(Files.exists(javaExecutable) && Files.isExecutable(javaExecutable)) {
+          javaExecutable.absolutePathAsString
         }
       }
       .getOrElse("java")
   }
 
-  private def delombokToTempDirCommand(inputPath: Path, outputDir: File, analysisJavaHome: Option[String]) = {
+  private def delombokToTempDirCommand(inputPath: Path, outputDir: Path, analysisJavaHome: Option[String]) = {
     val javaPath = analysisJavaHome.getOrElse(systemJavaPath)
-    val classPathArg = Try(File.newTemporaryFile("classpath").deleteOnExit()) match {
+    val classPathArg = Try(FileUtil.newTemporaryFile("classpath")) match {
       case Success(file) =>
+        FileUtil.deleteOnExit(file)
         // Write classpath to a file to work around Windows length limits.
-        file.write(System.getProperty("java.class.path"))
-        s"@${file.canonicalPath}"
+        Files.writeString(file, System.getProperty("java.class.path"))
+        s"@${file.absolutePathAsString}"
 
       case Failure(t) =>
         logger.warn(
@@ -53,26 +56,39 @@ object Delombok {
         System.getProperty("java.class.path")
     }
     val command =
-      s"$javaPath -cp $classPathArg lombok.launch.Main delombok ${inputPath.toAbsolutePath.toString} -d ${outputDir.canonicalPath}"
-    logger.debug(s"Executing delombok with command $command")
+      Seq(
+        javaPath,
+        "-cp",
+        classPathArg,
+        "lombok.launch.Main",
+        "delombok",
+        inputPath.absolutePathAsString,
+        "-d",
+        outputDir.absolutePathAsString
+      )
+    logger.debug(s"Executing delombok with command ${command.mkString(" ")}")
     command
   }
 
   def delombokPackageRoot(
     projectDir: Path,
     relativePackageRoot: Path,
-    delombokTempDir: File,
+    delombokTempDir: Path,
     analysisJavaHome: Option[String]
   ): Try[String] = {
-    val rootIsFile = File(projectDir.resolve(relativePackageRoot)).isRegularFile
+    val rootIsFile = Files.isRegularFile(projectDir.resolve(relativePackageRoot))
     val relativeOutputPath =
       if (rootIsFile) Option(relativePackageRoot.getParent).map(_.toString).getOrElse(".")
       else relativePackageRoot.toString
     val inputDir = projectDir.resolve(relativePackageRoot)
-    Try(delombokTempDir.createChild(relativeOutputPath, asDirectory = true)).flatMap { packageOutputDir =>
+
+    val childPath = (delombokTempDir / relativeOutputPath).toAbsolutePath.normalize()
+
+    Try(childPath.createWithParentsIfNotExists(asDirectory = true)).flatMap { packageOutputDir =>
       ExternalCommand
-        .run(delombokToTempDirCommand(inputDir, packageOutputDir, analysisJavaHome), ".")
-        .map(_ => delombokTempDir.path.toAbsolutePath.toString)
+        .run(delombokToTempDirCommand(inputDir, packageOutputDir, analysisJavaHome), Some("."))
+        .toTry
+        .map(_ => delombokTempDir.absolutePathAsString)
     }
   }
 
@@ -81,16 +97,18 @@ object Delombok {
     fileInfo: List[SourceParser.FileInfo],
     analysisJavaHome: Option[String]
   ): DelombokRunResult = {
-    Try(File.newTemporaryDirectory(prefix = "delombok").deleteOnExit()) match {
+    Try(Files.createTempDirectory("delombok")) match {
       case Failure(_) =>
         logger.warn(s"Could not create temporary directory for delombok output. Scanning original sources instead")
         DelombokRunResult(inputPath, false)
 
       case Success(tempDir) =>
+        FileUtil.deleteOnExit(tempDir)
         PackageRootFinder
           .packageRootsFromFiles(inputPath, fileInfo)
+          .par
           .foreach(delombokPackageRoot(inputPath, _, tempDir, analysisJavaHome))
-        DelombokRunResult(tempDir.path, true)
+        DelombokRunResult(tempDir, true)
     }
   }
 

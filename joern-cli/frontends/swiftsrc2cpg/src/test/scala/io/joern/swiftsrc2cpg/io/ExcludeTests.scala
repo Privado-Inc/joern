@@ -1,16 +1,19 @@
 package io.joern.swiftsrc2cpg.io
 
-import better.files.File
 import io.joern.swiftsrc2cpg.Config
 import io.joern.swiftsrc2cpg.passes.AstCreationPass
 import io.joern.swiftsrc2cpg.utils.AstGenRunner
 import io.joern.x2cpg.ValidationMode
 import io.joern.x2cpg.X2Cpg.newEmptyCpg
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.utils.FileUtil
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.wordspec.AnyWordSpec
 import org.scalatest.BeforeAndAfterAll
+
+import java.nio.file.{Files, Path}
 
 import java.util.regex.Pattern
 
@@ -30,19 +33,19 @@ class ExcludeTests extends AnyWordSpec with Matchers with TableDrivenPropertyChe
       "index.swift"
     )
 
-  private val projectUnderTest: File = {
-    val dir = File.newTemporaryDirectory("swiftsrc2cpgTestsExcludeTest")
+  private val projectUnderTest: Path = {
+    val dir = Files.createTempDirectory("swiftsrc2cpgTestsExcludeTest")
     testFiles.foreach { testFile =>
       val file = dir / testFile
-      file.createIfNotExists(createParents = true)
+      file.createWithParentsIfNotExists(createParents = true)
     }
     dir
   }
 
-  override def afterAll(): Unit = projectUnderTest.delete(swallowIOExceptions = true)
+  override def afterAll(): Unit = FileUtil.delete(projectUnderTest, swallowIoExceptions = true)
 
   private def testWithArguments(exclude: Seq[String], excludeRegex: String, expectedFiles: Set[String]): Unit = {
-    File.usingTemporaryDirectory("swiftsrc2cpgTests") { tmpDir =>
+    FileUtil.usingTemporaryDirectory("swiftsrc2cpgTests") { tmpDir =>
       val cpg = newEmptyCpg()
       val config = Config()
         .withInputPath(projectUnderTest.toString)

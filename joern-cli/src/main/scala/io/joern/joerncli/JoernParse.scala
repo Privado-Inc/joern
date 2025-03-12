@@ -1,18 +1,17 @@
 package io.joern.joerncli
 
-import better.files.File
 import io.joern.console.cpgcreation.{CpgGenerator, cpgGeneratorForLanguage, guessLanguage}
 import io.joern.console.{FrontendConfig, InstallConfig}
 import io.joern.joerncli.CpgBasedTool.newCpgCreatedString
+import io.joern.x2cpg.frontendspecific.FrontendArgsDelimitor
 import io.shiftleft.codepropertygraph.generated.Languages
 
+import java.nio.file.{Files, Paths}
 import scala.collection.mutable
-import scala.jdk.CollectionConverters._
+import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Success, Try}
 
 object JoernParse {
-  // Special string used to separate joern-parse opts from frontend-specific opts
-  val ArgsDelimitor           = "--frontend-args"
   val DefaultCpgOutFile       = "cpg.bin"
   var generator: CpgGenerator = scala.compiletime.uninitialized
 
@@ -64,7 +63,7 @@ object JoernParse {
     note("Misc")
     help("help").text("display this help message")
 
-    note(s"Args specified after the $ArgsDelimitor separator will be passed to the front-end verbatim")
+    note(s"Args specified after the $FrontendArgsDelimitor separator will be passed to the front-end verbatim")
   }
 
   private def run(args: Array[String]): Try[String] = {
@@ -97,7 +96,7 @@ object JoernParse {
       if (config.inputPath == "") {
         println(optionParser.usage)
         throw new AssertionError(s"Input path required")
-      } else if (!File(config.inputPath).exists)
+      } else if (!Files.exists(Paths.get(config.inputPath)))
         throw new AssertionError(s"Input path does not exist at `${config.inputPath}`, exiting.")
       else ()
     }
@@ -137,12 +136,7 @@ object JoernParse {
       println(s"Parsing code at: ${config.inputPath} - language: `$language`")
       println("[+] Running language frontend")
       Try {
-        cpgGeneratorForLanguage(
-          language.toUpperCase,
-          FrontendConfig(),
-          installConfig.rootPath.path,
-          frontendArgs.toList
-        ).get
+        cpgGeneratorForLanguage(language.toUpperCase, FrontendConfig(), installConfig.rootPath, frontendArgs.toList).get
       }.flatMap { newGenerator =>
         generator = newGenerator
         generator

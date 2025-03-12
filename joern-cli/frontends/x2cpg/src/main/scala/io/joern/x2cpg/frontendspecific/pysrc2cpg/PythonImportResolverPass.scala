@@ -1,13 +1,15 @@
 package io.joern.x2cpg.frontendspecific.pysrc2cpg
 
-import better.files.File
 import io.joern.x2cpg.passes.frontend.XImportResolverPass
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.importresolver.*
+import io.shiftleft.semanticcpg.utils.FileUtil
 
 import java.io.File as JFile
+import java.nio.file.{Files, Paths}
 import java.util.regex.Matcher
 import scala.collection.mutable
 
@@ -23,7 +25,7 @@ class PythonImportResolverPass(cpg: Cpg) extends XImportResolverPass(cpg) {
   private val moduleCache: mutable.HashMap[String, ImportableEntity] = mutable.HashMap.empty
 
   override def init(): Unit = {
-    cpg.typeDecl.isExternal(false).nameExact("<module>").foreach { moduleType =>
+    cpg.typeDecl.isExternal(false).nameExact(Constants.moduleName).foreach { moduleType =>
       val modulePath = fileToPythonImportNotation(moduleType.filename)
       cpg.method.fullNameExact(moduleType.fullName).headOption.foreach { moduleMethod =>
         moduleCache.put(modulePath, Module(moduleType, moduleMethod))
@@ -48,7 +50,7 @@ class PythonImportResolverPass(cpg: Cpg) extends XImportResolverPass(cpg) {
       .stripPrefix(codeRootDir)
       .replaceAll(Matcher.quoteReplacement(JFile.separator), ".")
       .stripSuffix(".py")
-      .stripSuffix(".__init__")
+      .stripSuffix(s".${Constants.initName}")
 
   override protected def optionalResolveImport(
     fileName: String,
@@ -57,15 +59,15 @@ class PythonImportResolverPass(cpg: Cpg) extends XImportResolverPass(cpg) {
     importedAs: String,
     diffGraph: DiffGraphBuilder
   ): Unit = {
-    val currDir = File(codeRootDir) / fileName match
-      case x if x.isDirectory => x
-      case x                  => x.parent
+    val currDir = Paths.get(codeRootDir) / fileName match
+      case x if Files.isDirectory(x) => x
+      case x                         => x.getParent
 
     val importedEntityAsFullyQualifiedImport =
       // If the path/entity uses Python's `from .import x` syntax, we will need to remove these
       fileToPythonImportNotation(importedEntity.replaceFirst("^\\.+", ""))
     val importedEntityAsRelativeImport = Seq(
-      fileToPythonImportNotation(currDir.pathAsString.stripPrefix(codeRootDir).stripPrefix(JFile.separator)),
+      fileToPythonImportNotation(currDir.toString.stripPrefix(codeRootDir).stripPrefix(JFile.separator)),
       importedEntityAsFullyQualifiedImport
     ).filterNot(_.isBlank).mkString(".")
 
@@ -103,16 +105,20 @@ class PythonImportResolverPass(cpg: Cpg) extends XImportResolverPass(cpg) {
 
     def toUnresolvedImport(pseudoPath: String): Set[EvaluatedImport] = {
       if (isMaybeConstructor) {
-        Set(UnknownMethod(Seq(pseudoPath, "__init__").mkString(pathSep.toString), alias), UnknownTypeDecl(pseudoPath))
+        Set(
+          UnknownMethod(Seq(pseudoPath, Constants.initName).mkString(pathSep.toString), alias),
+          UnknownTypeDecl(pseudoPath)
+        )
       } else {
         Set(UnknownImport(pseudoPath))
       }
     }
 
     expEntity.split(pathSep).reverse.toList match
-      case name :: Nil => toUnresolvedImport(s"$name.py:<module>")
-      case name :: xs  => toUnresolvedImport(s"${xs.reverse.mkString(JFile.separator)}.py:<module>$pathSep$name")
-      case Nil         => Set.empty
+      case name :: Nil => toUnresolvedImport(s"$name.py:${Constants.moduleName}")
+      case name :: xs =>
+        toUnresolvedImport(s"${xs.reverse.mkString(JFile.separator)}.py:${Constants.moduleName}$pathSep$name")
+      case Nil => Set.empty
   }
 
   private sealed trait ImportableEntity {
@@ -140,6 +146,6 @@ class PythonImportResolverPass(cpg: Cpg) extends XImportResolverPass(cpg) {
 
   private case class ImportableType(typ: TypeDecl) extends ImportableEntity {
     override def toResolvedImport(alias: String): List[EvaluatedImport] =
-      List(ResolvedTypeDecl(typ.fullName), ResolvedMethod(s"${typ.fullName}.__init__", typ.name))
+      List(ResolvedTypeDecl(typ.fullName), ResolvedMethod(s"${typ.fullName}.${Constants.initName}", typ.name))
   }
 }

@@ -1,13 +1,16 @@
 package io.joern.joerncli
 
-import better.files.File
 import io.joern.dataflowengineoss.layers.dataflows.{OssDataFlow, OssDataFlowOptions}
 import io.joern.joerncli.JoernParse.ParserConfig
 import io.joern.x2cpg.X2Cpg
 import io.joern.x2cpg.layers.Base
+import io.shiftleft.semanticcpg.utils.FileUtil.*
+
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.layers.LayerCreatorContext
+import io.shiftleft.semanticcpg.utils.FileUtil
 
+import java.nio.file.{Files, Path, Paths}
 import scala.language.postfixOps
 import scala.util.{Try, Using}
 
@@ -21,15 +24,15 @@ object JoernSlice {
     arg[String]("cpg")
       .text("input CPG file name, or source code - defaults to `cpg.bin`")
       .optional()
-      .action((x, c) => c.withInputPath(File(x)))
+      .action((x, c) => c.withInputPath(Paths.get(x)))
       .validate { x =>
-        val path = File(x)
-        if (path.isRegularFile || path.isDirectory) success
+        val path = Paths.get(x)
+        if (Files.isRegularFile(path) || Files.isDirectory(path)) success
         else failure(s"File at '$x' not found or not regular, e.g. a directory or source file.")
       }
     opt[String]('o', "out")
       .text("the output file to write slices to - defaults to `slices`. The file is suffixed based on the mode.")
-      .action((x, c) => c.withOutputSliceFile(File(x)))
+      .action((x, c) => c.withOutputSliceFile(Paths.get(x)))
     opt[Unit]("dummy-types")
       .text(s"for generating CPGs that use type recovery, enables the use of dummy types - defaults to false.")
       .action((_, c) => c.withDummyTypesEnabled(true))
@@ -114,15 +117,15 @@ object JoernSlice {
       } else {
         val inputCpgPath =
           if (
-            config.inputPath.isDirectory || !config.inputPath
+            Files.isDirectory(config.inputPath) || !config.inputPath
               .extension(includeDot = false)
               .exists(_.matches("(bin|cpg)"))
           ) {
             generateTempCpg(config).get
           } else {
-            config.inputPath.pathAsString
+            config.inputPath.toString
           }
-        Using.resource(CpgBasedTool.loadFromOdb(inputCpgPath)) { cpg =>
+        Using.resource(CpgBasedTool.loadFromFile(inputCpgPath)) { cpg =>
           checkAndApplyOverlays(cpg)
           // Slice the CPG
           (config match {
@@ -154,34 +157,37 @@ object JoernSlice {
   }
 
   private def generateTempCpg(config: BaseConfig[?]): Try[String] = {
-    val tmpFile = File.newTemporaryFile("joern-slice", ".bin")
-    println(s"Generating CPG from code at ${config.inputPath.pathAsString}")
+    val tmpFile = FileUtil.newTemporaryFile("joern-slice", ".bin")
+    println(s"Generating CPG from code at ${config.inputPath.toString}")
 
     JoernParse
       .run(
-        ParserConfig(config.inputPath.pathAsString, outputCpgFile = tmpFile.pathAsString),
+        ParserConfig(config.inputPath.toString, outputCpgFile = tmpFile.toString),
         if (config.dummyTypesEnabled) List.empty else List("--no-dummyTypes")
       )
       .map { _ =>
-        println(s"Temporary CPG has been successfully generated at ${tmpFile.pathAsString}")
-        tmpFile.deleteOnExit(swallowIOExceptions = true).pathAsString
+        println(s"Temporary CPG has been successfully generated at ${tmpFile.toString}")
+        FileUtil.deleteOnExit(tmpFile, swallowIOExceptions = true)
+        tmpFile.toString
       }
   }
 
   private def parseConfig(args: Array[String]): Option[BaseConfig[?]] =
     configParser.parse(args, DefaultSliceConfig())
 
-  private def saveSlice(outFile: File, programSlice: ProgramSlice): Unit = {
+  private def saveSlice(outFile: Path, programSlice: ProgramSlice): Unit = {
 
     def normalizePath(path: String, ext: String): String =
       if (path.endsWith(ext)) path
       else path + ext
 
     val finalOutputPath =
-      File(normalizePath(outFile.pathAsString, ".json"))
-        .createFileIfNotExists()
-        .write(programSlice.toJsonPretty)
-        .pathAsString
+      Paths
+        .get(normalizePath(outFile.toString, ".json"))
+        .createWithParentsIfNotExists()
+
+    Files.writeString(finalOutputPath, programSlice.toJsonPretty)
+    finalOutputPath.toString
     println(s"Slices have been successfully generated and written to $finalOutputPath")
   }
 
