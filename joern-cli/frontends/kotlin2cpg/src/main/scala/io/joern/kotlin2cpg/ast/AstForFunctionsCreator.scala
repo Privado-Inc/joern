@@ -401,12 +401,12 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     annotations: Seq[KtAnnotationEntry] = Seq()
   ): Ast = {
     val funcDesc = bindingUtils.getFunctionDesc(expr.getFunctionLiteral)
-    val name     = nameRenderer.descName(funcDesc)
-    val descFullName = nameRenderer
-      .descFullName(funcDesc)
+    val name     = funcDesc.map(nameRenderer.descName).getOrElse(Defines.Any)
+    val descFullName = funcDesc
+      .flatMap(nameRenderer.descFullName)
       .getOrElse(s"${Defines.UnresolvedNamespace}.$name")
-    val signature = nameRenderer
-      .funcDescSignature(funcDesc)
+    val signature = funcDesc
+      .flatMap(nameRenderer.funcDescSignature)
       .getOrElse(s"${Defines.UnresolvedSignature}(${expr.getFunctionLiteral.getValueParameters.size()})")
     val fullName = nameRenderer.combineFunctionFullName(descFullName, signature)
 
@@ -442,21 +442,21 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     val paramAsts           = mutable.ArrayBuffer.empty[Ast]
     val destructedParamAsts = mutable.ArrayBuffer.empty[Ast]
     val valueParamStartIndex =
-      if (funcDesc.getExtensionReceiverParameter != null) {
+      if (funcDesc.exists(_.getExtensionReceiverParameter != null)) {
         // Lambdas which are arguments to function parameters defined
         // like `func: extendedType.(argTypes) -> returnType` have an implicit extension receiver parameter
         // which can be accessed as `this`
-        paramAsts.append(createImplicitParamNode(expr, funcDesc.getExtensionReceiverParameter, "this", 1))
+        funcDesc.map(fd => paramAsts.append(createImplicitParamNode(expr, fd.getExtensionReceiverParameter, "this", 1)))
         2
       } else {
         1
       }
 
-    funcDesc.getValueParameters.asScala match {
-      case parameters if parameters.size == 1 && !parameters.head.getSource.isInstanceOf[KotlinSourceElement] =>
+    funcDesc.map(_.getValueParameters.asScala) match {
+      case Some(parameters) if parameters.size == 1 && !parameters.head.getSource.isInstanceOf[KotlinSourceElement] =>
         // Here we handle the implicit `it` parameter.
         paramAsts.append(createImplicitParamNode(expr, parameters.head, "it", valueParamStartIndex))
-      case parameters =>
+      case Some(parameters) =>
         parameters.zipWithIndex.foreach { (paramDesc, idx) =>
           val param = paramDesc.getSource.asInstanceOf[KotlinSourceElement].getPsi.asInstanceOf[KtParameter]
           paramAsts.append(astForParameter(param, valueParamStartIndex + idx))
@@ -464,6 +464,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
             destructedParamAsts.appendAll(astsForDestructuring(param))
           }
         }
+      case _ =>
     }
 
     val lastChildNotReturnExpression = !expr.getBodyExpression.getLastChild.isInstanceOf[KtReturnExpression]
@@ -483,7 +484,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
       .getOrElse(Seq(Ast(NewBlock())))
 
     val returnTypeFullName = registerType(
-      nameRenderer.typeFullName(funcDesc.getReturnType).getOrElse(TypeConstants.JavaLangObject)
+      funcDesc.flatMap(fd => nameRenderer.typeFullName(fd.getReturnType)).getOrElse(TypeConstants.JavaLangObject)
     )
     val lambdaTypeDeclFullName = fullName.split(":").head
 

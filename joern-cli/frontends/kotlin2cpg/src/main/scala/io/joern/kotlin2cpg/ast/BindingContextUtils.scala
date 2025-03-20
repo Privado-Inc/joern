@@ -40,12 +40,12 @@ class BindingContextUtils(val bindingContext: BindingContext) {
     Option(bindingContext.get(BindingContext.FUNCTION, functionAst))
   }
 
-  def getFunctionDesc(functionLiteralAst: KtFunctionLiteral): FunctionDescriptor = {
-    bindingContext.get(BindingContext.FUNCTION, functionLiteralAst)
+  def getFunctionDesc(functionLiteralAst: KtFunctionLiteral): Option[FunctionDescriptor] = {
+    Option(bindingContext.get(BindingContext.FUNCTION, functionLiteralAst))
   }
 
-  def getConstructorDesc(constructorAst: KtConstructor[?]): ConstructorDescriptor = {
-    bindingContext.get(BindingContext.CONSTRUCTOR, constructorAst)
+  def getConstructorDesc(constructorAst: KtConstructor[?]): Option[ConstructorDescriptor] = {
+    Option(bindingContext.get(BindingContext.CONSTRUCTOR, constructorAst))
   }
 
   def getCalledFunctionDesc(destructuringAst: KtDestructuringDeclarationEntry): Option[FunctionDescriptor] = {
@@ -83,12 +83,12 @@ class BindingContextUtils(val bindingContext: BindingContext) {
     Option(bindingContext.get(BindingContext.VARIABLE, property))
   }
 
-  def getTypeAliasDesc(typeAlias: KtTypeAlias): TypeAliasDescriptor = {
-    bindingContext.get(BindingContext.TYPE_ALIAS, typeAlias)
+  def getTypeAliasDesc(typeAlias: KtTypeAlias): Option[TypeAliasDescriptor] = {
+    Option(bindingContext.get(BindingContext.TYPE_ALIAS, typeAlias))
   }
 
-  def getAnnotationDesc(entry: KtAnnotationEntry): AnnotationDescriptor = {
-    bindingContext.get(BindingContext.ANNOTATION, entry)
+  def getAnnotationDesc(entry: KtAnnotationEntry): Option[AnnotationDescriptor] = {
+    Option(bindingContext.get(BindingContext.ANNOTATION, entry))
   }
 
   def getDeclDesc(nameRefExpr: KtReferenceExpression): Option[DeclarationDescriptor] = {

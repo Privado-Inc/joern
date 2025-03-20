@@ -80,11 +80,11 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode) {
     val (fullName, signature) =
       if (primaryCtor != null) {
         val constructorDesc = bindingUtils.getConstructorDesc(primaryCtor)
-        val descFullName = nameRenderer
-          .descFullName(constructorDesc)
+        val descFullName = constructorDesc
+          .flatMap(nameRenderer.descFullName)
           .getOrElse(s"$classFullName.${Defines.ConstructorMethodName}")
-        val signature = nameRenderer
-          .funcDescSignature(constructorDesc)
+        val signature = constructorDesc
+          .flatMap(nameRenderer.funcDescSignature)
           .getOrElse(s"${Defines.UnresolvedSignature}(${primaryCtor.getValueParameters.size()})")
         val fullName = nameRenderer.combineFunctionFullName(descFullName, signature)
         (fullName, signature)
@@ -474,11 +474,11 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode) {
       val constructorParams  = ctor.getValueParameters.asScala.toList
 
       val constructorDesc = bindingUtils.getConstructorDesc(ctor)
-      val descFullName = nameRenderer
-        .descFullName(constructorDesc)
+      val descFullName = constructorDesc
+        .flatMap(nameRenderer.descFullName)
         .getOrElse(s"$classFullName.${Defines.ConstructorMethodName}")
-      val signature = nameRenderer
-        .funcDescSignature(constructorDesc)
+      val signature = constructorDesc
+        .flatMap(nameRenderer.funcDescSignature)
         .getOrElse(s"${Defines.UnresolvedSignature}(${ctor.getValueParameters.size()})")
       val fullName = nameRenderer.combineFunctionFullName(descFullName, signature)
       val secondaryCtorMethodNode =
