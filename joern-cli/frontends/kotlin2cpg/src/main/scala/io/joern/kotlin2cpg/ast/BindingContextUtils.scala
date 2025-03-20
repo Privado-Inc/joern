@@ -36,8 +36,8 @@ class BindingContextUtils(val bindingContext: BindingContext) {
     Option(bindingContext.get(BindingContext.CLASS, classAst))
   }
 
-  def getFunctionDesc(functionAst: KtNamedFunction): FunctionDescriptor = {
-    bindingContext.get(BindingContext.FUNCTION, functionAst)
+  def getFunctionDesc(functionAst: KtNamedFunction): Option[FunctionDescriptor] = {
+    Option(bindingContext.get(BindingContext.FUNCTION, functionAst))
   }
 
   def getFunctionDesc(functionLiteralAst: KtFunctionLiteral): FunctionDescriptor = {
