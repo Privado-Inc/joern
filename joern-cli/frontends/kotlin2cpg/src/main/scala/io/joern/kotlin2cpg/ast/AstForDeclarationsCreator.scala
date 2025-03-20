@@ -160,7 +160,10 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode) {
     val membersFromPrimaryCtorAsts = ktClass.getPrimaryConstructorParameters.asScala.toList.collect {
       case param if param.hasValOrVar =>
         val typeFullName = registerType(
-          nameRenderer.typeFullName(bindingUtils.getVariableDesc(param).get.getType).getOrElse(TypeConstants.Any)
+          bindingUtils
+            .getVariableDesc(param)
+            .flatMap(vd => nameRenderer.typeFullName(vd.getType))
+            .getOrElse(TypeConstants.Any)
         )
         val memberNode_ = memberNode(param, param.getName, param.getName, typeFullName)
         scope.addToScope(param.getName, memberNode_)
