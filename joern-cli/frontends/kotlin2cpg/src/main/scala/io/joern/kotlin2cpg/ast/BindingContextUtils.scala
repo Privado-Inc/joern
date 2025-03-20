@@ -32,8 +32,8 @@ import scala.jdk.CollectionConverters.*
 
 class BindingContextUtils(val bindingContext: BindingContext) {
 
-  def getClassDesc(classAst: KtClassOrObject): ClassDescriptor = {
-    bindingContext.get(BindingContext.CLASS, classAst)
+  def getClassDesc(classAst: KtClassOrObject): Option[ClassDescriptor] = {
+    Option(bindingContext.get(BindingContext.CLASS, classAst))
   }
 
   def getFunctionDesc(functionAst: KtNamedFunction): FunctionDescriptor = {

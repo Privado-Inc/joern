@@ -44,11 +44,11 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode) {
 
     val classDesc = bindingUtils.getClassDesc(ktClass)
 
-    val classFullName =
-      nameRenderer.descFullName(classDesc).getOrElse {
-        val fqName = ktClass.getContainingKtFile.getPackageFqName.toString
-        s"$fqName.$className"
-      }
+    val classFullName = classDesc.flatMap(nameRenderer.descFullName).getOrElse {
+      val fqName = ktClass.getContainingKtFile.getPackageFqName.toString
+      s"$fqName.$className"
+    }
+
     registerType(classFullName)
 
     val baseTypeFullNames =
@@ -194,7 +194,7 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode) {
     val innerTypeDeclAsts =
       classDeclarations.toSeq
         .collectAll[KtClassOrObject]
-        .filterNot(desc => bindingUtils.getClassDesc(desc).isCompanionObject)
+        .filterNot { desc => bindingUtils.getClassDesc(desc).forall(_.isCompanionObject) }
         .flatMap(astsForDeclaration(_))
 
     val classFunctions = Option(ktClass.getBody)
@@ -210,7 +210,7 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode) {
 
     val annotationAsts = ktClass.getAnnotationEntries.asScala.map(astForAnnotationEntry).toSeq
 
-    val modifiers = if (classDesc.getModality == Modality.ABSTRACT) {
+    val modifiers = if (classDesc.map(_.getModality).contains(Modality.ABSTRACT)) {
       List(Ast(NodeBuilders.newModifierNode(ModifierTypes.ABSTRACT)))
     } else {
       Nil
@@ -222,10 +222,10 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode) {
 
     (List(ctorBindingInfo) ++ bindingsInfo ++ componentNBindingsInfo).foreach(bindingInfoQueue.prepend)
 
-    val finalAst = if (classDesc.isCompanionObject) {
+    val finalAst = if (classDesc.forall(_.isCompanionObject)) {
       val companionMemberTypeFullName = ktClass.getParent.getParent match {
         case c: KtClassOrObject =>
-          nameRenderer.descFullName(bindingUtils.getClassDesc(c)).getOrElse(TypeConstants.Any)
+          bindingUtils.getClassDesc(c).flatMap(nameRenderer.descFullName).getOrElse(TypeConstants.Any)
         case _ => TypeConstants.Any
       }
       registerType(companionMemberTypeFullName)
