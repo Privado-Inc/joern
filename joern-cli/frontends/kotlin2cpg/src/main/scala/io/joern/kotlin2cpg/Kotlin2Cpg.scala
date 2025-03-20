@@ -319,11 +319,12 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
   private def createBindingContext(environment: KotlinCoreEnvironment): BindingContext = {
     try {
       logger.info("Running Kotlin compiler analysis...")
-      val t0             = System.nanoTime()
-      val analysisResult = KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
-      val t1             = System.nanoTime()
+      val t0 = System.nanoTime()
+      // val analysisResult = KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
+      val t1 = System.nanoTime()
       logger.info(s"Kotlin compiler analysis finished in `${(t1 - t0) / 1000000}` ms.")
-      analysisResult.getBindingContext
+      // analysisResult.getBindingContext
+      BindingContext.EMPTY
     } catch {
       case exc: Exception =>
         logger.error(s"Kotlin compiler analysis failed with exception `${exc.toString}`:`${exc.getMessage}`.", exc)

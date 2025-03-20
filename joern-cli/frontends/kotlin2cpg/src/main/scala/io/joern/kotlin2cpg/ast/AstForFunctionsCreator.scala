@@ -232,7 +232,10 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
         .map(typeRef => fullNameByImportPath(typeRef, param.getContainingKtFile).getOrElse(typeRef.getText))
         .getOrElse(TypeConstants.Any)
       val typeFullName = registerType(
-        nameRenderer.typeFullName(bindingUtils.getVariableDesc(param).get.getType).getOrElse(explicitTypeName)
+        bindingUtils
+          .getVariableDesc(param)
+          .flatMap(vd => nameRenderer.typeFullName(vd.getType))
+          .getOrElse(explicitTypeName)
       )
       val localForIt = localNode(decl, "it", "it", typeFullName)
       additionalLocals.addOne(Ast(localForIt))
@@ -278,7 +281,10 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
       )
       .getOrElse(TypeConstants.Any)
     val typeFullName = registerType(
-      nameRenderer.typeFullName(bindingUtils.getVariableDesc(param).get.getType).getOrElse(explicitTypeName)
+      bindingUtils
+        .getVariableDesc(param)
+        .flatMap(vd => nameRenderer.typeFullName(vd.getType))
+        .getOrElse(explicitTypeName)
     )
     val node = parameterInNode(param, name, name, order, false, EvaluationStrategies.BY_VALUE, typeFullName)
     scope.addToScope(name, node)
