@@ -111,6 +111,7 @@ class NameRenderer {
           } else {
             Some(upperBoundTypeFns.flatten.mkString("&"))
           }
+        case _ => None
       }
 
     javaFullName
