@@ -17,15 +17,17 @@ import io.shiftleft.codepropertygraph.generated.ModifierTypes
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
-import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
-import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.descriptors.{
   ClassDescriptor,
+  ClassifierDescriptorWithTypeParameters,
+  DescriptorVisibilities,
   DescriptorVisibility,
   FunctionDescriptor,
   Modality,
-  ParameterDescriptor
+  ParameterDescriptor,
+  TypeParameterDescriptor
 }
+import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.resolve.calls.model.ResolvedCallArgument
 import org.jetbrains.kotlin.resolve.calls.tower.NewAbstractResolvedCall
@@ -568,17 +570,21 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
             call.getResolvedCallAtom
           }
 
-        resolvedCallAtom.map { callAtom =>
+        resolvedCallAtom.flatMap { callAtom =>
           callAtom.getCandidateDescriptor match {
             case samConstructorDesc: SamConstructorDescriptor =>
               // Lambda is wrapped e.g. `SomeInterface { obj -> obj }`
-              samConstructorDesc.getBaseDescriptorForSynthetic
+              Option(samConstructorDesc.getBaseDescriptorForSynthetic)
             case _ =>
               // Lambda/anan function is directly used as call argument e.g. `someCall(obj -> obj)`
               callAtom.getArgumentMappingByOriginal.asScala.collectFirst {
                 case (paramDesc, resolvedArgument) if isExprIncluded(resolvedArgument, expr) =>
-                  paramDesc.getType.getConstructor.getDeclarationDescriptor.asInstanceOf[ClassDescriptor]
-              }.get
+                  paramDesc.getType.getConstructor.getDeclarationDescriptor match
+                    case classDescriptor: ClassDescriptor => Some(classDescriptor)
+                    case _                                => None
+              } match
+                case Some(optionalClassDescriptor) => optionalClassDescriptor
+                case None                          => None
           }
         }
       case None =>
@@ -622,7 +628,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     lambdaTypeDecl: NewTypeDecl,
     samInterface: Option[ClassDescriptor]
   ): Unit = {
-    val samMethod          = samInterface.map(SamConversionResolverImplKt.getSingleAbstractMethodOrNull)
+    val samMethod = samInterface.flatMap(si => Option(SamConversionResolverImplKt.getSingleAbstractMethodOrNull(si)))
     val samMethodName      = samMethod.map(_.getName.toString).getOrElse(Constants.UnknownLambdaBindingName)
     val samMethodSignature = samMethod.flatMap(nameRenderer.funcDescSignature)
 
