@@ -81,7 +81,8 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     val funcDesc = bindingUtils.getFunctionDesc(ktFn)
     val descFullName = funcDesc
       .flatMap(nameRenderer.descFullName)
-      .getOrElse(s"${Defines.UnresolvedNamespace}.${ktFn.getName}")
+      // .getOrElse(s"${Defines.UnresolvedNamespace}.${ktFn.getName}")
+      .getOrElse(s"${ktFn.getContainingKtFile.getPackageFqName.toString}.normal.${ktFn.getName}")
     val signature = funcDesc
       .flatMap(nameRenderer.funcDescSignature)
       .getOrElse(s"${Defines.UnresolvedSignature}(${ktFn.getValueParameters.size()})")
@@ -307,7 +308,8 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     val name     = funcDesc.map(nameRenderer.descName).getOrElse(Defines.Any)
     val descFullName = funcDesc
       .flatMap(nameRenderer.descFullName)
-      .getOrElse(s"${Defines.UnresolvedNamespace}.$name")
+      // .getOrElse(s"${Defines.UnresolvedNamespace}.$name")
+      .getOrElse(s"${fn.getContainingKtFile.getPackageFqName.toString}.anonymous.${fn.getName}")
     val signature = funcDesc
       .flatMap(nameRenderer.funcDescSignature)
       .getOrElse(s"${Defines.UnresolvedSignature}(${fn.getValueParameters.size()})")
@@ -412,7 +414,8 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     val name     = funcDesc.map(nameRenderer.descName).getOrElse(Defines.Any)
     val descFullName = funcDesc
       .flatMap(nameRenderer.descFullName)
-      .getOrElse(s"${Defines.UnresolvedNamespace}.$name")
+      // .getOrElse(s"${Defines.UnresolvedNamespace}.$name")
+      .getOrElse(s"${expr.getContainingKtFile.getPackageFqName.toString}.lambda.${expr.getName}")
     val signature = funcDesc
       .flatMap(nameRenderer.funcDescSignature)
       .getOrElse(s"${Defines.UnresolvedSignature}(${expr.getFunctionLiteral.getValueParameters.size()})")
