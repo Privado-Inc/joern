@@ -81,8 +81,8 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     val funcDesc = bindingUtils.getFunctionDesc(ktFn)
     val descFullName = funcDesc
       .flatMap(nameRenderer.descFullName)
-      // .getOrElse(s"${Defines.UnresolvedNamespace}.${ktFn.getName}")
-      .getOrElse(s"${ktFn.getContainingKtFile.getPackageFqName.toString}.normal.${ktFn.getName}")
+      .getOrElse(s"${getParentTypeFullName(ktFn.getContainingKtFile)}.${ktFn.getName}")
+
     val signature = funcDesc
       .flatMap(nameRenderer.funcDescSignature)
       .getOrElse(s"${Defines.UnresolvedSignature}(${ktFn.getValueParameters.size()})")
@@ -308,8 +308,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     val name     = funcDesc.map(nameRenderer.descName).getOrElse(Defines.Any)
     val descFullName = funcDesc
       .flatMap(nameRenderer.descFullName)
-      // .getOrElse(s"${Defines.UnresolvedNamespace}.$name")
-      .getOrElse(s"${fn.getContainingKtFile.getPackageFqName.toString}.anonymous.${fn.getName}")
+      .getOrElse(s"${getParentTypeFullName(fn.getContainingKtFile)}.${fn.getName}")
     val signature = funcDesc
       .flatMap(nameRenderer.funcDescSignature)
       .getOrElse(s"${Defines.UnresolvedSignature}(${fn.getValueParameters.size()})")
@@ -414,8 +413,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     val name     = funcDesc.map(nameRenderer.descName).getOrElse(Defines.Any)
     val descFullName = funcDesc
       .flatMap(nameRenderer.descFullName)
-      // .getOrElse(s"${Defines.UnresolvedNamespace}.$name")
-      .getOrElse(s"${expr.getContainingKtFile.getPackageFqName.toString}.lambda.${expr.getName}")
+      .getOrElse(s"${getParentTypeFullName(expr.getContainingKtFile)}.${expr.getName}")
     val signature = funcDesc
       .flatMap(nameRenderer.funcDescSignature)
       .getOrElse(s"${Defines.UnresolvedSignature}(${expr.getFunctionLiteral.getValueParameters.size()})")
@@ -652,5 +650,15 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
         Nil
       }
     returnAst(returnNode(expr, expr.getText), returnedExpr)
+  }
+
+  private def getParentTypeFullName(file: KtFile) = {
+    methodAstParentStack.head match {
+      case x: NewTypeDecl       => x.fullName
+      case x: NewMethod         => x.fullName
+      case x: NewNamespaceBlock => x.fullName
+      case x: NewBlock          => x.typeFullName
+      case _                    => s"${file.getPackageFqName.toString}.privadogenerated"
+    }
   }
 }
