@@ -226,7 +226,7 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
 
       new MetaDataPass(cpg, Languages.KOTLIN, config.inputPath).createAndApply()
 
-      val bindingContext = createBindingContext(environment)
+      val bindingContext = createBindingContext(environment, config)
       val astCreator     = new AstCreationPass(sourceFiles, bindingContext, cpg)(config.schemaValidation)
       astCreator.createAndApply()
 
@@ -316,14 +316,20 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
     } yield FileContentAtPath(fileContents, relPath, fileName)
   }
 
-  private def createBindingContext(environment: KotlinCoreEnvironment): BindingContext = {
+  private def createBindingContext(environment: KotlinCoreEnvironment, config: Config): BindingContext = {
     try {
-      logger.info("Running Kotlin compiler analysis...")
-      val t0             = System.nanoTime()
-      val analysisResult = KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
-      val t1             = System.nanoTime()
-      logger.info(s"Kotlin compiler analysis finished in `${(t1 - t0) / 1000000}` ms.")
-      analysisResult.getBindingContext
+      if (!config.resolveTypes) {
+        logger.info("Skipped Running Kotlin compiler analysis... due to no resolve types flag")
+        BindingContext.EMPTY
+      } else {
+        logger.info("Running Kotlin compiler analysis...")
+        val t0             = System.nanoTime()
+        val analysisResult = KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
+        val t1             = System.nanoTime()
+        logger.info(s"Kotlin compiler analysis finished in `${(t1 - t0) / 1000000}` ms.")
+        analysisResult.getBindingContext
+      }
+
     } catch {
       case exc: Exception =>
         logger.error(s"Kotlin compiler analysis failed with exception `${exc.toString}`:`${exc.getMessage}`.", exc)
