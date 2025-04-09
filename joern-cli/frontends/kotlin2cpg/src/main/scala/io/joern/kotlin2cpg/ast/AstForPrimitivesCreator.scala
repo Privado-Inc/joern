@@ -263,8 +263,12 @@ trait AstForPrimitivesCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   def astForAnnotationEntry(entry: KtAnnotationEntry): Ast = {
-    val typeFullName = nameRenderer
-      .typeFullName(bindingUtils.getAnnotationDesc(entry).getType)
+    val typeFullName = bindingUtils
+      .getAnnotationDesc(entry)
+      .flatMap(ad =>
+        nameRenderer
+          .typeFullName(ad.getType)
+      )
       .orElse(fullNameByImportPath(entry.getTypeReference, entry.getContainingKtFile))
       .getOrElse(s"${Defines.UnresolvedNamespace}.${entry.getShortName.toString}")
     registerType(typeFullName)
@@ -294,17 +298,18 @@ trait AstForPrimitivesCreator(implicit withSchemaValidation: ValidationMode) {
 
   def astForTypeAlias(typeAlias: KtTypeAlias): Ast = {
     val typeAliasDesc = bindingUtils.getTypeAliasDesc(typeAlias)
-    val aliasedType = typeAliasDesc.getExpandedType match {
-      case _: ErrorType =>
+    val aliasedType = typeAliasDesc.map(_.getExpandedType) match {
+      case Some(_: ErrorType) =>
         None
-      case nonErrorType =>
+      case Some(nonErrorType) =>
         Some(nonErrorType)
+      case _ => None
     }
 
     val node = typeDeclNode(
       typeAlias,
       typeAlias.getName,
-      registerType(nameRenderer.descFullName(typeAliasDesc).getOrElse(TypeConstants.Any)),
+      registerType(typeAliasDesc.flatMap(nameRenderer.descFullName).getOrElse(TypeConstants.Any)),
       relativizedPath,
       Seq(),
       Option(registerType(aliasedType.flatMap(nameRenderer.typeFullName).getOrElse(TypeConstants.Any)))
