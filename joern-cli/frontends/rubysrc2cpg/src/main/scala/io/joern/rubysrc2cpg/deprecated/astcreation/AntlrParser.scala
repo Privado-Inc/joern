@@ -49,7 +49,7 @@ class ResourceManagedParser(clearLimit: Double) extends AutoCloseable {
     // We need to grab a live instance in order to get the static variables as they are protected from static access
     maybeDecisionToDFA = Option(interp.decisionToDFA)
     maybeAtn = Option(interp.atn)
-    val usedMemory = runtime.freeMemory.toDouble / runtime.totalMemory.toDouble
+    val usedMemory = (runtime.totalMemory().toDouble - runtime.freeMemory().toDouble) / runtime.totalMemory.toDouble
     if (usedMemory >= clearLimit) {
       logger.info(s"Runtime memory consumption at $usedMemory, clearing ANTLR DFA cache")
       clearDFA()
