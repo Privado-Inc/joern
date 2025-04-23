@@ -1,7 +1,6 @@
 package io.joern.javasrc2cpg.util
 
-import io.joern.javasrc2cpg.testfixtures.SourceCodeFixture
-
+import io.joern.x2cpg.testfixtures.SourceCodeFixture
 import java.nio.file.Path
 
 class PackageRootFinderTests extends SourceCodeFixture {

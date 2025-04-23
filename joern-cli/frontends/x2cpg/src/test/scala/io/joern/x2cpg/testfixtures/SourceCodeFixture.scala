@@ -1,4 +1,4 @@
-package io.joern.javasrc2cpg.testfixtures
+package io.joern.x2cpg.testfixtures
 
 import io.joern.x2cpg.utils.TestCodeWriter
 import org.scalatest.BeforeAndAfterAll

@@ -19,7 +19,7 @@ import io.joern.x2cpg.utils.dependency.GradleConfigKeys
 import io.joern.x2cpg.SourceFiles.filterFile
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.Languages
-import io.shiftleft.utils.IOUtils
+import io.shiftleft.utils.{IOUtils, StatsLogger}
 import org.jetbrains.kotlin.cli.jvm.compiler.{KotlinCoreEnvironment, KotlinToJVMBytecodeCompiler}
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
 import org.jetbrains.kotlin.psi.KtFile
@@ -206,7 +206,7 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
     withNewEmptyCpg(config.outputPath, config) { (cpg, config) =>
       val sourceDir = config.inputPath
       logger.info(s"Starting CPG generation for input directory `$sourceDir`.")
-
+      StatsLogger.justLogMessage("kotlin2cpg -> Starting CPG generation")
       checkSourceDir(sourceDir)
       logMaxHeapSize()
 
@@ -214,22 +214,25 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
       val mavenCoordinates        = gatherMavenCoordinates(sourceDir, config)
       val defaultContentRootJars  = gatherDefaultContentRootJars(sourceDir, config, filesWithJavaExtension)
       val dirsForSourcesToCompile = gatherDirsForSourcesToCompile(sourceDir, config)
+      StatsLogger.justLogMessage("kotlin2cpg -> CompilerAPI.makeEnvironment() started")
       val environment = CompilerAPI.makeEnvironment(
         dirsForSourcesToCompile,
         filesWithJavaExtension,
         defaultContentRootJars,
         new ErrorLoggingMessageCollector
       )
-
+      StatsLogger.justLogMessage("kotlin2cpg -> CompilerAPI.makeEnvironment() done")
       val sourceFiles = gatherSourceFiles(sourceDir, config, environment)
       val configFiles = entriesForConfigFiles(SourceFilesPicker.configFiles(sourceDir), sourceDir)
 
       new MetaDataPass(cpg, Languages.KOTLIN, config.inputPath).createAndApply()
-
+      StatsLogger.justLogMessage("kotlin2cpg -> createBindingContext() started")
       val bindingContext = createBindingContext(environment, config)
-      val astCreator     = new AstCreationPass(sourceFiles, bindingContext, cpg)(config.schemaValidation)
+      StatsLogger.justLogMessage("kotlin2cpg -> createBindingContext() done")
+      StatsLogger.justLogMessage("kotlin2cpg -> AstCreationPass() started")
+      val astCreator = new AstCreationPass(sourceFiles, bindingContext, cpg)(config.schemaValidation)
       astCreator.createAndApply()
-
+      StatsLogger.justLogMessage("kotlin2cpg -> AstCreationPass() done")
       Disposer.dispose(environment.getProjectEnvironment.getParentDisposable)
 
       val kotlinAstCreatorTypes = astCreator.usedTypes()
