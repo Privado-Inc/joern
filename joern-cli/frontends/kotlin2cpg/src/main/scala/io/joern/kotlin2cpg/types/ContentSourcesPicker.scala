@@ -43,6 +43,7 @@ object ContentSourcesPicker {
             Seq(childDir.pathAsString) ++ childDir.list
               .filter(_.isDirectory)
               .filter(_.list.exists { f => f.hasExtension && f.pathAsString.endsWith(".kt") })
+              .filterNot(file => config.ignoredFilesRegex.matches(toRelativePath(file.pathAsString, config.inputPath)))
               .map(_.pathAsString)
               .toSeq
           case false =>
