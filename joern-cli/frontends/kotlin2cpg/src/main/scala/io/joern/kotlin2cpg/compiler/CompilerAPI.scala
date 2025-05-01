@@ -27,7 +27,7 @@ object CompilerAPI {
     javaSourceRoots: Seq[String],
     defaultContentRootJarPaths: Seq[DefaultContentRootJarPath] = List(),
     messageCollector: MessageCollector
-  ): (List[KotlinCoreEnvironment], KotlinCoreEnvironment) = {
+  ): List[KotlinCoreEnvironment] = {
     val config = new CompilerConfiguration()
     config.put(CLIConfigurationKeys.MESSAGE_COLLECTOR_KEY, messageCollector)
     val javaHome = File(System.getProperty("java.home"))
@@ -38,7 +38,7 @@ object CompilerAPI {
     val configFiles = EnvironmentConfigFiles.JVM_CONFIG_FILES
     val disposable  = Disposer.newDisposable()
 
-    val environments = forDirectories
+    forDirectories
       .grouped(MAX_BATCH_SIZE)
       .map { fileset =>
         val configCopy = config.copy()
@@ -87,12 +87,6 @@ object CompilerAPI {
         KotlinCoreEnvironment.createForProduction(disposable, configCopy, configFiles)
       }
       .toList
-
-    forDirectories.foreach { p =>
-      config.add(CLIConfigurationKeys.CONTENT_ROOTS, new KotlinSourceRoot(p, true, null))
-    }
-    val environment = KotlinCoreEnvironment.createForProduction(disposable, config, configFiles)
-    (environments, environment)
   }
 }
 

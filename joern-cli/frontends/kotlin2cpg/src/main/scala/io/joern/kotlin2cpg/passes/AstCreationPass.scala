@@ -12,7 +12,7 @@ import org.slf4j.LoggerFactory
 import scala.jdk.CollectionConverters.EnumerationHasAsScala
 
 class AstCreationPass(filesWithMeta: Iterable[KtFileWithMeta], bindingContext: BindingContextUtils, cpg: Cpg)(implicit
-                                                                                                              withSchemaValidation: ValidationMode
+  withSchemaValidation: ValidationMode
 ) extends ForkJoinParallelCpgPass[KtFileWithMeta](cpg) {
 
   private val logger         = LoggerFactory.getLogger(getClass)

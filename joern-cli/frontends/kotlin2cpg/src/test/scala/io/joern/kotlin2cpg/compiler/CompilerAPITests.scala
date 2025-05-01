@@ -52,7 +52,9 @@ class CompilerAPITests extends SourceCodeFixture {
       val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
       modules.size shouldBe 1
       modules.head.modulePathRoot shouldBe repoDir
-      modules.head.sourceFileDirs shouldBe Seq(s"$repoDir/root")
+      modules.head.sourceFileDirs.contains(s"$repoDir/root/A.kt") shouldBe true
+      modules.head.sourceFileDirs.contains(s"$repoDir/root/B.kt") shouldBe true
+      modules.head.sourceFileDirs.contains(s"$repoDir/root/C.kt") shouldBe true
     }
 
     "repo structure without gradle file with source in multiple directories" in {
@@ -61,7 +63,9 @@ class CompilerAPITests extends SourceCodeFixture {
       val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
       modules.size shouldBe 1
       modules.head.modulePathRoot shouldBe repoDir
-      modules.head.sourceFileDirs shouldBe Seq(s"$repoDir/dir4/dir5/dir6", s"$repoDir/dir3", s"$repoDir/dir1/dir2")
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir1/dir2/A.kt") shouldBe true
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir3/B.kt") shouldBe true
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir4/dir5/dir6/C.kt") shouldBe true
     }
 
     "repo structure with single build.gradle file" in {
@@ -70,7 +74,8 @@ class CompilerAPITests extends SourceCodeFixture {
       val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
       modules.size shouldBe 1
       modules.head.modulePathRoot shouldBe repoDir
-      modules.head.sourceFileDirs shouldBe Seq(s"$repoDir/dir4/dir5/dir6", s"$repoDir/dir3")
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir3/B.kt") shouldBe true
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir4/dir5/dir6/C.kt") shouldBe true
     }
 
     "repo structure with single build.gradle.kts file" in {
@@ -81,7 +86,8 @@ class CompilerAPITests extends SourceCodeFixture {
       val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
       modules.size shouldBe 1
       modules.head.modulePathRoot shouldBe repoDir
-      modules.head.sourceFileDirs shouldBe Seq(s"$repoDir/dir4/dir5/dir6", s"$repoDir/dir3")
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir3/B.kt") shouldBe true
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir4/dir5/dir6/C.kt") shouldBe true
     }
 
     "repo structure with single build.gradle.kts file inside directory" in {
@@ -92,7 +98,8 @@ class CompilerAPITests extends SourceCodeFixture {
       val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
       modules.size shouldBe 1
       modules.head.modulePathRoot shouldBe s"$repoDir/dir1"
-      modules.head.sourceFileDirs shouldBe Seq(s"$repoDir/dir1/dir4/dir5/dir6", s"$repoDir/dir1/dir3")
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
     }
 
     "repo structure with multiple child modules" in {
@@ -108,9 +115,10 @@ class CompilerAPITests extends SourceCodeFixture {
       val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
       modules.size shouldBe 2
       modules.head.modulePathRoot shouldBe s"$repoDir/dir2"
-      modules.head.sourceFileDirs shouldBe Seq(s"$repoDir/dir2/dir7")
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir2/dir7/D.kt") shouldBe true
       modules(1).modulePathRoot shouldBe s"$repoDir/dir1"
-      modules(1).sourceFileDirs shouldBe Seq(s"$repoDir/dir1/dir4/dir5/dir6", s"$repoDir/dir1/dir3")
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
     }
 
     "repo with parent module along with multiple child modules" in {
@@ -127,9 +135,10 @@ class CompilerAPITests extends SourceCodeFixture {
       val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
       modules.size shouldBe 2
       modules.head.modulePathRoot shouldBe s"$repoDir/dir2"
-      modules.head.sourceFileDirs shouldBe Seq(s"$repoDir/dir2/dir7")
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir2/dir7/D.kt") shouldBe true
       modules(1).modulePathRoot shouldBe s"$repoDir/dir1"
-      modules(1).sourceFileDirs shouldBe Seq(s"$repoDir/dir1/dir4/dir5/dir6", s"$repoDir/dir1/dir3")
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
     }
 
     "repo with parent module along with source code and multiple child modules" in {
@@ -147,11 +156,12 @@ class CompilerAPITests extends SourceCodeFixture {
       val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
       modules.size shouldBe 3
       modules.head.modulePathRoot shouldBe s"$repoDir"
-      modules.head.sourceFileDirs shouldBe Seq(s"$repoDir/src/main/java")
+      modules.head.sourceFileDirs.contains(s"$repoDir/src/main/java/A.kt") shouldBe true
       modules(1).modulePathRoot shouldBe s"$repoDir/dir2"
-      modules(1).sourceFileDirs shouldBe Seq(s"$repoDir/dir2/dir7")
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir2/dir7/D.kt") shouldBe true
       modules(2).modulePathRoot shouldBe s"$repoDir/dir1"
-      modules(2).sourceFileDirs shouldBe Seq(s"$repoDir/dir1/dir4/dir5/dir6", s"$repoDir/dir1/dir3")
+      modules(2).sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
+      modules(2).sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
     }
     "invalid case where build.gradle file present inside source directory" in {
       val repoDir = setupRepoStructure(
@@ -168,9 +178,11 @@ class CompilerAPITests extends SourceCodeFixture {
       val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
       modules.size shouldBe 2
       modules.head.modulePathRoot shouldBe s"$repoDir"
-      modules.head.sourceFileDirs shouldBe Seq(s"$repoDir/src/main/java", s"$repoDir/src/main/java/dir7")
+      modules.head.sourceFileDirs.contains(s"$repoDir/src/main/java/some.kt") shouldBe true
+      modules.head.sourceFileDirs.contains(s"$repoDir/src/main/java/dir7/D.kt") shouldBe true
       modules(1).modulePathRoot shouldBe s"$repoDir/dir1"
-      modules(1).sourceFileDirs shouldBe Seq(s"$repoDir/dir1/dir4/dir5/dir6", s"$repoDir/dir1/dir3")
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
     }
   }
 
@@ -191,18 +203,18 @@ class CompilerAPITests extends SourceCodeFixture {
         .map { f => DefaultContentRootJarPath(f.pathAsString, false) }
         .toSeq ++ jarResources
       val messageCollector = new ErrorCountMessageCollector()
-      val (environments, environment) =
+      val environments =
         CompilerAPI.makeEnvironment(Seq(projectDirPath), Seq(), contentRoots, messageCollector)
 
-      KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
+      KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environments.head)
       messageCollector.hasErrors() shouldBe false
     }
 
     "should receive a compiler error message when the dependencies of the project have not been provided" in {
-      val messageCollector            = new ErrorCountMessageCollector()
-      val (environments, environment) = CompilerAPI.makeEnvironment(Seq(projectDirPath), Seq(), Seq(), messageCollector)
+      val messageCollector = new ErrorCountMessageCollector()
+      val environments     = CompilerAPI.makeEnvironment(Seq(projectDirPath), Seq(), Seq(), messageCollector)
 
-      KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
+      KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environments.head)
       messageCollector.hasErrors() shouldBe true
     }
   }

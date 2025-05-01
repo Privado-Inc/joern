@@ -212,22 +212,20 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
       new MetaDataPass(cpg, Languages.KOTLIN, config.inputPath).createAndApply()
       // TODO: Add maven project structure handling
       identifyModules(originalSourceDir, config).foreach { module =>
-        val sourceDir               = module.modulePathRoot
-        val filesWithJavaExtension  = gatherFilesWithJavaExtension(sourceDir, config)
-        val defaultContentRootJars  = gatherDefaultContentRootJars(sourceDir, config, filesWithJavaExtension)
-        val dirsForSourcesToCompile = gatherDirsForSourcesToCompile(sourceDir, config)
+        val sourceDir              = module.modulePathRoot
+        val filesWithJavaExtension = gatherFilesWithJavaExtension(sourceDir, config)
+        val defaultContentRootJars = gatherDefaultContentRootJars(sourceDir, config, filesWithJavaExtension)
         logger.info(s"module directory size `${module.sourceFileDirs.size}`")
-        val (environments, _) = CompilerAPI.makeEnvironment(
+        val environments = CompilerAPI.makeEnvironment(
           module.sourceFileDirs,
           filesWithJavaExtension,
           defaultContentRootJars,
           new ErrorLoggingMessageCollector
         )
         val bindingContextUtils = BindingContextAnalyserPass(environments, config).apply()
-//        val bindingContext      = createBindingContext(environment, config)
-        val sourceFiles = environments.flatMap(environment => gatherSourceFiles(sourceDir, config, environment))
-        val configFiles = entriesForConfigFiles(SourceFilesPicker.configFiles(sourceDir), sourceDir)
-        val astCreator  = new AstCreationPass(sourceFiles, bindingContextUtils, cpg)(config.schemaValidation)
+        val sourceFiles         = environments.flatMap(environment => gatherSourceFiles(sourceDir, config, environment))
+        val configFiles         = entriesForConfigFiles(SourceFilesPicker.configFiles(sourceDir), sourceDir)
+        val astCreator          = new AstCreationPass(sourceFiles, bindingContextUtils, cpg)(config.schemaValidation)
         astCreator.createAndApply()
         StatsLogger.justLogMessage("kotlin2cpg -> AstCreationPass() done")
         environments.foreach { environment => Disposer.dispose(environment.getProjectEnvironment.getParentDisposable) }

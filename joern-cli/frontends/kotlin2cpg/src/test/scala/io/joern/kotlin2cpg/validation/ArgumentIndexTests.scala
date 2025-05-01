@@ -1,8 +1,7 @@
 package io.joern.kotlin2cpg.validation
 
 import io.joern.kotlin2cpg.testfixtures.KotlinCode2CpgFixture
-import io.shiftleft.codepropertygraph.generated.nodes.Call
-import io.shiftleft.codepropertygraph.generated.nodes.Literal
+import io.shiftleft.codepropertygraph.generated.nodes.{Call, ControlStructure, Literal}
 import io.shiftleft.semanticcpg.language.*
 
 class ArgumentIndexTests extends KotlinCode2CpgFixture(withOssDataflow = false) {
@@ -58,7 +57,7 @@ class ArgumentIndexTests extends KotlinCode2CpgFixture(withOssDataflow = false) 
       c.typeFullName shouldBe "java.lang.String"
       c.argument.size shouldBe 2
 
-      val List(firstArg: Call, secondArg: Literal) = c.argument.l: @unchecked
+      val List(firstArg: ControlStructure, secondArg: Literal) = c.argument.l: @unchecked
       firstArg.argumentIndex shouldBe 0
       secondArg.argumentIndex shouldBe 1
     }

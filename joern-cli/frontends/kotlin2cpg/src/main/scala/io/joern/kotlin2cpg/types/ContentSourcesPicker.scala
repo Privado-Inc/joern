@@ -27,7 +27,7 @@ object ContentSourcesPicker {
     * @param config
     *   The configuration object containing settings for processing.
     * @return
-    *   A tuple containing a sequence of ModuleInfo objects and a sequence of source file directories.
+    *   A tuple containing a sequence of ModuleInfo objects and a sequence of all .kt files.
     */
   private def processChildFolder(childDir: File, config: Config): (Seq[ModuleInfo], Seq[String]) = {
     var modules: Seq[ModuleInfo] = Seq.empty
@@ -71,18 +71,6 @@ object ContentSourcesPicker {
     * @return
     *   A sequence of ModuleInfo objects representing the modules found in the directory.
     */
-  // In the following directory structure:
-  //  ____________________
-  //  | dir1
-  //  |   -> build.gradle.kts
-  //  |   -> dir2
-  //  |      -> build.gradle.kts
-  //  |      -> dir3
-  //  |        -> source1.kt
-  //  |        -> source2.kt
-  //  |-------------------
-  //  The list of paths which are acceptable for the current version of the Kotlin compiler API is:
-  //  `Seq("dir1/dir2/dir3")` and nothing else.
   def getModuleWiseSegregation(rootDir: String, config: Config): Seq[ModuleInfo] = {
     val dir        = File(rootDir)
     val hasSubDirs = dir.list.exists(_.isDirectory)
