@@ -1,7 +1,7 @@
 package io.joern.kotlin2cpg
 
 import better.files.File
-import io.joern.kotlin2cpg.compiler.{CompilerAPI, ErrorLoggingMessageCollector}
+import io.joern.kotlin2cpg.compiler.{BindingContextAnalyserPass, CompilerAPI, ErrorLoggingMessageCollector}
 import io.joern.kotlin2cpg.files.SourceFilesPicker
 import io.joern.kotlin2cpg.interop.JavaSrcInterop
 import io.joern.kotlin2cpg.jar4import.UsesService
@@ -17,7 +17,7 @@ import io.shiftleft.utils.{IOUtils, StatsLogger}
 import org.jetbrains.kotlin.cli.jvm.compiler.{KotlinCoreEnvironment, KotlinToJVMBytecodeCompiler}
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
 import org.jetbrains.kotlin.psi.KtFile
-import org.jetbrains.kotlin.resolve.BindingContext
+import org.jetbrains.kotlin.resolve.{BindingContext, BindingTraceContext}
 import org.slf4j.LoggerFactory
 
 import java.nio.file.{Files, Paths}
@@ -209,31 +209,28 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
       StatsLogger.justLogMessage("kotlin2cpg -> Starting CPG generation")
       checkSourceDir(originalSourceDir)
       logMaxHeapSize()
+      new MetaDataPass(cpg, Languages.KOTLIN, config.inputPath).createAndApply()
+      // TODO: Add maven project structure handling
       identifyModules(originalSourceDir, config).foreach { module =>
         val sourceDir               = module.modulePathRoot
         val filesWithJavaExtension  = gatherFilesWithJavaExtension(sourceDir, config)
         val defaultContentRootJars  = gatherDefaultContentRootJars(sourceDir, config, filesWithJavaExtension)
         val dirsForSourcesToCompile = gatherDirsForSourcesToCompile(sourceDir, config)
-        StatsLogger.justLogMessage("kotlin2cpg -> CompilerAPI.makeEnvironment() started")
-        val environment = CompilerAPI.makeEnvironment(
+        logger.info(s"module directory size `${module.sourceFileDirs.size}`")
+        val (environments, _) = CompilerAPI.makeEnvironment(
           module.sourceFileDirs,
           filesWithJavaExtension,
           defaultContentRootJars,
           new ErrorLoggingMessageCollector
         )
-        StatsLogger.justLogMessage("kotlin2cpg -> CompilerAPI.makeEnvironment() done")
-        val sourceFiles = gatherSourceFiles(sourceDir, config, environment)
+        val bindingContextUtils = BindingContextAnalyserPass(environments, config).apply()
+//        val bindingContext      = createBindingContext(environment, config)
+        val sourceFiles = environments.flatMap(environment => gatherSourceFiles(sourceDir, config, environment))
         val configFiles = entriesForConfigFiles(SourceFilesPicker.configFiles(sourceDir), sourceDir)
-
-        new MetaDataPass(cpg, Languages.KOTLIN, config.inputPath).createAndApply()
-        StatsLogger.justLogMessage("kotlin2cpg -> createBindingContext() started")
-        val bindingContext = createBindingContext(environment, config)
-        StatsLogger.justLogMessage("kotlin2cpg -> createBindingContext() done")
-        StatsLogger.justLogMessage("kotlin2cpg -> AstCreationPass() started")
-        val astCreator = new AstCreationPass(sourceFiles, bindingContext, cpg)(config.schemaValidation)
+        val astCreator  = new AstCreationPass(sourceFiles, bindingContextUtils, cpg)(config.schemaValidation)
         astCreator.createAndApply()
         StatsLogger.justLogMessage("kotlin2cpg -> AstCreationPass() done")
-        Disposer.dispose(environment.getProjectEnvironment.getParentDisposable)
+        environments.foreach { environment => Disposer.dispose(environment.getProjectEnvironment.getParentDisposable) }
 
         val kotlinAstCreatorTypes = astCreator.usedTypes()
         TypeNodePass.withRegisteredTypes(kotlinAstCreatorTypes, cpg).createAndApply()
@@ -246,7 +243,26 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
       new DependenciesFromMavenCoordinatesPass(mavenCoordinates, cpg).createAndApply()
     }
   }
+  private def createBindingContext(environment: KotlinCoreEnvironment, config: Config): BindingContext = {
+    try {
+      if (!config.resolveTypes) {
+        logger.info("Skipped Running Kotlin compiler analysis... due to no resolve types flag")
+        BindingContext.EMPTY
+      } else {
+        logger.info("Running Kotlin compiler analysis...")
+        val t0             = System.nanoTime()
+        val analysisResult = KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
+        val t1             = System.nanoTime()
+        logger.info(s"Kotlin compiler analysis finished in `${(t1 - t0) / 1000000}` ms.")
+        analysisResult.getBindingContext
+      }
 
+    } catch {
+      case exc: Exception =>
+        logger.error(s"Kotlin compiler analysis failed with exception `${exc.toString}`:`${exc.getMessage}`.", exc)
+        BindingContext.EMPTY
+    }
+  }
   private def importNamesForFilesAtPaths(paths: Seq[String]): Seq[String] = {
     paths.flatMap(File(_).lines.filter(_.startsWith("import")).toSeq).map(ImportPattern.replaceAllIn(_, "$1").trim)
   }
@@ -322,24 +338,4 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
     } yield FileContentAtPath(fileContents, relPath, fileName)
   }
 
-  private def createBindingContext(environment: KotlinCoreEnvironment, config: Config): BindingContext = {
-    try {
-      if (!config.resolveTypes) {
-        logger.info("Skipped Running Kotlin compiler analysis... due to no resolve types flag")
-        BindingContext.EMPTY
-      } else {
-        logger.info("Running Kotlin compiler analysis...")
-        val t0             = System.nanoTime()
-        val analysisResult = KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
-        val t1             = System.nanoTime()
-        logger.info(s"Kotlin compiler analysis finished in `${(t1 - t0) / 1000000}` ms.")
-        analysisResult.getBindingContext
-      }
-
-    } catch {
-      case exc: Exception =>
-        logger.error(s"Kotlin compiler analysis failed with exception `${exc.toString}`:`${exc.getMessage}`.", exc)
-        BindingContext.EMPTY
-    }
-  }
 }

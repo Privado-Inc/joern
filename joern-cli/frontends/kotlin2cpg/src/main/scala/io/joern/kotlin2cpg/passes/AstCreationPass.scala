@@ -1,7 +1,7 @@
 package io.joern.kotlin2cpg.passes
 
 import io.joern.kotlin2cpg.KtFileWithMeta
-import io.joern.kotlin2cpg.ast.AstCreator
+import io.joern.kotlin2cpg.ast.{AstCreator, BindingContextUtils}
 import io.joern.x2cpg.ValidationMode
 import io.joern.x2cpg.datastructures.Global
 import io.shiftleft.codepropertygraph.generated.Cpg
@@ -11,8 +11,8 @@ import org.slf4j.LoggerFactory
 
 import scala.jdk.CollectionConverters.EnumerationHasAsScala
 
-class AstCreationPass(filesWithMeta: Iterable[KtFileWithMeta], bindingContext: BindingContext, cpg: Cpg)(implicit
-  withSchemaValidation: ValidationMode
+class AstCreationPass(filesWithMeta: Iterable[KtFileWithMeta], bindingContext: BindingContextUtils, cpg: Cpg)(implicit
+                                                                                                              withSchemaValidation: ValidationMode
 ) extends ForkJoinParallelCpgPass[KtFileWithMeta](cpg) {
 
   private val logger         = LoggerFactory.getLogger(getClass)

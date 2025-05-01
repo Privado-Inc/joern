@@ -4,20 +4,12 @@ import io.joern.kotlin2cpg.Constants
 import io.joern.kotlin2cpg.psi.PsiUtils
 import io.joern.kotlin2cpg.psi.PsiUtils.nonUnderscoreDestructuringEntries
 import io.joern.kotlin2cpg.types.TypeConstants
-import io.joern.x2cpg.Ast
+import io.joern.x2cpg.{Ast, Defines, ValidationMode}
 import io.joern.x2cpg.datastructures.Stack.*
-import io.joern.x2cpg.Defines
-import io.joern.x2cpg.ValidationMode
 import io.joern.x2cpg.utils.NodeBuilders
-import io.joern.x2cpg.utils.NodeBuilders.newBindingNode
-import io.joern.x2cpg.utils.NodeBuilders.newIdentifierNode
-import io.joern.x2cpg.utils.NodeBuilders.newMethodReturnNode
-import io.joern.x2cpg.utils.NodeBuilders.newModifierNode
-import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, ModifierTypes, NodeTypes, Operators}
-import io.shiftleft.codepropertygraph.generated.nodes.NewBlock
-import io.shiftleft.codepropertygraph.generated.nodes.NewCall
-import io.shiftleft.codepropertygraph.generated.nodes.NewMethod
-import io.shiftleft.codepropertygraph.generated.nodes.NewTypeDecl
+import io.joern.x2cpg.utils.NodeBuilders.{newBindingNode, newIdentifierNode, newMethodReturnNode, newModifierNode}
+import io.shiftleft.codepropertygraph.generated.nodes.{NewBlock, NewCall, NewMethod, NewTypeDecl}
+import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.semanticcpg.language.*
 import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.psi.*
@@ -29,8 +21,7 @@ import scala.util.Random
 trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode) {
   this: AstCreator =>
 
-  import AstCreator.AnonymousObjectContext
-  import AstCreator.BindingInfo
+  import AstCreator.{AnonymousObjectContext, BindingInfo}
 
   def astsForClassOrObject(
     ktClass: KtClassOrObject,

@@ -14,7 +14,7 @@ object ContentSourcesPicker {
     * @return
     *   True if the directory contains a Gradle build file, false otherwise.
     */
-  def hasGradleBuildFile(dir: File): Boolean = {
+  private def hasGradleBuildFile(dir: File): Boolean = {
     (dir / "build.gradle").exists || (dir / "build.gradle.kts").exists
   }
 
@@ -29,7 +29,7 @@ object ContentSourcesPicker {
     * @return
     *   A tuple containing a sequence of ModuleInfo objects and a sequence of source file directories.
     */
-  def processChildFolder(childDir: File, config: Config): (Seq[ModuleInfo], Seq[String]) = {
+  private def processChildFolder(childDir: File, config: Config): (Seq[ModuleInfo], Seq[String]) = {
     var modules: Seq[ModuleInfo] = Seq.empty
     val sourceDirs: Seq[String] = hasGradleBuildFile(childDir) match {
       case true =>
@@ -40,12 +40,12 @@ object ContentSourcesPicker {
           case true =>
             // If there are .kt files in the childDir, we add it to the list of source file directories.
             // We assume there is no possibility of any sub module under this directory
-            Seq(childDir.pathAsString) ++ childDir.list
-              .filter(_.isDirectory)
-              .filter(_.list.exists { f => f.hasExtension && f.pathAsString.endsWith(".kt") })
+            childDir.listRecursively
+              .filter(f => f.hasExtension && f.pathAsString.endsWith(".kt"))
               .filterNot(file => config.ignoredFilesRegex.matches(toRelativePath(file.pathAsString, config.inputPath)))
-              .map(_.pathAsString)
               .toSeq
+              .sortBy(_.parent.pathAsString)
+              .map(_.pathAsString) // Sort by parent directory path
           case false =>
             // If there are no .kt files in the childDir, we process all its child directories
             childDir.list
@@ -71,6 +71,18 @@ object ContentSourcesPicker {
     * @return
     *   A sequence of ModuleInfo objects representing the modules found in the directory.
     */
+  // In the following directory structure:
+  //  ____________________
+  //  | dir1
+  //  |   -> build.gradle.kts
+  //  |   -> dir2
+  //  |      -> build.gradle.kts
+  //  |      -> dir3
+  //  |        -> source1.kt
+  //  |        -> source2.kt
+  //  |-------------------
+  //  The list of paths which are acceptable for the current version of the Kotlin compiler API is:
+  //  `Seq("dir1/dir2/dir3")` and nothing else.
   def getModuleWiseSegregation(rootDir: String, config: Config): Seq[ModuleInfo] = {
     val dir        = File(rootDir)
     val hasSubDirs = dir.list.exists(_.isDirectory)

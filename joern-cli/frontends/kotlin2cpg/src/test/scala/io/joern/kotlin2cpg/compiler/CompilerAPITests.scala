@@ -191,15 +191,16 @@ class CompilerAPITests extends SourceCodeFixture {
         .map { f => DefaultContentRootJarPath(f.pathAsString, false) }
         .toSeq ++ jarResources
       val messageCollector = new ErrorCountMessageCollector()
-      val environment      = CompilerAPI.makeEnvironment(Seq(projectDirPath), Seq(), contentRoots, messageCollector)
+      val (environments, environment) =
+        CompilerAPI.makeEnvironment(Seq(projectDirPath), Seq(), contentRoots, messageCollector)
 
       KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
       messageCollector.hasErrors() shouldBe false
     }
 
     "should receive a compiler error message when the dependencies of the project have not been provided" in {
-      val messageCollector = new ErrorCountMessageCollector()
-      val environment      = CompilerAPI.makeEnvironment(Seq(projectDirPath), Seq(), Seq(), messageCollector)
+      val messageCollector            = new ErrorCountMessageCollector()
+      val (environments, environment) = CompilerAPI.makeEnvironment(Seq(projectDirPath), Seq(), Seq(), messageCollector)
 
       KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
       messageCollector.hasErrors() shouldBe true

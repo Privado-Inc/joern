@@ -44,7 +44,7 @@ object AstCreator {
   case class ClosureBindingDef(node: NewClosureBinding, captureEdgeTo: NewMethodRef, refEdgeTo: NewNode)
 }
 
-class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, global: Global)(implicit
+class AstCreator(fileWithMeta: KtFileWithMeta, bindingUtilsContext: BindingContextUtils, global: Global)(implicit
   withSchemaValidation: ValidationMode
 ) extends AstCreatorBase(fileWithMeta.filename)
     with AstForDeclarationsCreator
@@ -73,8 +73,8 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
   protected val debugScope: mutable.Stack[KtDeclaration]      = mutable.Stack.empty[KtDeclaration]
 
   protected val nameRenderer     = new NameRenderer()
-  protected val bindingUtils     = new BindingContextUtils(bindingContext)
-  protected val typeInfoProvider = new TypeInfoProvider(bindingContext)
+  protected val bindingUtils     = bindingUtilsContext
+  protected val typeInfoProvider = new TypeInfoProvider(bindingUtils.getBindingContext)
 
   def createAst(): DiffGraphBuilder = {
     logger.debug(s"Started parsing file `${fileWithMeta.filename}`.")
