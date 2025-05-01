@@ -11,7 +11,7 @@ import org.slf4j.LoggerFactory
 
 import scala.jdk.CollectionConverters.EnumerationHasAsScala
 
-class AstCreationPass(filesWithMeta: Iterable[KtFileWithMeta], bindingContext: BindingContextUtils, cpg: Cpg)(implicit
+class AstCreationPass(filesWithMeta: Iterable[KtFileWithMeta], bindingContext: BindingContext, cpg: Cpg)(implicit
   withSchemaValidation: ValidationMode
 ) extends ForkJoinParallelCpgPass[KtFileWithMeta](cpg) {
 

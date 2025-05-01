@@ -3,7 +3,7 @@ package io.joern.kotlin2cpg.compiler
 import io.joern.kotlin2cpg.Config
 import io.joern.kotlin2cpg.ast.BindingContextUtils
 import org.jetbrains.kotlin.cli.jvm.compiler.{KotlinCoreEnvironment, KotlinToJVMBytecodeCompiler}
-import org.jetbrains.kotlin.resolve.BindingContext
+import org.jetbrains.kotlin.resolve.{BindingContext, BindingTraceContext}
 import org.slf4j.LoggerFactory
 
 import java.util.concurrent.LinkedBlockingQueue
@@ -11,12 +11,12 @@ import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
 
 class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], config: Config) {
-  private val logger              = LoggerFactory.getLogger(getClass)
-  private val bindingContentUtils = new BindingContextUtils()
+  private val logger                                   = LoggerFactory.getLogger(getClass)
+  private val bindingTraceContext: BindingTraceContext = BindingTraceContext(true)
 
-  def getBindingContextUtils: BindingContextUtils = bindingContentUtils
+  def getBindingContext: BindingContext = bindingTraceContext.getBindingContext
 
-  def apply(): BindingContextUtils = {
+  def apply(): BindingContext = {
     val writer       = Writer()
     val writerThread = new Thread(writer)
     writerThread.start()
@@ -33,7 +33,7 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
     if writer.raisedException != null then
       logger.error("WriterThread raised exception", writer.raisedException)
       throw writer.raisedException
-    bindingContentUtils
+    getBindingContext
   }
 
   private def createBindingContext(environment: KotlinCoreEnvironment, config: Config): BindingContext = {
@@ -70,7 +70,7 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
               terminate = true
             case Some(bindingContext: BindingContext) =>
               logger.info("Processing BindingContext")
-              bindingContentUtils.absorbBindingContext(bindingContext)
+              bindingContext.addOwnDataTo(bindingTraceContext, true)
           }
         }
       } catch {

@@ -1,37 +1,28 @@
 package io.joern.kotlin2cpg.ast
 
-import io.joern.kotlin2cpg.Constants
-import io.joern.kotlin2cpg.KtFileWithMeta
+import io.joern.kotlin2cpg.{Constants, KtFileWithMeta}
 import io.joern.kotlin2cpg.datastructures.Scope
-import io.joern.kotlin2cpg.types.NameRenderer
-import io.joern.kotlin2cpg.types.TypeConstants
-import io.joern.kotlin2cpg.types.TypeInfoProvider
-import io.joern.x2cpg.Ast
-import io.joern.x2cpg.AstCreatorBase
-import io.joern.x2cpg.AstNodeBuilder
-import io.joern.x2cpg.Defines
-import io.joern.x2cpg.ValidationMode
+import io.joern.kotlin2cpg.types.{NameRenderer, TypeConstants, TypeInfoProvider}
+import io.joern.x2cpg.*
 import io.joern.x2cpg.datastructures.Global
 import io.joern.x2cpg.datastructures.Stack.*
-import io.joern.x2cpg.utils.IntervalKeyPool
-import io.joern.x2cpg.utils.NodeBuilders
+import io.joern.x2cpg.utils.{IntervalKeyPool, NodeBuilders}
 import io.joern.x2cpg.utils.NodeBuilders.newMethodReturnNode
 import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
-import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
-import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
-import org.jetbrains.kotlin.descriptors.DescriptorVisibility
-import org.jetbrains.kotlin.descriptors.FunctionDescriptor
-import org.jetbrains.kotlin.lexer.KtToken
-import org.jetbrains.kotlin.lexer.KtTokens
+import org.jetbrains.kotlin.descriptors.{
+  DeclarationDescriptor,
+  DescriptorVisibilities,
+  DescriptorVisibility,
+  FunctionDescriptor
+}
+import org.jetbrains.kotlin.lexer.{KtToken, KtTokens}
 import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.resolve.BindingContext
-import org.slf4j.Logger
-import org.slf4j.LoggerFactory
+import org.slf4j.{Logger, LoggerFactory}
 
 import scala.annotation.tailrec
 import scala.collection.mutable
@@ -44,7 +35,7 @@ object AstCreator {
   case class ClosureBindingDef(node: NewClosureBinding, captureEdgeTo: NewMethodRef, refEdgeTo: NewNode)
 }
 
-class AstCreator(fileWithMeta: KtFileWithMeta, bindingUtilsContext: BindingContextUtils, global: Global)(implicit
+class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, global: Global)(implicit
   withSchemaValidation: ValidationMode
 ) extends AstCreatorBase(fileWithMeta.filename)
     with AstForDeclarationsCreator
@@ -54,8 +45,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingUtilsContext: BindingConte
     with AstForExpressionsCreator
     with AstNodeBuilder[PsiElement, AstCreator] {
 
-  import AstCreator.BindingInfo
-  import AstCreator.ClosureBindingDef
+  import AstCreator.{BindingInfo, ClosureBindingDef}
 
   protected val closureBindingDefQueue: mutable.ArrayBuffer[ClosureBindingDef] = mutable.ArrayBuffer.empty
   protected val bindingInfoQueue: mutable.ArrayBuffer[BindingInfo]             = mutable.ArrayBuffer.empty
@@ -73,8 +63,8 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingUtilsContext: BindingConte
   protected val debugScope: mutable.Stack[KtDeclaration]      = mutable.Stack.empty[KtDeclaration]
 
   protected val nameRenderer     = new NameRenderer()
-  protected val bindingUtils     = bindingUtilsContext
-  protected val typeInfoProvider = new TypeInfoProvider(bindingUtils.getBindingContext)
+  protected val bindingUtils     = BindingContextUtils(bindingContext)
+  protected val typeInfoProvider = new TypeInfoProvider(bindingContext)
 
   def createAst(): DiffGraphBuilder = {
     logger.debug(s"Started parsing file `${fileWithMeta.filename}`.")
