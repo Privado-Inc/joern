@@ -1,4 +1,3 @@
-import better.files
 import com.typesafe.config.{Config, ConfigFactory}
 import versionsort.VersionHelper
 
@@ -76,16 +75,15 @@ astGenDlTask := {
   astGenDir.mkdirs()
 
   astGenBinaryNames.value.foreach { fileName =>
-    DownloadHelper.ensureIsAvailable(s"${astGenDlUrl.value}$fileName", astGenDir / fileName)
+    val file = astGenDir / fileName
+    DownloadHelper.ensureIsAvailable(s"${astGenDlUrl.value}$fileName", file)
+    // permissions are lost during the download; need to set them manually
+    file.setExecutable(true, false)
   }
 
   val distDir = (Universal / stagingDirectory).value / "bin" / "astgen"
   distDir.mkdirs()
-  IO.copyDirectory(astGenDir, distDir)
-
-  // permissions are lost during the download; need to set them manually
-  astGenDir.listFiles().foreach(_.setExecutable(true, false))
-  distDir.listFiles().foreach(_.setExecutable(true, false))
+  IO.copyDirectory(astGenDir, distDir, preserveExecutable = true)
 }
 
 Compile / compile := ((Compile / compile) dependsOn astGenDlTask).value
@@ -100,3 +98,7 @@ stage := Def
 
 Universal / packageName       := name.value
 Universal / topLevelDirectory := None
+
+/** write the astgen version to the manifest for downstream usage */
+Compile / packageBin / packageOptions +=
+  Package.ManifestAttributes(new java.util.jar.Attributes.Name("DotNet-AstGen-Version") -> astGenVersion.value)
