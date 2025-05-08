@@ -1,17 +1,20 @@
 package io.joern.csharpsrc2cpg.astcreation
 
-import io.joern.csharpsrc2cpg.datastructures.CSharpMethod
+import io.joern.csharpsrc2cpg.astcreation.AstParseLevel.FULL_AST
+import io.joern.csharpsrc2cpg.astcreation.BuiltinTypes.DotNetTypeMap
+import io.joern.csharpsrc2cpg.datastructures.{CSharpMethod, FieldDecl}
 import io.joern.csharpsrc2cpg.parser.DotNetJsonAst.*
 import io.joern.csharpsrc2cpg.parser.{DotNetNodeInfo, ParserKeys}
+import io.joern.csharpsrc2cpg.utils.Utils.{composeMethodFullName, composeMethodLikeSignature}
 import io.joern.csharpsrc2cpg.{CSharpOperators, Constants}
 import io.joern.x2cpg.utils.NodeBuilders.{newCallNode, newIdentifierNode, newOperatorCallNode}
 import io.joern.x2cpg.{Ast, Defines, ValidationMode}
-import io.shiftleft.codepropertygraph.generated.nodes.{NewFieldIdentifier, NewLiteral, NewTypeRef}
+import io.shiftleft.codepropertygraph.generated.nodes.{NewLiteral, NewTypeRef}
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
 import ujson.Value
 
 import scala.collection.mutable.ArrayBuffer
-import scala.util.{Failure, Success, Try}
+import scala.util.Try
 trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
   def astForExpressionStatement(expr: DotNetNodeInfo): Seq[Ast] = {
@@ -38,8 +41,210 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
       case ConditionalAccessExpression       => astForConditionalAccessExpression(expr)
       case SuppressNullableWarningExpression => astForSuppressNullableWarningExpression(expr)
       case _: BaseLambdaExpression           => astForSimpleLambdaExpression(expr)
+      case ParenthesizedExpression           => astForParenthesizedExpression(expr)
       case _                                 => notHandledYet(expr)
     }
+  }
+
+  /** Attempts to decide if [[expr]] denotes a setter property reference, in which case returns its corresponding
+    * [[CSharpMethod]] meta-data and class full name it belongs to.
+    */
+  private def tryResolveSetterInvocation(expr: DotNetNodeInfo): Option[(CSharpMethod, String)] = {
+    val baseType = expr.node match {
+      case SimpleMemberAccessExpression =>
+        val base = createDotNetNodeInfo(expr.json(ParserKeys.Expression))
+        Some(nodeTypeFullName(base))
+      case IdentifierName =>
+        scope.surroundingTypeDeclFullName
+      case _ =>
+        None
+    }
+
+    val fieldName = nameFromNode(expr)
+    baseType.flatMap(x => scope.tryResolveSetterInvocation(fieldName, Some(x)).map((_, x)))
+  }
+
+  private def stripAssignmentFromOperator(operatorName: String): Option[String] = operatorName match {
+    case Operators.assignmentPlus                 => Some(Operators.plus)
+    case Operators.assignmentMinus                => Some(Operators.minus)
+    case Operators.assignmentMultiplication       => Some(Operators.multiplication)
+    case Operators.assignmentDivision             => Some(Operators.division)
+    case Operators.assignmentExponentiation       => Some(Operators.exponentiation)
+    case Operators.assignmentModulo               => Some(Operators.modulo)
+    case Operators.assignmentShiftLeft            => Some(Operators.shiftLeft)
+    case Operators.assignmentLogicalShiftRight    => Some(Operators.logicalShiftRight)
+    case Operators.assignmentArithmeticShiftRight => Some(Operators.arithmeticShiftRight)
+    case Operators.assignmentAnd                  => Some(Operators.and)
+    case Operators.assignmentOr                   => Some(Operators.or)
+    case Operators.assignmentXor                  => Some(Operators.xor)
+    case _                                        => None
+  }
+
+  /** Mainly to abstract the lowering of +=, *=, etc. assignments when the LHS is a property. Takes care of building the
+    * RHS appropriately, e.g. by expanding `P += RHS` into `set_P(get_P() + RHS)`, etc.
+    * @param expr
+    *   the full assignment expression, for `code`, `line`, etc.
+    * @param assignOp
+    *   the assignment operator, cf. [[Operators]]
+    * @param setterInfo
+    *   the setter meta-data, cf. [[tryResolveSetterInvocation]]
+    */
+  private def lowerSetterAssignmentRhs(
+    expr: DotNetNodeInfo,
+    assignOp: String,
+    setterInfo: (CSharpMethod, String),
+    receiver: Option[Ast],
+    rhs: DotNetNodeInfo
+  ): Seq[Ast] = {
+    val (setterMethod, setterBaseType) = setterInfo
+    val propertyName                   = setterMethod.name.stripPrefix("set_")
+    val originalRhs                    = astForOperand(rhs)
+
+    assignOp match {
+      case Operators.assignment => originalRhs
+      case _ =>
+        scope.tryResolveGetterInvocation(propertyName, Some(setterBaseType)) match {
+          // Shouldn't happen, provided it is valid code. At any rate, log and emit the RHS verbatim.
+          case None =>
+            logger.warn(s"Couldn't find matching getter for $propertyName in ${code(expr)}")
+            originalRhs
+          case Some(getterMethod) =>
+            stripAssignmentFromOperator(assignOp) match {
+              case None =>
+                logger.warn(s"Unrecognized assignment in ${code(expr)}")
+                originalRhs
+              case Some(opName) =>
+                val getterInvocation =
+                  createInvocationAst(expr, getterMethod.name, Nil, receiver, Some(getterMethod), Some(setterBaseType))
+                val operatorCall =
+                  newOperatorCallNode(opName, code(expr), Some(setterMethod.returnType), line(expr), column(expr))
+                callAst(operatorCall, getterInvocation +: originalRhs, None, None) :: Nil
+            }
+        }
+    }
+  }
+
+  /** Lowers assignments such as `x.P = RHS` and `x.P += RHS` with `P` denoting a setter property into calls
+    * `x.set_P(RHS)` and `x.set_P(x.get_P() + RHS)`.
+    * @param assignExpr
+    *   the full assignment expression, for `code`, `line` properties
+    * @param assignOp
+    *   the final assignment operator name, cf. [[Operators]]
+    * @param setterInfo
+    *   the setter meta-data, cf. [[tryResolveSetterInvocation]]
+    */
+  private def astForMemberAccessSetterAssignment(
+    assignExpr: DotNetNodeInfo,
+    lhs: DotNetNodeInfo,
+    assignOp: String,
+    rhs: DotNetNodeInfo,
+    setterInfo: (CSharpMethod, String)
+  ): Seq[Ast] = {
+    val (setterMethod, setterBaseType) = setterInfo
+    val receiver = if (setterMethod.isStatic) {
+      None
+    } else {
+      val baseNode = createDotNetNodeInfo(lhs.json(ParserKeys.Expression))
+      astForNode(baseNode).headOption
+    }
+    val rhsAst = lowerSetterAssignmentRhs(assignExpr, assignOp, setterInfo, receiver, rhs)
+
+    createInvocationAst(
+      assignExpr,
+      setterMethod.name,
+      rhsAst,
+      receiver,
+      Some(setterMethod),
+      Some(setterBaseType)
+    ) :: Nil
+  }
+
+  /** Lowers assignments such as `P = RHS` and `P += RHS` with `P` an identifier denoting a setter property into calls
+    * `set_P(RHS)` and `set_P(get_P() + RHS)`, respectively.
+    * @param assignExpr
+    *   the full assignment expression, for `code`, `line` properties.
+    * @param assignOp
+    *   the final assignment operator name, cf. [[Operators]]
+    * @param setterInfo
+    *   the setter meta-data, cf. [[tryResolveSetterInvocation]]
+    */
+  private def astForIdentifierSetterAssignment(
+    assignExpr: DotNetNodeInfo,
+    lhs: DotNetNodeInfo,
+    assignOp: String,
+    rhs: DotNetNodeInfo,
+    setterInfo: (CSharpMethod, String)
+  ): Seq[Ast] = {
+    val (setterMethod, setterBaseType) = setterInfo
+    val receiver = Option.when(!setterMethod.isStatic)(astForThisReceiver(lhs, scope.surroundingTypeDeclFullName))
+    val rhsAst   = lowerSetterAssignmentRhs(assignExpr, assignOp, setterInfo, receiver, rhs)
+
+    createInvocationAst(
+      assignExpr,
+      setterMethod.name,
+      rhsAst,
+      receiver,
+      Some(setterMethod),
+      Some(setterBaseType)
+    ) :: Nil
+  }
+
+  /** Lowers assignments such as `x.P = RHS` and `P += RHS` where `P` denotes a setter property into a call
+    * `x.set_P(RHS)` and `set_P(get_P() + RHS)`, respectively.
+    *
+    * @param assignExpr
+    *   the full assignment expr, for `code`, `line` properties
+    * @param setterInfo
+    *   the setter meta-data, cf. [[tryResolveSetterInvocation]]
+    * @param assignOp
+    *   the final assignment operator name, cf. [[Operators]]
+    */
+  private def astForSetterAssignmentExpression(
+    assignExpr: DotNetNodeInfo,
+    setterInfo: (CSharpMethod, String),
+    lhs: DotNetNodeInfo,
+    assignOp: String,
+    rhs: DotNetNodeInfo
+  ): Seq[Ast] = {
+    lhs.node match {
+      case SimpleMemberAccessExpression =>
+        astForMemberAccessSetterAssignment(assignExpr, lhs, assignOp, rhs, setterInfo)
+      case IdentifierName => astForIdentifierSetterAssignment(assignExpr, lhs, assignOp, rhs, setterInfo)
+      case _ =>
+        logger.warn(s"Unsupported setter assignment: ${code(assignExpr)}")
+        Nil
+    }
+  }
+
+  /** Lowers arbitrary assignment `LHS = RHS`, `LHS += RHS`, etc. expressions.
+    * @param assignExpr
+    *   the full assignment, for `code`, `line` properties
+    * @param assignOp
+    *   the final assignment operator name, cf. [[Operators]]
+    */
+  private def astForAssignmentExpression(
+    assignExpr: DotNetNodeInfo,
+    lhs: DotNetNodeInfo,
+    assignOp: String,
+    rhs: DotNetNodeInfo
+  ): Seq[Ast] = {
+    tryResolveSetterInvocation(lhs) match {
+      case Some(setterInfo) => astForSetterAssignmentExpression(assignExpr, setterInfo, lhs, assignOp, rhs)
+      case None             => astForRegularAssignmentExpression(assignExpr, lhs, assignOp, rhs)
+    }
+  }
+
+  private def astForRegularAssignmentExpression(
+    assignExpr: DotNetNodeInfo,
+    lhs: DotNetNodeInfo,
+    assignOp: String,
+    rhs: DotNetNodeInfo
+  ): Seq[Ast] = {
+    astForRegularBinaryExpression(assignExpr, lhs, assignOp, rhs)
+  }
+
+  private def astForParenthesizedExpression(parenExpr: DotNetNodeInfo): Seq[Ast] = {
+    astForNode(parenExpr.json(ParserKeys.Expression))
   }
 
   private def astForAwaitExpression(awaitExpr: DotNetNodeInfo): Seq[Ast] = {
@@ -61,12 +266,32 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
   protected def astForOperand(operandNode: DotNetNodeInfo): Seq[Ast] = {
     operandNode.node match {
       case IdentifierName =>
-        List(scope.findFieldInScope(nameFromNode(operandNode)), scope.lookupVariable(nameFromNode(operandNode))) match {
-          case List(Some(_), None) => astForSimpleMemberAccessExpression(operandNode)
+        (scope.findFieldInScope(nameFromNode(operandNode)), scope.lookupVariable(nameFromNode(operandNode))) match {
+          case (Some(field), None) => createImplicitBaseFieldAccess(operandNode, field)
           case _                   => astForNode(operandNode)
         }
       case _ => astForNode(operandNode)
     }
+  }
+
+  private def createImplicitBaseFieldAccess(fieldNode: DotNetNodeInfo, field: FieldDecl): Seq[Ast] = {
+    // TODO: Maybe this should be a TypeRef, like we recently started doing for javasrc?
+    val baseNode = if (field.isStatic) {
+      newIdentifierNode(scope.surroundingTypeDeclFullName.getOrElse(Defines.Any), field.typeFullName)
+    } else {
+      newIdentifierNode(Constants.This, field.typeFullName)
+    }
+
+    fieldAccessAst(
+      base = Ast(baseNode),
+      code = s"${baseNode.code}.${field.name}",
+      lineNo = fieldNode.lineNumber,
+      columnNo = fieldNode.columnNumber,
+      fieldName = field.name,
+      fieldTypeFullName = field.typeFullName,
+      fieldLineNo = fieldNode.lineNumber,
+      fieldColumnNo = fieldNode.columnNumber
+    ) :: Nil
   }
 
   protected def astForUnaryExpression(unaryExpr: DotNetNodeInfo): Seq[Ast] = {
@@ -84,59 +309,44 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
       case "!" => Operators.logicalNot
       case "&" => Operators.addressOf
 
-    val args    = createDotNetNodeInfo(unaryExpr.json(ParserKeys.Operand))
-    val argsAst = astForOperand(args)
+    val args     = createDotNetNodeInfo(unaryExpr.json(ParserKeys.Operand))
+    val argsAst  = astForOperand(args)
+    val callNode = operatorCallNode(unaryExpr, operatorName, Some(nodeTypeFullName(args)))
 
-    Seq(
-      callAst(createCallNodeForOperator(unaryExpr, operatorName, typeFullName = Some(nodeTypeFullName(args))), argsAst)
-    )
+    callAst(callNode, argsAst) :: Nil
   }
 
-  protected def astForBinaryExpression(binaryExpr: DotNetNodeInfo): Seq[Ast] = {
+  private def astForBinaryExpression(binaryExpr: DotNetNodeInfo): Seq[Ast] = {
+    val lhsNode       = createDotNetNodeInfo(binaryExpr.json(ParserKeys.Left))
+    val rhsNode       = createDotNetNodeInfo(binaryExpr.json(ParserKeys.Right))
     val operatorToken = binaryExpr.json(ParserKeys.OperatorToken)(ParserKeys.Value).str
-    val operatorName = operatorToken match
-      case "+"   => Operators.addition
-      case "-"   => Operators.subtraction
-      case "*"   => Operators.multiplication
-      case "/"   => Operators.division
-      case "%"   => Operators.modulo
-      case "=="  => Operators.equals
-      case "!="  => Operators.notEquals
-      case "&&"  => Operators.logicalAnd
-      case "||"  => Operators.logicalOr
-      case "="   => Operators.assignment
-      case "+="  => Operators.assignmentPlus
-      case "-="  => Operators.assignmentMinus
-      case "*="  => Operators.assignmentMultiplication
-      case "/="  => Operators.assignmentDivision
-      case "%="  => Operators.assignmentModulo
-      case "&="  => Operators.assignmentAnd
-      case "|="  => Operators.assignmentOr
-      case "^="  => Operators.assignmentXor
-      case ">>=" => Operators.assignmentLogicalShiftRight
-      case "<<=" => Operators.assignmentShiftLeft
-      case ">"   => Operators.greaterThan
-      case "<"   => Operators.lessThan
-      case ">="  => Operators.greaterEqualsThan
-      case "<="  => Operators.lessEqualsThan
-      case "|"   => Operators.or
-      case "&"   => Operators.and
-      case "^"   => Operators.xor
-      case x =>
-        logger.warn(s"Unhandled operator '$x' for ${code(binaryExpr)}")
+    val operatorName = binaryOperatorsMap.getOrElse(
+      operatorToken, {
+        logger.warn(s"Unhandled operator '$operatorToken' for ${code(binaryExpr)}")
         CSharpOperators.unknown
-
-    val args = astForOperand(createDotNetNodeInfo(binaryExpr.json(ParserKeys.Left))) ++: astForOperand(
-      createDotNetNodeInfo(binaryExpr.json(ParserKeys.Right))
+      }
     )
+    binaryExpr.node match {
+      case _: AssignmentExpr => astForAssignmentExpression(binaryExpr, lhsNode, operatorName, rhsNode)
+      case _                 => astForRegularBinaryExpression(binaryExpr, lhsNode, operatorName, rhsNode)
+    }
+  }
 
-    val cNode =
-      createCallNodeForOperator(
-        binaryExpr,
-        operatorName,
-        typeFullName = Some(fixedTypeOperators.getOrElse(operatorName, getTypeFullNameFromAstNode(args)))
-      )
-    Seq(callAst(cNode, args))
+  /** @param binaryExpr
+    *   the full binary expression, for `code`, `line`, etc.
+    * @param operatorName
+    *   the final operator name, cf. [[Operators]]
+    */
+  private def astForRegularBinaryExpression(
+    binaryExpr: DotNetNodeInfo,
+    lhs: DotNetNodeInfo,
+    operatorName: String,
+    rhs: DotNetNodeInfo
+  ): Seq[Ast] = {
+    val args         = astForOperand(lhs) ++: astForOperand(rhs)
+    val typeFullName = fixedTypeOperators.get(operatorName).orElse(Some(getTypeFullNameFromAstNode(args)))
+    val callNode     = operatorCallNode(binaryExpr, operatorName, typeFullName)
+    callAst(callNode, args) :: Nil
   }
 
   /** Handles the `= ...` part of the equals value clause, thus this only contains an RHS.
@@ -202,70 +412,24 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     }
   }
 
-  private def astForInvocationExpression(invocationExpr: DotNetNodeInfo): Seq[Ast] = {
-    val expression   = createDotNetNodeInfo(invocationExpr.json(ParserKeys.Expression))
-    val callName     = nameFromNode(expression)
-    val argumentList = createDotNetNodeInfo(invocationExpr.json(ParserKeys.ArgumentList))
-
-    val (
-      receiver: Option[Ast],
-      baseTypeFullName: Option[String],
-      methodMetaData: Option[CSharpMethod],
-      arguments: Seq[Ast]
-    ) = expression.node match {
-      case SimpleMemberAccessExpression | SuppressNullableWarningExpression =>
-        val baseNode = createDotNetNodeInfo(
-          createDotNetNodeInfo(invocationExpr.json(ParserKeys.Expression)).json(ParserKeys.Expression)
-        )
-        val receiverAst = astForNode(baseNode).toList
-        val baseTypeFullName = receiverAst match {
-          case head :: _ => Option(getTypeFullNameFromAstNode(head)).filterNot(_ == Defines.Any)
-          case _         => None
-        }
-        val arguments      = astForArgumentList(argumentList, baseTypeFullName)
-        val argTypes       = arguments.map(getTypeFullNameFromAstNode).toList
-        val methodMetaData = scope.tryResolveMethodInvocation(callName, argTypes, baseTypeFullName)
-        (receiverAst.headOption, baseTypeFullName, methodMetaData, arguments)
-      case IdentifierName | MemberBindingExpression =>
-        // This is when a call is made directly, which could also be made from a static import
-        val argTypes = astForArgumentList(argumentList).map(getTypeFullNameFromAstNode).toList
-        scope
-          .tryResolveMethodInvocation(callName, argTypes)
-          .orElse(scope.tryResolveMethodInvocation(callName, argTypes, scope.surroundingTypeDeclFullName)) match {
-          case Some(methodMetaData) if methodMetaData.isStatic =>
-            // If static, create implicit type identifier explicitly
-            val typeMetaData = scope.typeForMethod(methodMetaData)
-            val typeName     = typeMetaData.flatMap(_.name.split("[.]").lastOption).getOrElse(Defines.Any)
-            val typeFullName = typeMetaData.map(_.name)
-            val receiverNode = Ast(
-              identifierNode(invocationExpr, typeName, typeName, typeFullName.getOrElse(Defines.Any))
-            )
-            val arguments = astForArgumentList(argumentList, typeFullName)
-            (Option(receiverNode), typeFullName, Option(methodMetaData), arguments)
-          case Some(methodMetaData) =>
-            // If dynamic, create implicit `this` identifier explicitly
-            val typeMetaData = scope.typeForMethod(methodMetaData)
-            val typeFullName = typeMetaData.map(_.name)
-            val thisAst      = astForThisReceiver(invocationExpr, typeFullName)
-            val arguments    = astForArgumentList(argumentList, typeFullName)
-            (Option(thisAst), typeMetaData.map(_.name), Option(methodMetaData), arguments)
-          case None =>
-            (None, None, None, Seq.empty[Ast])
-        }
-      case x =>
-        logger.warn(s"Unhandled LHS $x for InvocationExpression")
-        (None, None, None, Seq.empty[Ast])
-    }
+  private def createInvocationAst(
+    invocationExpr: DotNetNodeInfo,
+    callName: String,
+    arguments: Seq[Ast],
+    baseAst: Option[Ast],
+    methodMetaData: Option[CSharpMethod],
+    baseTypeFullName: Option[String]
+  ): Ast = {
     val methodSignature = methodMetaData match {
-      case Some(m) => s"${m.returnType}(${m.parameterTypes.filterNot(_._1 == "this").map(_._2).mkString(",")})"
-      case None    => Defines.UnresolvedSignature
+      case Some(m) =>
+        val returnType = DotNetTypeMap.getOrElse(m.returnType, m.returnType)
+        composeMethodLikeSignature(returnType, m.parameterTypes.filterNot(_._1 == Constants.This).map(_._2))
+      case None => Defines.UnresolvedSignature
     }
 
     val methodFullName = baseTypeFullName match {
-      case Some(typeFullName) =>
-        s"$typeFullName.$callName:$methodSignature"
-      case _ =>
-        s"${Defines.UnresolvedNamespace}.$callName:$methodSignature"
+      case Some(typeFullName) => composeMethodFullName(typeFullName, callName, methodSignature)
+      case _                  => composeMethodFullName(Defines.UnresolvedNamespace, callName, methodSignature)
     }
     val dispatchType = methodMetaData
       .map(_.isStatic)
@@ -286,74 +450,162 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
         methodMetaData.map(_.returnType)
       ),
       arguments,
-      receiver
+      baseAst
     )
-    Seq(_callAst)
+
+    _callAst
   }
 
-  protected def astForSimpleMemberAccessExpression(accessExpr: DotNetNodeInfo): Seq[Ast] = {
-    val fieldIdentifierName = nameFromNode(accessExpr)
+  /** Handles expressions like `foo.Bar()`. If `Bar` can't be found inside `foo`'s class, attempts to find a compatible
+    * extension method. If all fails, an AST is still produced.
+    */
+  private def astForMemberAccessInvocation(
+    invocationExpr: DotNetNodeInfo,
+    baseAst: Option[Ast],
+    argumentList: DotNetNodeInfo,
+    callName: String
+  ): Seq[Ast] = {
 
-    val (identifierName, typeFullName) = accessExpr.node match {
-      case SimpleMemberAccessExpression => {
-        createDotNetNodeInfo(accessExpr.json(ParserKeys.Expression)).node match
-          case SuppressNullableWarningExpression =>
-            val baseNode         = createDotNetNodeInfo(accessExpr.json(ParserKeys.Expression)(ParserKeys.Operand))
-            val baseAst          = astForNode(baseNode)
-            val baseTypeFullName = getTypeFullNameFromAstNode(baseAst)
+    val baseTypeFullName = Some(getTypeFullNameFromAstNode(baseAst.toList)).filterNot(_ == Defines.Any)
+    val arguments        = astForArgumentList(argumentList, baseTypeFullName)
+    val argTypes         = arguments.map(getTypeFullNameFromAstNode).toList
 
-            val fieldInScope = scope.tryResolveFieldAccess(fieldIdentifierName, typeFullName = Option(baseTypeFullName))
+    val byMethod         = scope.tryResolveMethodInvocation(callName, argTypes, baseTypeFullName)
+    lazy val byExtMethod = scope.tryResolveExtensionMethodInvocation(baseTypeFullName, callName, argTypes)
 
-            (
-              nameFromNode(baseNode),
-              fieldInScope
-                .map(_.typeName)
-                .getOrElse(Defines.Any)
-            )
-          case _ => {
-            val fieldInScope = scope.findFieldInScope(fieldIdentifierName)
-            val _identifierName =
-              if (fieldInScope.nonEmpty && fieldInScope.map(_.isStatic).contains(true))
-                scope.surroundingTypeDeclFullName.getOrElse(Defines.Any)
-              else Constants.This
-            val _typeFullName = fieldInScope.map(_.typeFullName).getOrElse(Defines.Any)
-            (_identifierName, _typeFullName)
-          }
-      }
-      case _ => {
-        val fieldInScope = scope.findFieldInScope(fieldIdentifierName)
-        val _identifierName =
-          if (fieldInScope.nonEmpty && fieldInScope.map(_.isStatic).contains(true))
-            scope.surroundingTypeDeclFullName.getOrElse(Defines.Any)
-          else Constants.This
-        val _typeFullName = fieldInScope.map(_.typeFullName).getOrElse(Defines.Any)
-        (_identifierName, _typeFullName)
-      }
+    val (method, baseType) = byMethod
+      .map(x => (Some(x), baseTypeFullName))
+      .orElse(byExtMethod.map(x => (Some(x._1), Some(x._2))))
+      .getOrElse((None, baseTypeFullName))
+
+    createInvocationAst(invocationExpr, callName, arguments, baseAst, method, baseType) :: Nil
+  }
+
+  private def astForIdentifierInvocation(
+    invocationExpr: DotNetNodeInfo,
+    argumentList: DotNetNodeInfo,
+    callName: String
+  ): Seq[Ast] = {
+    // This is when a call is made directly, which could also be made from a static import
+    val argTypes = astForArgumentList(argumentList).map(getTypeFullNameFromAstNode).toList
+    val (receiver, baseType, method, args) = scope
+      .tryResolveMethodInvocation(callName, argTypes)
+      .orElse(scope.tryResolveMethodInvocation(callName, argTypes, scope.surroundingTypeDeclFullName)) match {
+      case Some(methodMetaData) if methodMetaData.isStatic =>
+        // If static, create implicit type identifier explicitly
+        val typeMetaData = scope.typeForMethod(methodMetaData)
+        val typeName     = typeMetaData.flatMap(_.name.split("[.]").lastOption).getOrElse(Defines.Any)
+        val typeFullName = typeMetaData.map(_.name)
+        val receiverNode = Ast(identifierNode(invocationExpr, typeName, typeName, typeFullName.getOrElse(Defines.Any)))
+        val arguments    = astForArgumentList(argumentList, typeFullName)
+        (Option(receiverNode), typeFullName, Option(methodMetaData), arguments)
+      case Some(methodMetaData) =>
+        // If dynamic, create implicit `this` identifier explicitly
+        val typeMetaData = scope.typeForMethod(methodMetaData)
+        val typeFullName = typeMetaData.map(_.name)
+        val thisAst      = astForThisReceiver(invocationExpr, typeFullName)
+        val arguments    = astForArgumentList(argumentList, typeFullName)
+        (Option(thisAst), typeMetaData.map(_.name), Option(methodMetaData), arguments)
+      case None =>
+        (None, None, None, Seq.empty[Ast])
     }
 
-    val identifier = newIdentifierNode(identifierName, typeFullName)
+    createInvocationAst(invocationExpr, callName, args, receiver, method, baseType) :: Nil
+  }
 
-    val fieldIdentifier = NewFieldIdentifier()
-      .code(fieldIdentifierName)
-      .canonicalName(fieldIdentifierName)
-      .lineNumber(accessExpr.lineNumber)
-      .columnNumber(accessExpr.columnNumber)
+  private def astForInvocationExpression(invocationExpr: DotNetNodeInfo): Seq[Ast] = {
+    val expression   = createDotNetNodeInfo(invocationExpr.json(ParserKeys.Expression))
+    val callName     = nameFromNode(expression)
+    val argumentList = createDotNetNodeInfo(invocationExpr.json(ParserKeys.ArgumentList))
 
-    val fieldAccessCode = s"$identifierName.$fieldIdentifierName"
+    expression.node match {
+      case SimpleMemberAccessExpression | SuppressNullableWarningExpression =>
+        val baseAst = astForNode(createDotNetNodeInfo(expression.json(ParserKeys.Expression)))
+        astForMemberAccessInvocation(invocationExpr, baseAst.headOption, argumentList, callName)
+      case IdentifierName | MemberBindingExpression =>
+        astForIdentifierInvocation(invocationExpr, argumentList, callName)
+      case x =>
+        logger.warn(s"Unhandled LHS $x for InvocationExpression")
+        Nil
+    }
+  }
 
-    val fieldAccess =
-      newOperatorCallNode(
-        Operators.fieldAccess,
-        fieldAccessCode,
-        Some(typeFullName).orElse(Some(Defines.Any)),
-        accessExpr.lineNumber,
-        accessExpr.columnNumber
-      )
+  /** Handles expressions like `foo.MyField`, where `MyField` is known to be a getter property. Getters are lowered into
+    * calls, e.g. (a) System.Console.Out becomes System.Console.get_Out(), because it's a static method; (b) x.KeyChar
+    * becomes System.ConsoleKeyInfo.get_KeyChar(x), because it's a dynamic method.
+    */
+  private def astForMemberAccessGetterExpression(
+    getter: CSharpMethod,
+    baseAst: Ast,
+    baseTypeFullName: String,
+    accessExpr: DotNetNodeInfo
+  ): Seq[Ast] = {
+    if (getter.isStatic) {
+      callAst(
+        newCallNode(
+          getter.name,
+          Some(baseTypeFullName),
+          getter.returnType,
+          DispatchTypes.STATIC_DISPATCH,
+          Nil,
+          code(accessExpr),
+          line(accessExpr),
+          column(accessExpr)
+        )
+      ) :: Nil
+    } else {
+      callAst(
+        newCallNode(
+          getter.name,
+          Some(baseTypeFullName),
+          getter.returnType,
+          DispatchTypes.DYNAMIC_DISPATCH,
+          baseTypeFullName :: Nil,
+          code(accessExpr),
+          line(accessExpr),
+          column(accessExpr)
+        ),
+        base = Some(baseAst)
+      ) :: Nil
+    }
+  }
 
-    val identifierAst = Ast(identifier)
-    val fieldIdentAst = Ast(fieldIdentifier)
+  private def astForSimpleMemberAccessExpression(accessExpr: DotNetNodeInfo): Seq[Ast] = {
+    val fieldIdentifierName = nameFromNode(accessExpr)
+    val baseAst             = astForNode(createDotNetNodeInfo(accessExpr.json(ParserKeys.Expression))).head
+    val baseTypeFullName    = getTypeFullNameFromAstNode(baseAst)
 
-    Seq(callAst(fieldAccess, Seq(identifierAst, fieldIdentAst)))
+    // The typical field access resolving mechanism
+    lazy val byFieldAccess = scope.tryResolveFieldAccess(fieldIdentifierName, Some(baseTypeFullName))
+
+    // Getters look like fields, but are underneath `get_`-prefixed methods
+    lazy val byPropertyName = scope.tryResolveGetterInvocation(fieldIdentifierName, Some(baseTypeFullName))
+
+    // accessExpr might be a qualified name e.g. `System.Console`, in which case `System` (baseAst) is not a type
+    // but a namespace. In this scenario, we look up the entire expression
+    lazy val byQualifiedName = scope.tryResolveTypeReference(accessExpr.code)
+
+    val (typeFullName, isGetter) = byFieldAccess
+      .map(x => (x.typeName, false))
+      .orElse(byPropertyName.map(x => (x.returnType, true)))
+      .orElse(byQualifiedName.map(x => (x.name, false)))
+      .map((typeName, isGetter) => (scope.tryResolveTypeReference(typeName).map(_.name).getOrElse(typeName), isGetter))
+      .getOrElse((Defines.Any, false))
+
+    if (isGetter) {
+      astForMemberAccessGetterExpression(byPropertyName.get, baseAst, baseTypeFullName, accessExpr)
+    } else {
+      fieldAccessAst(
+        baseAst,
+        code(accessExpr),
+        line(accessExpr),
+        column(accessExpr),
+        fieldIdentifierName,
+        typeFullName,
+        line(accessExpr),
+        column(accessExpr)
+      ) :: Nil
+    }
   }
 
   protected def astForElementAccessExpression(elementAccessExpression: DotNetNodeInfo): Seq[Ast] = {
@@ -521,21 +773,15 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     baseType: Option[String] = None
   ): Seq[Ast] = {
     val baseNode = createDotNetNodeInfo(condAccExpr.json(ParserKeys.Expression))
-    val baseAst  = astForNode(baseNode)
-
     val baseTypeFullName =
-      if (getTypeFullNameFromAstNode(baseAst).equals(Defines.Any)) baseType
-      else Option(getTypeFullNameFromAstNode(baseAst))
+      baseType.orElse(Some(getTypeFullNameFromAstNode(astForNode(baseNode)))).filterNot(_.equals(Defines.Any))
 
     Try(createDotNetNodeInfo(condAccExpr.json(ParserKeys.WhenNotNull))).toOption match {
       case Some(node) =>
         node.node match {
-          case ConditionalAccessExpression =>
-            astForConditionalAccessExpression(node, baseTypeFullName)
-          case MemberBindingExpression => astForMemberBindingExpression(node, baseTypeFullName)
-          case InvocationExpression =>
-            astForInvocationExpression(node)
-          case _ => astForNode(node)
+          case ConditionalAccessExpression => astForConditionalAccessExpression(node, baseTypeFullName)
+          case MemberBindingExpression     => astForMemberBindingExpression(node, baseTypeFullName)
+          case _                           => astForNode(node)
         }
       case None => Seq.empty[Ast]
     }

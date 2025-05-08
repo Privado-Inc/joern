@@ -5,7 +5,6 @@ import io.shiftleft.codepropertygraph.generated.{Cpg, PropertyNames}
 import io.shiftleft.codepropertygraph.generated.nodes.{CfgNode, MethodParameterIn, MethodReturn, StoredNode}
 import io.shiftleft.passes.ForkJoinParallelCpgPass
 import io.shiftleft.semanticcpg.language.*
-import overflowdb.BatchedUpdate
 
 import java.io.File
 import java.util.regex.{Matcher, Pattern}
@@ -71,10 +70,10 @@ class DynamicTypeHintFullNamePass(cpg: Cpg) extends ForkJoinParallelCpgPass[CfgN
     }
 
   private def pythonicTypeNameToImport(fullName: String): String =
-    fullName.replaceFirst("\\.py:<module>", "").replaceAll(Pattern.quote(File.separator), ".")
+    fullName.replaceFirst(s"\\.py:${Constants.moduleName}", "").replaceAll(Pattern.quote(File.separator), ".")
 
   private def setTypeHints(
-    diffGraph: BatchedUpdate.DiffGraphBuilder,
+    diffGraph: DiffGraphBuilder,
     node: StoredNode,
     typeHint: String,
     alias: String,
@@ -85,7 +84,7 @@ class DynamicTypeHintFullNamePass(cpg: Cpg) extends ForkJoinParallelCpgPass[CfgN
     val typeFilePath     = typeHintFullName.replaceAll("\\.", Matcher.quoteReplacement(File.separator))
     val pythonicTypeFullName = importFullPath.split("\\.").lastOption match {
       case Some(typeName) =>
-        typeFilePath.stripSuffix(s"${File.separator}$typeName").concat(s".py:<module>.$typeName")
+        typeFilePath.stripSuffix(s"${File.separator}$typeName").concat(s".py:${Constants.moduleName}.$typeName")
       case None => typeHintFullName
     }
     cpg.typeDecl.fullName(s".*${Pattern.quote(pythonicTypeFullName)}").l match {
