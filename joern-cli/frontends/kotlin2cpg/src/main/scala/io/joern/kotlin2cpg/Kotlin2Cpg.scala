@@ -223,9 +223,9 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
           new ErrorLoggingMessageCollector
         )
         val bindingContext = BindingContextAnalyserPass(environments, config).apply()
-        val sourceFiles         = environments.flatMap(environment => gatherSourceFiles(sourceDir, config, environment))
-        val configFiles         = entriesForConfigFiles(SourceFilesPicker.configFiles(sourceDir), sourceDir)
-        val astCreator          = new AstCreationPass(sourceFiles, bindingContext, cpg)(config.schemaValidation)
+        val sourceFiles    = environments.flatMap(environment => gatherSourceFiles(sourceDir, config, environment))
+        val configFiles    = entriesForConfigFiles(SourceFilesPicker.configFiles(sourceDir), sourceDir)
+        val astCreator     = new AstCreationPass(sourceFiles, bindingContext, cpg)(config.schemaValidation)
         astCreator.createAndApply()
         StatsLogger.justLogMessage("kotlin2cpg -> AstCreationPass() done")
         environments.foreach { environment => Disposer.dispose(environment.getProjectEnvironment.getParentDisposable) }
