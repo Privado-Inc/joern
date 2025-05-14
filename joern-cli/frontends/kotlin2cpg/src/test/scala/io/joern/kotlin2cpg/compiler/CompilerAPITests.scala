@@ -112,13 +112,15 @@ class CompilerAPITests extends SourceCodeFixture {
           ("fifth", "dir2/dir7/D.kt")
         )
       )
-      val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
+      val modules =
+        ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir)).sortBy(_.modulePathRoot)
       modules.size shouldBe 2
-      modules.head.modulePathRoot shouldBe s"$repoDir/dir2"
-      modules.head.sourceFileDirs.contains(s"$repoDir/dir2/dir7/D.kt") shouldBe true
-      modules(1).modulePathRoot shouldBe s"$repoDir/dir1"
-      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
-      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
+
+      modules.head.modulePathRoot shouldBe s"$repoDir/dir1"
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
+      modules(1).modulePathRoot shouldBe s"$repoDir/dir2"
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir2/dir7/D.kt") shouldBe true
     }
 
     "repo with parent module along with multiple child modules" in {
@@ -132,13 +134,14 @@ class CompilerAPITests extends SourceCodeFixture {
           ("sixth", "build.gradle.kts")
         )
       )
-      val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
+      val modules =
+        ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir)).sortBy(_.modulePathRoot)
       modules.size shouldBe 2
-      modules.head.modulePathRoot shouldBe s"$repoDir/dir2"
-      modules.head.sourceFileDirs.contains(s"$repoDir/dir2/dir7/D.kt") shouldBe true
-      modules(1).modulePathRoot shouldBe s"$repoDir/dir1"
-      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
-      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
+      modules.head.modulePathRoot shouldBe s"$repoDir/dir1"
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
+      modules.head.sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
+      modules(1).modulePathRoot shouldBe s"$repoDir/dir2"
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir2/dir7/D.kt") shouldBe true
     }
 
     "repo with parent module along with source code and multiple child modules" in {
@@ -153,16 +156,18 @@ class CompilerAPITests extends SourceCodeFixture {
           ("seventh", "src/main/java/A.kt")
         )
       )
-      val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
+      val modules =
+        ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir)).sortBy(_.modulePathRoot)
       modules.size shouldBe 3
       modules.head.modulePathRoot shouldBe s"$repoDir"
       modules.head.sourceFileDirs.contains(s"$repoDir/src/main/java/A.kt") shouldBe true
-      modules(1).modulePathRoot shouldBe s"$repoDir/dir2"
-      modules(1).sourceFileDirs.contains(s"$repoDir/dir2/dir7/D.kt") shouldBe true
-      modules(2).modulePathRoot shouldBe s"$repoDir/dir1"
-      modules(2).sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
-      modules(2).sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
+      modules(1).modulePathRoot shouldBe s"$repoDir/dir1"
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir3/B.kt") shouldBe true
+      modules(1).sourceFileDirs.contains(s"$repoDir/dir1/dir4/dir5/dir6/C.kt") shouldBe true
+      modules(2).modulePathRoot shouldBe s"$repoDir/dir2"
+      modules(2).sourceFileDirs.contains(s"$repoDir/dir2/dir7/D.kt") shouldBe true
     }
+
     "invalid case where build.gradle file present inside source directory" in {
       val repoDir = setupRepoStructure(
         List(
@@ -175,7 +180,8 @@ class CompilerAPITests extends SourceCodeFixture {
           ("sixth", "build.gradle.kts")
         )
       )
-      val modules = ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir))
+      val modules =
+        ContentSourcesPicker.getModuleWiseSegregation(repoDir, Config().withInputPath(repoDir)).sortBy(_.modulePathRoot)
       modules.size shouldBe 2
       modules.head.modulePathRoot shouldBe s"$repoDir"
       modules.head.sourceFileDirs.contains(s"$repoDir/src/main/java/some.kt") shouldBe true
