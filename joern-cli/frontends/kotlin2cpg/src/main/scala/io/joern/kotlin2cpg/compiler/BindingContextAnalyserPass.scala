@@ -1,9 +1,14 @@
 package io.joern.kotlin2cpg.compiler
 
 import io.joern.kotlin2cpg.Config
-import io.joern.kotlin2cpg.ast.BindingContextUtils
-import org.jetbrains.kotlin.cli.jvm.compiler.{KotlinCoreEnvironment, KotlinToJVMBytecodeCompiler}
+import org.jetbrains.kotlin.cli.jvm.compiler.{
+  KotlinCoreEnvironment,
+  KotlinToJVMBytecodeCompiler,
+  NoScopeRecordCliBindingTrace
+}
+import org.jetbrains.kotlin.com.intellij.util.keyFMap.KeyFMap
 import org.jetbrains.kotlin.resolve.{BindingContext, BindingTraceContext}
+import org.jetbrains.kotlin.util.slicedMap.WritableSlice
 import org.slf4j.LoggerFactory
 
 import java.util.concurrent.LinkedBlockingQueue
@@ -13,8 +18,74 @@ import scala.concurrent.{Await, Future}
 class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], config: Config) {
   private val logger                                   = LoggerFactory.getLogger(getClass)
   private val bindingTraceContext: BindingTraceContext = BindingTraceContext(true)
+  private var originalBindingContext: BindingContext   = null
 
-  def getBindingContext: BindingContext = bindingTraceContext.getBindingContext
+  def getBindingContext: BindingContext = {
+    val bindingContext = bindingTraceContext.getBindingContext
+    println("before merging bindingContext")
+    printBindingContextData(originalBindingContext)
+
+    println("final bindingContext")
+    printBindingContextData(bindingContext)
+    bindingContext
+  }
+
+  def printBindingContextData(bindingContext: BindingContext): Unit = {
+    try {
+      if (bindingContext != null) {
+        val thisField = bindingContext.getClass.getDeclaredField("this$0")
+        thisField.setAccessible(true)
+        val (bindingTrace, mapField) = thisField.get(bindingContext) match {
+          case bindingTrace: NoScopeRecordCliBindingTrace =>
+            (bindingTrace, bindingTrace.getClass.getSuperclass.getSuperclass.getDeclaredField("map"))
+          case bindingTrace: BindingTraceContext =>
+            (bindingTrace, bindingTrace.getClass.getDeclaredField("map"))
+        }
+        mapField.setAccessible(true)
+        val map = mapField.get(bindingTrace)
+
+        val mapMapField = map.getClass.getDeclaredField("map")
+        mapMapField.setAccessible(true)
+        val mapfinalFiled = mapMapField.get(map).asInstanceOf[java.util.Map[Object, KeyFMap]]
+        if (mapfinalFiled == null) {
+          println("Map is null")
+        } else {
+          println(s"Map size: ${mapfinalFiled.size()}")
+        }
+        val collectiveSliceKeysField = map.getClass.getDeclaredField("collectiveSliceKeys")
+        collectiveSliceKeysField.setAccessible(true)
+        collectiveSliceKeysField
+          .get(map) match {
+          case field: com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] =>
+            if (field == null) {
+              println("com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] is null")
+            } else {
+              println(
+                s"com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] size: ${field.size()}"
+              )
+            }
+          case field: org.jetbrains.kotlin.com.google.common.collect.ArrayListMultimap[WritableSlice[
+                Any,
+                Any
+              ], Object] =>
+            if (field == null) {
+              println(
+                "org.jetbrains.kotlin.com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] is null"
+              )
+            } else {
+              println(
+                s"org.jetbrains.kotlin.com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] size: ${field.size()}"
+              )
+            }
+          case _ =>
+            println("collectiveSliceKeysField Unknown type")
+        }
+      }
+    } catch {
+      case to: Throwable =>
+        to.printStackTrace()
+    }
+  }
 
   def apply(): BindingContext = {
     val writer       = Writer()
@@ -71,6 +142,7 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
             case Some(bindingContext: BindingContext) =>
               logger.info("Processing BindingContext")
               bindingContext.addOwnDataTo(bindingTraceContext, true)
+              originalBindingContext = bindingContext
           }
         }
       } catch {
