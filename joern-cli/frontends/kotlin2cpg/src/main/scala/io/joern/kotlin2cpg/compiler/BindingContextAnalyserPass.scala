@@ -11,6 +11,7 @@ import org.jetbrains.kotlin.resolve.{BindingContext, BindingTraceContext}
 import org.jetbrains.kotlin.util.slicedMap.WritableSlice
 import org.slf4j.LoggerFactory
 
+import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
@@ -19,13 +20,14 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
   private val logger                                   = LoggerFactory.getLogger(getClass)
   private val bindingTraceContext: BindingTraceContext = BindingTraceContext(true)
   private var originalBindingContext: BindingContext   = null
+  private val generateGUID: String                     = UUID.randomUUID().toString
 
   def getBindingContext: BindingContext = {
     val bindingContext = bindingTraceContext.getBindingContext
-    println("before merging bindingContext")
+    println(s"$generateGUID final before merging bindingContext")
     printBindingContextData(originalBindingContext)
 
-    println("final bindingContext")
+    println(s"$generateGUID final returned bindingContext")
     printBindingContextData(bindingContext)
     bindingContext
   }
@@ -48,9 +50,9 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
         mapMapField.setAccessible(true)
         val mapfinalFiled = mapMapField.get(map).asInstanceOf[java.util.Map[Object, KeyFMap]]
         if (mapfinalFiled == null) {
-          println("Map is null")
+          println(s"$generateGUID Map is null")
         } else {
-          println(s"Map size: ${mapfinalFiled.size()}")
+          println(s"$generateGUID Map size: ${mapfinalFiled.size()}")
         }
         val collectiveSliceKeysField = map.getClass.getDeclaredField("collectiveSliceKeys")
         collectiveSliceKeysField.setAccessible(true)
@@ -58,10 +60,12 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
           .get(map) match {
           case field: com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] =>
             if (field == null) {
-              println("com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] is null")
+              println(
+                s"$generateGUID com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] is null"
+              )
             } else {
               println(
-                s"com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] size: ${field.size()}"
+                s"$generateGUID com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] size: ${field.size()}"
               )
             }
           case field: org.jetbrains.kotlin.com.google.common.collect.ArrayListMultimap[WritableSlice[
@@ -70,15 +74,15 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
               ], Object] =>
             if (field == null) {
               println(
-                "org.jetbrains.kotlin.com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] is null"
+                s"$generateGUID org.jetbrains.kotlin.com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] is null"
               )
             } else {
               println(
-                s"org.jetbrains.kotlin.com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] size: ${field.size()}"
+                s"$generateGUID org.jetbrains.kotlin.com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] size: ${field.size()}"
               )
             }
           case _ =>
-            println("collectiveSliceKeysField Unknown type")
+            println(s"$generateGUID collectiveSliceKeysField Unknown type")
         }
       }
     } catch {
@@ -101,6 +105,7 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
     Await.result(Future.sequence(futures), Duration.Inf)
     logger.debug("Adding None to queue")
     writer.queue.put(None)
+    writerThread.join()
     if writer.raisedException != null then
       logger.error("WriterThread raised exception", writer.raisedException)
       throw writer.raisedException
@@ -141,7 +146,11 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
               terminate = true
             case Some(bindingContext: BindingContext) =>
               logger.info("Processing BindingContext")
+              println(s"$generateGUID before merging bindingContext")
+              printBindingContextData(bindingContext)
               bindingContext.addOwnDataTo(bindingTraceContext, true)
+              println(s"$generateGUID after merging new bindingContext")
+              printBindingContextData(bindingTraceContext.getBindingContext)
               originalBindingContext = bindingContext
           }
         }
