@@ -206,7 +206,6 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
     withNewEmptyCpg(config.outputPath, config) { (cpg, config) =>
       val originalSourceDir = config.inputPath
       logger.info(s"Starting CPG generation for input directory `$originalSourceDir`.")
-      StatsLogger.justLogMessage("kotlin2cpg -> Starting CPG generation")
       checkSourceDir(originalSourceDir)
       logMaxHeapSize()
       new MetaDataPass(cpg, Languages.KOTLIN, config.inputPath).createAndApply()
@@ -227,7 +226,6 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
         val configFiles    = entriesForConfigFiles(SourceFilesPicker.configFiles(sourceDir), sourceDir)
         val astCreator     = new AstCreationPass(sourceFiles, bindingContext, cpg)(config.schemaValidation)
         astCreator.createAndApply()
-        StatsLogger.justLogMessage("kotlin2cpg -> AstCreationPass() done")
         environments.foreach { environment => Disposer.dispose(environment.getProjectEnvironment.getParentDisposable) }
 
         val kotlinAstCreatorTypes = astCreator.usedTypes()

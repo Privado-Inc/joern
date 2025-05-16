@@ -19,14 +19,10 @@ import scala.concurrent.{Await, Future}
 class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], config: Config) {
   private val logger                                   = LoggerFactory.getLogger(getClass)
   private val bindingTraceContext: BindingTraceContext = BindingTraceContext(true)
-  private var originalBindingContext: BindingContext   = null
   private val generateGUID: String                     = UUID.randomUUID().toString
 
   def getBindingContext: BindingContext = {
     val bindingContext = bindingTraceContext.getBindingContext
-    println(s"$generateGUID final before merging bindingContext")
-    printBindingContextData(originalBindingContext)
-
     println(s"$generateGUID final returned bindingContext")
     printBindingContextData(bindingContext)
     bindingContext
@@ -50,9 +46,9 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
         mapMapField.setAccessible(true)
         val mapfinalFiled = mapMapField.get(map).asInstanceOf[java.util.Map[Object, KeyFMap]]
         if (mapfinalFiled == null) {
-          println(s"$generateGUID Map is null")
+          logger.debug(s"$generateGUID Map is null")
         } else {
-          println(s"$generateGUID Map size: ${mapfinalFiled.size()}")
+          logger.debug(s"$generateGUID Map size: ${mapfinalFiled.size()}")
         }
         val collectiveSliceKeysField = map.getClass.getDeclaredField("collectiveSliceKeys")
         collectiveSliceKeysField.setAccessible(true)
@@ -60,11 +56,11 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
           .get(map) match {
           case field: com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] =>
             if (field == null) {
-              println(
+              logger.debug(
                 s"$generateGUID com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] is null"
               )
             } else {
-              println(
+              logger.debug(
                 s"$generateGUID com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] size: ${field.size()}"
               )
             }
@@ -73,20 +69,21 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
                 Any
               ], Object] =>
             if (field == null) {
-              println(
+              logger.debug(
                 s"$generateGUID org.jetbrains.kotlin.com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] is null"
               )
             } else {
-              println(
+              logger.debug(
                 s"$generateGUID org.jetbrains.kotlin.com.google.common.collect.ArrayListMultimap[WritableSlice[Any, Any], Object] size: ${field.size()}"
               )
             }
           case _ =>
-            println(s"$generateGUID collectiveSliceKeysField Unknown type")
+            logger.debug(s"$generateGUID collectiveSliceKeysField Unknown type")
         }
       }
     } catch {
       case to: Throwable =>
+        logger.error(s"$generateGUID Exception while printing bindingContext data: ${to.getMessage}", to)
         to.printStackTrace()
     }
   }
@@ -146,12 +143,11 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
               terminate = true
             case Some(bindingContext: BindingContext) =>
               logger.info("Processing BindingContext")
-              println(s"$generateGUID before merging bindingContext")
+              logger.debug(s"$generateGUID before merging bindingContext")
               printBindingContextData(bindingContext)
               bindingContext.addOwnDataTo(bindingTraceContext, true)
-              println(s"$generateGUID after merging new bindingContext")
+              logger.debug(s"$generateGUID after merging new bindingContext")
               printBindingContextData(bindingTraceContext.getBindingContext)
-              originalBindingContext = bindingContext
           }
         }
       } catch {
