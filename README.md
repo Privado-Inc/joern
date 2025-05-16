@@ -15,6 +15,7 @@ query language. Joern is developed with the goal of providing a useful
 tool for vulnerability discovery and research in static program
 analysis.
 
+
 Website: https://joern.io
 
 Documentation: https://docs.joern.io/
