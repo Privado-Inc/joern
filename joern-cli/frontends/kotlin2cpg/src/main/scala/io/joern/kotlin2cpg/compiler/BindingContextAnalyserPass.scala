@@ -23,7 +23,7 @@ class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], conf
 
   def getBindingContext: BindingContext = {
     val bindingContext = bindingTraceContext.getBindingContext
-    println(s"$generateGUID final returned bindingContext")
+    logger.debug(s"$generateGUID final returned bindingContext")
     printBindingContextData(bindingContext)
     bindingContext
   }
