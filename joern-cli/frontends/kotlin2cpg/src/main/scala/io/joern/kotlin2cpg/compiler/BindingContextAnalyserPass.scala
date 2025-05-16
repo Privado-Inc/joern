@@ -16,6 +16,13 @@ import java.util.concurrent.LinkedBlockingQueue
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
 
+/** This class is responsible for creating a binding context for the given KotlinCoreEnvironment. It uses a writer
+  * thread to process the binding context in a non-blocking way.
+  *
+  * @param environments
+  * @param config
+  */
+
 class BindingContextAnalyserPass(environments: List[KotlinCoreEnvironment], config: Config) {
   private val logger                                   = LoggerFactory.getLogger(getClass)
   private val bindingTraceContext: BindingTraceContext = BindingTraceContext(true)
