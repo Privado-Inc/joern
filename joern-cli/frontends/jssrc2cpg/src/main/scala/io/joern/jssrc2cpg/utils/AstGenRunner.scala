@@ -5,18 +5,15 @@ import com.typesafe.config.ConfigFactory
 import io.joern.jssrc2cpg.Config
 import io.joern.jssrc2cpg.preprocessing.EjsPreprocessor
 import io.joern.x2cpg.SourceFiles
-import io.joern.x2cpg.utils.Environment
-import io.joern.x2cpg.utils.ExternalCommand
+import io.joern.x2cpg.utils.{Environment, ExternalCommand}
 import io.shiftleft.utils.IOUtils
 import org.slf4j.LoggerFactory
 import versionsort.VersionHelper
 
 import java.nio.file.Paths
 import java.util.regex.Pattern
-import scala.util.Failure
-import scala.util.Success
+import scala.util.{Failure, Success, Try}
 import scala.util.matching.Regex
-import scala.util.Try
 
 object AstGenRunner {
 
@@ -441,7 +438,7 @@ class AstGenRunner(config: Config) {
   def execute(out: File): AstGenRunnerResult = {
     val tmpInput = filterAndCopyFiles()
     val in       = File(config.inputPath)
-    runAstGenNative(in, out) match {
+    runAstGenNative(tmpInput, out) match {
       case Success(result) =>
         val parsed  = checkParsedFiles(filterFiles(SourceFiles.determine(out.toString(), Set(".json")), out), tmpInput)
         val skipped = skippedFiles(result.toList)
