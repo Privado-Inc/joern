@@ -1,32 +1,20 @@
 package io.joern.kotlin2cpg.types
 
 import kotlin.reflect.jvm.internal.impl.load.java.descriptors.JavaClassConstructorDescriptor
-import org.jetbrains.kotlin.cli.jvm.compiler.NoScopeRecordCliBindingTrace
 import org.jetbrains.kotlin.com.intellij.util.keyFMap.KeyFMap
-import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
-import org.jetbrains.kotlin.descriptors.FunctionDescriptor
-import org.jetbrains.kotlin.descriptors.impl.ClassConstructorDescriptorImpl
-import org.jetbrains.kotlin.descriptors.impl.TypeAliasConstructorDescriptorImpl
-import org.jetbrains.kotlin.descriptors.CallableDescriptor
-import org.jetbrains.kotlin.descriptors.PropertyDescriptor
+import org.jetbrains.kotlin.descriptors.impl.{ClassConstructorDescriptorImpl, TypeAliasConstructorDescriptorImpl}
+import org.jetbrains.kotlin.descriptors.{
+  CallableDescriptor,
+  DeclarationDescriptor,
+  FunctionDescriptor,
+  PropertyDescriptor
+}
 import org.jetbrains.kotlin.load.java.`lazy`.descriptors.LazyJavaClassDescriptor
 import org.jetbrains.kotlin.load.java.sources.JavaSourceElement
 import org.jetbrains.kotlin.load.java.structure.impl.classFiles.BinaryJavaMethod
-import org.jetbrains.kotlin.psi.{
-  Call,
-  KtArrayAccessExpression,
-  KtBinaryExpression,
-  KtCallExpression,
-  KtElement,
-  KtExpression,
-  KtNameReferenceExpression,
-  KtQualifiedExpression,
-  KtSuperExpression,
-  KtThisExpression
-}
-import org.jetbrains.kotlin.resolve.BindingContext
-import org.jetbrains.kotlin.resolve.DescriptorUtils
+import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.resolve.`lazy`.descriptors.LazyClassDescriptor
+import org.jetbrains.kotlin.resolve.{BindingContext, BindingTraceContext, DescriptorUtils}
 import org.jetbrains.kotlin.util.slicedMap.ReadOnlySlice
 import org.slf4j.LoggerFactory
 
@@ -176,17 +164,7 @@ object TypeInfoProvider {
   /** For internal debugging purposes */
   @unused
   def allBindingsOfKind[K, V](bindings: BindingContext, kind: ReadOnlySlice[K, V]): collection.Seq[(K, V)] = {
-    val thisField = bindings.getClass.getDeclaredField("this$0")
-    thisField.setAccessible(true)
-    val bindingTrace = thisField.get(bindings).asInstanceOf[NoScopeRecordCliBindingTrace]
-
-    val mapField = bindingTrace.getClass.getSuperclass.getSuperclass.getDeclaredField("map")
-    mapField.setAccessible(true)
-    val map = mapField.get(bindingTrace)
-
-    val mapMapField = map.getClass.getDeclaredField("map")
-    mapMapField.setAccessible(true)
-    val mapMap = mapMapField.get(map).asInstanceOf[java.util.Map[Object, KeyFMap]]
+    val mapMap = getMapField(bindings)
 
     val result = scala.collection.mutable.ArrayBuffer.empty[(K, V)]
 
@@ -203,18 +181,7 @@ object TypeInfoProvider {
   /** For internal debugging purposes */
   def bindingsForEntity(bindings: BindingContext, entity: KtElement | Call): KeyFMap = {
     try {
-      val thisField = bindings.getClass.getDeclaredField("this$0")
-      thisField.setAccessible(true)
-      val bindingTrace = thisField.get(bindings).asInstanceOf[NoScopeRecordCliBindingTrace]
-
-      val mapField = bindingTrace.getClass.getSuperclass.getSuperclass.getDeclaredField("map")
-      mapField.setAccessible(true)
-      val map = mapField.get(bindingTrace)
-
-      val mapMapField = map.getClass.getDeclaredField("map")
-      mapMapField.setAccessible(true)
-      val mapMap = mapMapField.get(map).asInstanceOf[java.util.Map[Object, KeyFMap]]
-
+      val mapMap       = getMapField(bindings)
       val mapForEntity = mapMap.get(entity)
       mapForEntity
     } catch {
@@ -225,6 +192,20 @@ object TypeInfoProvider {
         logger.debug(s"Encountered general exception while retrieving type info for `$entity`: `$e`.")
         KeyFMap.EMPTY_MAP
     }
+  }
+
+  def getMapField(bindings: BindingContext): java.util.Map[Object, KeyFMap] = {
+    val thisField = bindings.getClass.getDeclaredField("this$0")
+    thisField.setAccessible(true)
+    val bindingTrace = thisField.get(bindings).asInstanceOf[BindingTraceContext]
+
+    val mapField = bindingTrace.getClass.getDeclaredField("map")
+    mapField.setAccessible(true)
+    val map = mapField.get(bindingTrace)
+
+    val mapMapField = map.getClass.getDeclaredField("map")
+    mapMapField.setAccessible(true)
+    mapMapField.get(map).asInstanceOf[java.util.Map[Object, KeyFMap]]
   }
 
   /** For internal debugging purposes */

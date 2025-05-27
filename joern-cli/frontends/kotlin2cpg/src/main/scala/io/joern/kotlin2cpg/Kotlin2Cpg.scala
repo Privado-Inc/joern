@@ -1,35 +1,27 @@
 package io.joern.kotlin2cpg
 
 import better.files.File
-import io.joern.kotlin2cpg.compiler.CompilerAPI
-import io.joern.kotlin2cpg.compiler.ErrorLoggingMessageCollector
+import io.joern.kotlin2cpg.compiler.{BindingContextAnalyserPass, CompilerAPI, ErrorLoggingMessageCollector}
 import io.joern.kotlin2cpg.files.SourceFilesPicker
 import io.joern.kotlin2cpg.interop.JavaSrcInterop
 import io.joern.kotlin2cpg.jar4import.UsesService
 import io.joern.kotlin2cpg.passes.*
-import io.joern.kotlin2cpg.types.{ContentSourcesPicker, TypeInfoProvider}
-import io.joern.x2cpg.SourceFiles
-import io.joern.x2cpg.X2CpgFrontend
-import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
-import io.joern.x2cpg.passes.frontend.MetaDataPass
-import io.joern.x2cpg.passes.frontend.TypeNodePass
-import io.joern.x2cpg.utils.dependency.DependencyResolver
-import io.joern.x2cpg.utils.dependency.DependencyResolverParams
-import io.joern.x2cpg.utils.dependency.GradleConfigKeys
+import io.joern.kotlin2cpg.types.{ContentSourcesPicker, ModuleInfo, TypeInfoProvider}
 import io.joern.x2cpg.SourceFiles.filterFile
-import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.codepropertygraph.generated.Languages
-import io.shiftleft.utils.IOUtils
+import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
+import io.joern.x2cpg.passes.frontend.{MetaDataPass, TypeNodePass}
+import io.joern.x2cpg.utils.dependency.{DependencyResolver, DependencyResolverParams, GradleConfigKeys}
+import io.joern.x2cpg.{SourceFiles, X2CpgFrontend}
+import io.shiftleft.codepropertygraph.generated.{Cpg, Languages}
+import io.shiftleft.utils.{IOUtils, StatsLogger}
 import org.jetbrains.kotlin.cli.jvm.compiler.{KotlinCoreEnvironment, KotlinToJVMBytecodeCompiler}
 import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
 import org.jetbrains.kotlin.psi.KtFile
-import org.jetbrains.kotlin.resolve.BindingContext
+import org.jetbrains.kotlin.resolve.{BindingContext, BindingTraceContext}
 import org.slf4j.LoggerFactory
 
-import java.nio.file.Files
-import java.nio.file.Paths
-import scala.jdk.CollectionConverters.CollectionHasAsScala
-import scala.jdk.CollectionConverters.EnumerationHasAsScala
+import java.nio.file.{Files, Paths}
+import scala.jdk.CollectionConverters.{CollectionHasAsScala, EnumerationHasAsScala}
 import scala.util.Try
 import scala.util.matching.Regex
 
@@ -157,6 +149,14 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
     defaultContentRootJars
   }
 
+  private def identifyModules(sourceDir: String, config: Config): Seq[ModuleInfo] = {
+    val modules = ContentSourcesPicker.getModuleWiseSegregation(sourceDir, config)
+    if (modules.isEmpty) {
+      logger.warn("The list of modules is empty.")
+    }
+    modules
+  }
+
   private def gatherDirsForSourcesToCompile(sourceDir: String, config: Config): Seq[String] = {
     val dirsForSourcesToCompile = ContentSourcesPicker.dirsForRoot(sourceDir, config)
     if (dirsForSourcesToCompile.isEmpty) {
@@ -170,7 +170,7 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
     config: Config,
     environment: KotlinCoreEnvironment
   ): Iterable[KtFileWithMeta] = {
-    val sourceEntries = entriesForSources(environment.getSourceFiles.asScala, sourceDir)
+    val sourceEntries = entriesForSources(environment.getSourceFiles.asScala, config.inputPath)
     val sourceFiles = sourceEntries.filter(entry =>
       SourceFiles.filterFile(
         entry.filename,
@@ -204,39 +204,38 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
 
   def createCpg(config: Config): Try[Cpg] = {
     withNewEmptyCpg(config.outputPath, config) { (cpg, config) =>
-      val sourceDir = config.inputPath
-      logger.info(s"Starting CPG generation for input directory `$sourceDir`.")
-
-      checkSourceDir(sourceDir)
+      val originalSourceDir = config.inputPath
+      logger.info(s"Starting CPG generation for input directory `$originalSourceDir`.")
+      checkSourceDir(originalSourceDir)
       logMaxHeapSize()
-
-      val filesWithJavaExtension  = gatherFilesWithJavaExtension(sourceDir, config)
-      val mavenCoordinates        = gatherMavenCoordinates(sourceDir, config)
-      val defaultContentRootJars  = gatherDefaultContentRootJars(sourceDir, config, filesWithJavaExtension)
-      val dirsForSourcesToCompile = gatherDirsForSourcesToCompile(sourceDir, config)
-      val environment = CompilerAPI.makeEnvironment(
-        dirsForSourcesToCompile,
-        filesWithJavaExtension,
-        defaultContentRootJars,
-        new ErrorLoggingMessageCollector
-      )
-
-      val sourceFiles = gatherSourceFiles(sourceDir, config, environment)
-      val configFiles = entriesForConfigFiles(SourceFilesPicker.configFiles(sourceDir), sourceDir)
-
       new MetaDataPass(cpg, Languages.KOTLIN, config.inputPath).createAndApply()
+      // TODO: Add maven project structure handling
+      identifyModules(originalSourceDir, config).foreach { module =>
+        val sourceDir              = module.modulePathRoot
+        val filesWithJavaExtension = gatherFilesWithJavaExtension(sourceDir, config)
+        val defaultContentRootJars = gatherDefaultContentRootJars(sourceDir, config, filesWithJavaExtension)
+        logger.info(s"module directory size `${module.sourceFileDirs.size}`")
+        val environments = CompilerAPI.makeEnvironment(
+          module.sourceFileDirs,
+          filesWithJavaExtension,
+          defaultContentRootJars,
+          new ErrorLoggingMessageCollector
+        )
+        val bindingContext = BindingContextAnalyserPass(environments, config).apply()
+        val sourceFiles    = environments.flatMap(environment => gatherSourceFiles(sourceDir, config, environment))
+        val configFiles    = entriesForConfigFiles(SourceFilesPicker.configFiles(sourceDir), sourceDir)
+        val astCreator     = new AstCreationPass(sourceFiles, bindingContext, cpg)(config.schemaValidation)
+        astCreator.createAndApply()
+        environments.foreach { environment => Disposer.dispose(environment.getProjectEnvironment.getParentDisposable) }
 
-      val bindingContext = createBindingContext(environment, config)
-      val astCreator     = new AstCreationPass(sourceFiles, bindingContext, cpg)(config.schemaValidation)
-      astCreator.createAndApply()
+        val kotlinAstCreatorTypes = astCreator.usedTypes()
+        TypeNodePass.withRegisteredTypes(kotlinAstCreatorTypes, cpg).createAndApply()
 
-      Disposer.dispose(environment.getProjectEnvironment.getParentDisposable)
+        runJavaSrcInterop(cpg, config, filesWithJavaExtension, kotlinAstCreatorTypes)
+        new ConfigPass(configFiles, cpg).createAndApply()
+      }
 
-      val kotlinAstCreatorTypes = astCreator.usedTypes()
-      TypeNodePass.withRegisteredTypes(kotlinAstCreatorTypes, cpg).createAndApply()
-
-      runJavaSrcInterop(cpg, config, filesWithJavaExtension, kotlinAstCreatorTypes)
-      new ConfigPass(configFiles, cpg).createAndApply()
+      val mavenCoordinates = gatherMavenCoordinates(originalSourceDir, config)
       new DependenciesFromMavenCoordinatesPass(mavenCoordinates, cpg).createAndApply()
     }
   }
@@ -316,24 +315,4 @@ class Kotlin2Cpg extends X2CpgFrontend[Config] with UsesService {
     } yield FileContentAtPath(fileContents, relPath, fileName)
   }
 
-  private def createBindingContext(environment: KotlinCoreEnvironment, config: Config): BindingContext = {
-    try {
-      if (!config.resolveTypes) {
-        logger.info("Skipped Running Kotlin compiler analysis... due to no resolve types flag")
-        BindingContext.EMPTY
-      } else {
-        logger.info("Running Kotlin compiler analysis...")
-        val t0             = System.nanoTime()
-        val analysisResult = KotlinToJVMBytecodeCompiler.INSTANCE.analyze(environment)
-        val t1             = System.nanoTime()
-        logger.info(s"Kotlin compiler analysis finished in `${(t1 - t0) / 1000000}` ms.")
-        analysisResult.getBindingContext
-      }
-
-    } catch {
-      case exc: Exception =>
-        logger.error(s"Kotlin compiler analysis failed with exception `${exc.toString}`:`${exc.getMessage}`.", exc)
-        BindingContext.EMPTY
-    }
-  }
 }
