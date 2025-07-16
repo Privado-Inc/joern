@@ -13,6 +13,7 @@ import org.scalatest.wordspec.AnyWordSpec
 import scala.collection.parallel.CollectionConverters.*
 import scala.collection.mutable
 import scala.util.Random
+import flatgraph.misc.TestUtils.applyDiff
 
 /**
  * Comprehensive test suite to validate the consistency fixes for `reachableByFlows` queries.
@@ -104,7 +105,7 @@ class ReachableByFlowsConsistencyTest extends AnyWordSpec with Matchers with Sem
     diffGraph.addEdge(process1, process3, EdgeTypes.REACHING_DEF)
     
     // Apply the diff graph
-    cpg.graph.apply(diffGraph)
+    cpg.graph.applyDiff(_ => { diffGraph; () })
     cpg
   }
 
@@ -542,7 +543,7 @@ class ReachableByFlowsConsistencyTest extends AnyWordSpec with Matchers with Sem
       }
     }
     
-    cpg.graph.apply(diffGraph)
+    cpg.graph.applyDiff(_ => { diffGraph; () })
     cpg
   }
 
@@ -618,7 +619,7 @@ class ReachableByFlowsConsistencyTest extends AnyWordSpec with Matchers with Sem
       }
     }
     
-    cpg.graph.apply(diffGraph)
+    cpg.graph.applyDiff(_ => { diffGraph; () })
     cpg
   }
 

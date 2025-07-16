@@ -15,6 +15,7 @@ import scala.collection.parallel.CollectionConverters.*
 import scala.util.Random
 import java.util.concurrent.{Executors, Future, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
+import flatgraph.misc.TestUtils.applyDiff
 
 /**
  * Stress testing suite for `reachableByFlows` queries under extreme conditions.
@@ -122,7 +123,7 @@ class ReachableByFlowsStressTest extends AnyWordSpec with Matchers with Semantic
       }
     }
     
-    cpg.graph.apply(diffGraph)
+    cpg.graph.applyDiff(_ => { diffGraph; () })
     println(s"Large CPG created with ${nodeCount} nodes")
     cpg
   }
@@ -162,7 +163,7 @@ class ReachableByFlowsStressTest extends AnyWordSpec with Matchers with Semantic
       diffGraph.addEdge(call1, arg2, EdgeTypes.REACHING_DEF)
     }
     
-    cpg.graph.apply(diffGraph)
+    cpg.graph.applyDiff(_ => { diffGraph; () })
     cpg
   }
 
@@ -184,28 +185,30 @@ class ReachableByFlowsStressTest extends AnyWordSpec with Matchers with Semantic
       
       try {
         val futures = (1 to threadCount).map { threadId =>
-          executor.submit(() => {
-            (1 to iterationsPerThread).foreach { iteration =>
-              try {
-                implicit val localContext = EngineContext()
-                val sources = cpg.call.name("source.*")
-                val sinks = cpg.call.name("sink.*").argument
-                val flows = sinks.reachableByFlows(sources).toVector
-                val normalized = flows.map(_.toString).sorted.mkString("|")
-                
-                resultsLock.synchronized {
-                  results += normalized
+          executor.submit(new Runnable {
+            def run(): Unit = {
+              (1 to iterationsPerThread).foreach { iteration =>
+                try {
+                  implicit val localContext = EngineContext()
+                  val sources = cpg.call.name("source.*")
+                  val sinks = cpg.call.name("sink.*").argument
+                  val flows = sinks.reachableByFlows(sources).toVector
+                  val normalized = flows.map(_.toString).sorted.mkString("|")
+                  
+                  resultsLock.synchronized {
+                    results += normalized
+                  }
+                  
+                  completedCount.incrementAndGet()
+                  
+                  if (completedCount.get() % 100 == 0) {
+                    println(s"Completed ${completedCount.get()} iterations")
+                  }
+                } catch {
+                  case e: Exception =>
+                    errorCount.incrementAndGet()
+                    println(s"Thread $threadId iteration $iteration failed: ${e.getMessage}")
                 }
-                
-                completedCount.incrementAndGet()
-                
-                if (completedCount.get() % 100 == 0) {
-                  println(s"Completed ${completedCount.get()} iterations")
-                }
-              } catch {
-                case e: Exception =>
-                  errorCount.incrementAndGet()
-                  println(s"Thread $threadId iteration $iteration failed: ${e.getMessage}")
               }
             }
           })
@@ -294,7 +297,7 @@ class ReachableByFlowsStressTest extends AnyWordSpec with Matchers with Semantic
       
       // Validate consistency despite memory pressure
       uniqueResults.size shouldBe 1
-      results.size should be > (iterations * 0.8) // At least 80% success rate
+      results.size should be > (iterations * 0.8).toInt // At least 80% success rate
     }
 
     "handle deep call chains" in {

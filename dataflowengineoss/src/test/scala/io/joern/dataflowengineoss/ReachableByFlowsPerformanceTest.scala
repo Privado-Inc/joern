@@ -12,6 +12,7 @@ import org.scalatest.wordspec.AnyWordSpec
 
 import scala.collection.mutable
 import scala.util.Random
+import flatgraph.misc.TestUtils.applyDiff
 
 /**
  * Performance benchmarking test suite for `reachableByFlows` queries.
@@ -149,7 +150,7 @@ class ReachableByFlowsPerformanceTest extends AnyWordSpec with Matchers with Sem
       }
     }
     
-    cpg.graph.apply(diffGraph)
+    cpg.graph.applyDiff(_ => { diffGraph; () })
     cpg
   }
 
@@ -238,9 +239,9 @@ class ReachableByFlowsPerformanceTest extends AnyWordSpec with Matchers with Sem
         val (result, metric) = measurePerformance(s"Parallel-$i") {
           val sources = cpg.call.name("source.*")
           val sinks = cpg.call.name("sink.*").argument
-          val results = (1 to 4).par.map { _ =>
+          val results = (1 to 4).map { _ =>
             sinks.reachableByFlows(sources).toVector
-          }.seq
+          }
           results.head // Return first result for measurement
         }
         parallelMetrics += metric

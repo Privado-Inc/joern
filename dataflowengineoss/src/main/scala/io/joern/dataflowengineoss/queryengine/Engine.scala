@@ -162,7 +162,7 @@ class Engine(context: EngineContext) {
     
     // Sort by task submission order, then by node ID for stable ordering
     results.sortBy(r => 
-      (taskSubmissionOrder.getOrElse(TaskFingerprint(r.path.last.node, List(), 0), Long.MaxValue), 
+      (taskSubmissionOrder.getOrElse(TaskFingerprint(r.path.last.node.asInstanceOf[CfgNode], List(), 0), Long.MaxValue), 
        r.path.head.node.id)
     )
   }
