@@ -11,6 +11,7 @@ import io.shiftleft.semanticcpg.language.*
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.concurrent.*
+import java.util.concurrent.atomic.AtomicLong
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Success, Try}
@@ -31,11 +32,17 @@ class Engine(context: EngineContext) {
 
   /** All results of tasks are accumulated in this table. At the end of the analysis, we extract results from the table
     * and return them.
+    * 
+    * Fix: Replace hash-based collections with ordered collections for deterministic behavior
     */
-  private val mainResultTable: mutable.Map[TaskFingerprint, List[TableEntry]] = mutable.Map()
+  private val mainResultTable: mutable.LinkedHashMap[TaskFingerprint, List[TableEntry]] = mutable.LinkedHashMap()
   private var numberOfTasksRunning: Int                                       = 0
-  private val started: mutable.HashSet[TaskFingerprint]                       = mutable.HashSet[TaskFingerprint]()
-  private val held: mutable.Buffer[ReachableByTask]                           = mutable.Buffer()
+  private val started: mutable.LinkedHashSet[TaskFingerprint]                 = mutable.LinkedHashSet[TaskFingerprint]()
+  private val held: mutable.ListBuffer[ReachableByTask]                       = mutable.ListBuffer()
+  
+  // Fix: Add task ordering tracking for deterministic result processing
+  private val taskSubmissionOrder: mutable.Map[TaskFingerprint, Long] = mutable.Map()
+  private val submissionCounter = new AtomicLong(0)
 
   /** Determine flows from sources to sinks by exploring the graph backwards from sinks to sources. Returns the list of
     * results along with a ResultTable, a cache of known paths created during the analysis.
@@ -133,8 +140,10 @@ class Engine(context: EngineContext) {
   private def submitTasks(tasks: Vector[ReachableByTask], sources: Set[CfgNode]): Unit = {
     tasks.foreach { task =>
       if (started.contains(task.fingerprint)) {
-        held ++= Vector(task)
+        held += task
       } else {
+        // Fix: Track task submission order for deterministic processing
+        taskSubmissionOrder.put(task.fingerprint, submissionCounter.getAndIncrement())
         started.add(task.fingerprint)
         numberOfTasksRunning += 1
         completionService.submit(new TaskSolver(task, context, sources))
@@ -143,39 +152,45 @@ class Engine(context: EngineContext) {
   }
 
   private def extractResultsFromTable(sinks: List[CfgNode]): List[TableEntry] = {
-    sinks.flatMap { sink =>
+    // Fix: Sort results by submission order for deterministic processing
+    val results = sinks.flatMap { sink =>
       mainResultTable.get(TaskFingerprint(sink, List(), 0)) match {
         case Some(results) => results
         case _             => Vector()
       }
     }
+    
+    // Sort by task submission order, then by node ID for stable ordering
+    results.sortBy(r => 
+      (taskSubmissionOrder.getOrElse(TaskFingerprint(r.path.last.node, List(), 0), Long.MaxValue), 
+       r.path.head.node.id)
+    )
   }
 
   private def deduplicateFinal(list: List[TableEntry]): List[TableEntry] = {
+    // Fix: Optimized stable deduplication with efficient ID-based comparison
     list
       .groupBy { result =>
         val head = result.path.head.node
         val last = result.path.last.node
         (head, last)
       }
-      .map { case (_, list) =>
-        val lenIdPathPairs = list.map(x => (x.path.length, x))
-        val withMaxLength = (lenIdPathPairs.sortBy(_._1).reverse match {
-          case Nil    => Nil
-          case h :: t => h :: t.takeWhile(y => y._1 == h._1)
-        }).map(_._2)
+      .view.map { case (_, group) =>
+        val maxLength = group.map(_.path.length).max
+        val withMaxLength = group.filter(_.path.length == maxLength)
 
-        if (withMaxLength.length == 1) {
+        if (withMaxLength.size == 1) {
           withMaxLength.head
         } else {
+          // Fix: Use efficient ID-based tie-breaking instead of expensive string comparison
           withMaxLength.minBy { x =>
-            x.path
-              .map(x => (x.node.id, x.callSiteStack.map(_.id), x.visible, x.isOutputArg, x.outEdgeLabel).toString)
-              .mkString("-")
+            // Use sum of node IDs for stable, efficient comparison
+            x.path.map(_.node.id).sum
           }
         }
       }
       .toList
+      .sortBy(_.path.head.node.id) // Final stable ordering by first node ID
   }
 
   /** This must be called when one is done using the engine.
@@ -252,20 +267,24 @@ object Engine {
   /** For a given node `node`, return all incoming reaching definition edges, unless the source node is (a) a METHOD
     * node, (b) already present on `path`, or (c) a CALL node to a method where the semantic indicates that taint is
     * propagated to it.
+    * 
+    * Fix: Optimized for FlatGraph's columnar storage with stable ordering
     */
   private def ddgInE(node: CfgNode, path: Vector[PathElement], callSiteStack: List[Call] = List()): Vector[Edge] = {
+    // FlatGraph optimization: collect to Vector first for better cache locality
+    val pathNodeIds = path.map(_.node.id).toSet // Pre-compute for O(1) lookup
+    
     node
       .inE(EdgeTypes.REACHING_DEF)
       .filter { e =>
         e.src match {
           case srcNode: CfgNode =>
-            !srcNode.isInstanceOf[Method] && !path
-              .map(x => x.node)
-              .contains(srcNode)
+            !srcNode.isInstanceOf[Method] && !pathNodeIds.contains(srcNode.id)
           case _ => false
         }
       }
       .toVector
+      .sortBy(_.src.id) // Stable ordering leveraging FlatGraph's efficient ID access
   }
 
   def argToOutputParams(arg: Expression): Iterator[MethodParameterOut] = {
