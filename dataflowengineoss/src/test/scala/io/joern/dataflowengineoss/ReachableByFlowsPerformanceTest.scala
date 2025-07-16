@@ -209,11 +209,16 @@ class ReachableByFlowsPerformanceTest extends AnyWordSpec with Matchers {
       println(s"  Time variance: ${maxTime - minTime}ms")
       
       // Performance should be reasonably stable
-      val timeVariance = (maxTime - minTime).toDouble / avgTime
-      println(s"  Time variance ratio: ${(timeVariance * 100).toInt}%")
+      val timeVariance = if (avgTime > 0) (maxTime - minTime).toDouble / avgTime else 0.0
+      println(s"  Time variance ratio: ${if (avgTime > 0) (timeVariance * 100).toInt else 0}%")
       
-      // Variance should be less than 100% (max time shouldn't be more than 2x avg)
-      timeVariance should be < 1.0
+      // Variance should be reasonable (handle case where all times are 0)
+      if (avgTime > 0) {
+        timeVariance should be < 1.0
+      } else {
+        // If all execution times are 0ms, that's actually very consistent
+        timeVariance shouldBe 0.0
+      }
       
       // Validate consistency
       val consistencyResults = (1 to 5).map { _ =>
@@ -279,7 +284,11 @@ class ReachableByFlowsPerformanceTest extends AnyWordSpec with Matchers {
     println(s"Performance Comparison:")
     println(s"  $name1: ${avgTime1}ms avg, ${avgMemory1}MB avg")
     println(s"  $name2: ${avgTime2}ms avg, ${avgMemory2}MB avg")
-    println(s"  Time ratio ($name2/$name1): ${f"${avgTime2.toDouble / avgTime1}%.2f"}x")
-    println(s"  Memory ratio ($name2/$name1): ${f"${avgMemory2.toDouble / avgMemory1}%.2f"}x")
+    
+    val timeRatio = if (avgTime1 > 0) avgTime2.toDouble / avgTime1 else 1.0
+    val memoryRatio = if (avgMemory1 > 0) avgMemory2.toDouble / avgMemory1 else 1.0
+    
+    println(s"  Time ratio ($name2/$name1): ${f"$timeRatio%.2f"}x")
+    println(s"  Memory ratio ($name2/$name1): ${f"$memoryRatio%.2f"}x")
   }
 }
