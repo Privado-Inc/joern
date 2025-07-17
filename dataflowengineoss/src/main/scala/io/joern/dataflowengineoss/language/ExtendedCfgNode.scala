@@ -42,12 +42,9 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
   ): Iterator[Path] = {
     val sources        = sourceTravsToStartingPoints(sourceTrav +: sourceTravs*)
     val startingPoints = sources.map(_.startingPoint)
-    
-    // Fix: Replace non-deterministic .par with deterministic processing
-    // that maintains performance through lazy evaluation and efficient collections
+
+    // Original logic but without .par for consistency
     val paths = reachableByInternal(sources)
-      .sortBy(_.path.head.node.id) // Stable O(n log n) sorting for deterministic ordering
-      .view // Lazy evaluation for performance - avoids intermediate collections
       .map { result =>
         // We can get back results that start in nodes that are invisible
         // according to the semantic, e.g., arguments that are only used
@@ -61,11 +58,10 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
         }
       }
       .filter(_.isDefined)
-      .to(scala.collection.mutable.LinkedHashSet) // Deterministic deduplication with preserved insertion order
-      .flatten
+      .distinct   // equivalent to .dedup
+      .map(_.get) // equivalent to .flatten
       .toVector
-      .sortBy(_.elements.head.id) // Final stable ordering by first element ID
-    
+
     paths.iterator
   }
 
@@ -92,10 +88,9 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
     val startingPointToSource = startingPointsWithSources.map { x =>
       x.startingPoint.asInstanceOf[AstNode] -> x.source
     }.toMap
-    
-    // Fix: Replace non-deterministic .par with deterministic processing
-    // Sort results by node ID for stable ordering before processing
-    val res = result.sortBy(_.path.head.node.id).map { r =>
+
+    // Original logic but without .par for consistency
+    val res = result.map { r =>
       val startingPoint = r.path.head.node
       if (sources.contains(startingPoint) || !startingPointToSource(startingPoint).isInstanceOf[AstNode]) {
         r

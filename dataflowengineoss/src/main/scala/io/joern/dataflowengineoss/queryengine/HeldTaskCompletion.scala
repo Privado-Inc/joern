@@ -36,12 +36,11 @@ class HeldTaskCompletion(
   def completeHeldTasks(): Unit = {
 
     deduplicateResultTable()
-    
+
     // Fix: Stable sorting for deterministic processing
-    val toProcess = heldTasks.distinct.sortBy(x =>
-      (x.fingerprint.sink.id, x.fingerprint.callSiteStack.map(_.id).sum, x.callDepth)
-    )
-    
+    val toProcess =
+      heldTasks.distinct.sortBy(x => (x.fingerprint.sink.id, x.fingerprint.callSiteStack.map(_.id).sum, x.callDepth))
+
     var resultsProducedByTask: Map[ReachableByTask, Set[(TaskFingerprint, TableEntry)]] = Map()
 
     def allChanged  = toProcess.map { task => task.fingerprint -> true }.toMap
@@ -141,7 +140,7 @@ class HeldTaskCompletion(
     *
     * For a group of flows that we treat as the same, we select the flow with the maximum length. If there are multiple
     * flows with maximum length, then we use stable ID-based comparison for deterministic selection.
-    * 
+    *
     * Fix: Optimized stable deduplication with efficient ID-based comparison instead of string operations.
     */
   private def deduplicateTableEntries(list: List[TableEntry]): List[TableEntry] = {
@@ -151,8 +150,9 @@ class HeldTaskCompletion(
         val last = result.path.lastOption.map(x => (x.node, x.callSiteStack, x.isOutputArg)).get
         (head, last)
       }
-      .view.map { case (_, group) =>
-        val maxLength = group.map(_.path.length).max
+      .view
+      .map { case (_, group) =>
+        val maxLength     = group.map(_.path.length).max
         val withMaxLength = group.filter(_.path.length == maxLength)
 
         if (withMaxLength.size == 1) {
