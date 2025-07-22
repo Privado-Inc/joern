@@ -10,7 +10,7 @@ import scopt.OParser
 import java.nio.file.Paths
 
 final case class Config(
-  antlrCacheMemLimit: Double = 0.6d,
+  antlrCacheMemLimit: Double = 0.8d,
   useDeprecatedFrontend: Boolean = false,
   downloadDependencies: Boolean = false,
   useTypeStubs: Boolean = true,
