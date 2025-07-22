@@ -31,11 +31,13 @@ class Engine(context: EngineContext) {
 
   /** All results of tasks are accumulated in this table. At the end of the analysis, we extract results from the table
     * and return them.
+    *
+    * Fix: Replace hash-based collections with ordered collections for deterministic behavior
     */
-  private val mainResultTable: mutable.Map[TaskFingerprint, List[TableEntry]] = mutable.Map()
-  private var numberOfTasksRunning: Int                                       = 0
-  private val started: mutable.HashSet[TaskFingerprint]                       = mutable.HashSet[TaskFingerprint]()
-  private val held: mutable.Buffer[ReachableByTask]                           = mutable.Buffer()
+  private val mainResultTable: mutable.LinkedHashMap[TaskFingerprint, List[TableEntry]] = mutable.LinkedHashMap()
+  private var numberOfTasksRunning: Int                                                 = 0
+  private val started: mutable.LinkedHashSet[TaskFingerprint] = mutable.LinkedHashSet[TaskFingerprint]()
+  private val held: mutable.ListBuffer[ReachableByTask]       = mutable.ListBuffer()
 
   /** Determine flows from sources to sinks by exploring the graph backwards from sinks to sources. Returns the list of
     * results along with a ResultTable, a cache of known paths created during the analysis.
@@ -133,7 +135,7 @@ class Engine(context: EngineContext) {
   private def submitTasks(tasks: Vector[ReachableByTask], sources: Set[CfgNode]): Unit = {
     tasks.foreach { task =>
       if (started.contains(task.fingerprint)) {
-        held ++= Vector(task)
+        held += task
       } else {
         started.add(task.fingerprint)
         numberOfTasksRunning += 1

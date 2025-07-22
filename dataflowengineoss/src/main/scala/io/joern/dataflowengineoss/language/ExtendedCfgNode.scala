@@ -42,7 +42,9 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
   ): Iterator[Path] = {
     val sources        = sourceTravsToStartingPoints(sourceTrav +: sourceTravs*)
     val startingPoints = sources.map(_.startingPoint)
-    val paths = reachableByInternal(sources).par
+
+    // Original logic but without .par for consistency
+    val paths = reachableByInternal(sources)
       .map { result =>
         // We can get back results that start in nodes that are invisible
         // according to the semantic, e.g., arguments that are only used
@@ -56,9 +58,10 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
         }
       }
       .filter(_.isDefined)
-      .dedup
-      .flatten
+      .distinct   // equivalent to .dedup
+      .map(_.get) // equivalent to .flatten
       .toVector
+
     paths.iterator
   }
 
@@ -85,7 +88,9 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
     val startingPointToSource = startingPointsWithSources.map { x =>
       x.startingPoint.asInstanceOf[AstNode] -> x.source
     }.toMap
-    val res = result.par.map { r =>
+
+    // Original logic but without .par for consistency
+    val res = result.map { r =>
       val startingPoint = r.path.head.node
       if (sources.contains(startingPoint) || !startingPointToSource(startingPoint).isInstanceOf[AstNode]) {
         r

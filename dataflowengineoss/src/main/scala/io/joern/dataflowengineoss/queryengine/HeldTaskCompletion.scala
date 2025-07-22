@@ -36,10 +36,11 @@ class HeldTaskCompletion(
   def completeHeldTasks(): Unit = {
 
     deduplicateResultTable()
+
+    // Fix: Stable sorting for deterministic processing
     val toProcess =
-      heldTasks.distinct.sortBy(x =>
-        (x.fingerprint.sink.id, x.fingerprint.callSiteStack.map(_.id).toString, x.callDepth)
-      )
+      heldTasks.distinct.sortBy(x => (x.fingerprint.sink.id, x.fingerprint.callSiteStack.map(_.id).sum, x.callDepth))
+
     var resultsProducedByTask: Map[ReachableByTask, Set[(TaskFingerprint, TableEntry)]] = Map()
 
     def allChanged  = toProcess.map { task => task.fingerprint -> true }.toMap
@@ -48,16 +49,16 @@ class HeldTaskCompletion(
     var changed: Map[TaskFingerprint, Boolean] = allChanged
 
     while (changed.values.toList.contains(true)) {
+      // Fix: Replace parallel processing with deterministic sequential processing
       val taskResultsPairs = toProcess
         .filter(t => changed(t.fingerprint))
-        .par
         .map { t =>
           val resultsForTask = resultsForHeldTask(t).toSet
           val newResults     = resultsForTask -- resultsProducedByTask.getOrElse(t, Set())
           (t, resultsForTask, newResults)
         }
         .filter { case (_, _, newResults) => newResults.nonEmpty }
-        .seq
+        .sortBy(_._1.fingerprint.sink.id) // Stable ordering by sink ID
 
       changed = noneChanged
       taskResultsPairs.foreach { case (t, resultsForTask, newResults) =>
@@ -138,8 +139,9 @@ class HeldTaskCompletion(
     * the `callSiteStack` and the `isOutputArg` flag.
     *
     * For a group of flows that we treat as the same, we select the flow with the maximum length. If there are multiple
-    * flows with maximum length, then we compute a string representation of the flows - taking into account all fields
-    *   - and select the flow with maximum length that is smallest in terms of this string representation.
+    * flows with maximum length, then we use stable ID-based comparison for deterministic selection.
+    *
+    * Fix: Optimized stable deduplication with efficient ID-based comparison instead of string operations.
     */
   private def deduplicateTableEntries(list: List[TableEntry]): List[TableEntry] = {
     list
@@ -148,24 +150,23 @@ class HeldTaskCompletion(
         val last = result.path.lastOption.map(x => (x.node, x.callSiteStack, x.isOutputArg)).get
         (head, last)
       }
-      .map { case (_, list) =>
-        val lenIdPathPairs = list.map(x => (x.path.length, x))
-        val withMaxLength = (lenIdPathPairs.sortBy(_._1).reverse match {
-          case Nil    => Nil
-          case h :: t => h :: t.takeWhile(y => y._1 == h._1)
-        }).map(_._2)
+      .view
+      .map { case (_, group) =>
+        val maxLength     = group.map(_.path.length).max
+        val withMaxLength = group.filter(_.path.length == maxLength)
 
-        if (withMaxLength.length == 1) {
+        if (withMaxLength.size == 1) {
           withMaxLength.head
         } else {
+          // Fix: Use efficient ID-based tie-breaking instead of expensive string comparison
           withMaxLength.minBy { x =>
-            x.path
-              .map(x => (x.node.id, x.callSiteStack.map(_.id), x.visible, x.isOutputArg, x.outEdgeLabel).toString)
-              .mkString("-")
+            // Use sum of node IDs for stable, efficient comparison
+            x.path.map(_.node.id).sum
           }
         }
       }
       .toList
+      .sortBy(_.path.head.node.id) // Final stable ordering by first node ID
   }
 
 }
