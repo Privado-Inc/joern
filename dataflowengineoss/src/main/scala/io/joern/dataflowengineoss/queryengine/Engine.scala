@@ -41,16 +41,39 @@ class Engine(context: EngineContext) {
     * results along with a ResultTable, a cache of known paths created during the analysis.
     */
   def backwards(sinks: List[CfgNode], sources: List[CfgNode]): List[TableEntry] = {
+    val startTime = System.currentTimeMillis()
+    logger.info(s"[ENGINE_BACKWARDS] Starting backwards analysis: ${sinks.size} sinks, ${sources.size} sources")
+    
     if (sources.isEmpty) {
-      logger.info("Attempting to determine flows from empty list of sources.")
+      logger.warn("[ENGINE_BACKWARDS] Attempting to determine flows from empty list of sources.")
     }
     if (sinks.isEmpty) {
-      logger.info("Attempting to determine flows to empty list of sinks.")
+      logger.warn("[ENGINE_BACKWARDS] Attempting to determine flows to empty list of sinks.")
     }
+    
+    // Log sample of sources and sinks for debugging
+    sources.take(3).foreach { source =>
+      logger.debug(s"[ENGINE_BACKWARDS] Sample source: ${source.getClass.getSimpleName}:${source.id}")
+    }
+    sinks.take(3).foreach { sink =>
+      logger.debug(s"[ENGINE_BACKWARDS] Sample sink: ${sink.getClass.getSimpleName}:${sink.id}")
+    }
+    
     reset()
     val sourcesSet = sources.toSet
     val tasks      = createOneTaskPerSink(sinks)
-    solveTasks(tasks, sourcesSet, sinks)
+    logger.info(s"[ENGINE_BACKWARDS] Created ${tasks.size} initial tasks (one per sink)")
+    
+    val result = solveTasks(tasks, sourcesSet, sinks)
+    
+    val duration = System.currentTimeMillis() - startTime
+    logger.info(s"[ENGINE_BACKWARDS] Backwards analysis completed in ${duration}ms: found ${result.size} results")
+    
+    if (duration > 120000) { // Warn if analysis takes more than 2 minutes
+      logger.warn(s"[ENGINE_BACKWARDS] SLOW ANALYSIS: Backwards analysis took ${duration}ms")
+    }
+    
+    result
   }
 
   private def reset(): Unit = {
@@ -117,7 +140,23 @@ class Engine(context: EngineContext) {
       "Time measurement -----> Task processing done in " +
         (taskFinishTimeSec - startTimeSec) + " seconds"
     )
-    new HeldTaskCompletion(held.toList, mainResultTable).completeHeldTasks()
+    if (held.nonEmpty) {
+      logger.info(s"[ENGINE_SOLVE] Starting held task completion for ${held.size} held tasks")
+      val heldTaskStartTime = System.currentTimeMillis()
+      
+      // Log sample held tasks for debugging
+      held.take(5).foreach { task =>
+        logger.info(s"[ENGINE_SOLVE] Sample held task: sink=${task.fingerprint.sink.getClass.getSimpleName}:${task.fingerprint.sink.id}, callDepth=${task.callDepth}")
+      }
+      
+      new HeldTaskCompletion(held.toList, mainResultTable).completeHeldTasks()
+      
+      val heldTaskDuration = System.currentTimeMillis() - heldTaskStartTime
+      logger.info(s"[ENGINE_SOLVE] Held task completion finished in ${heldTaskDuration}ms")
+    } else {
+      logger.info(s"[ENGINE_SOLVE] No held tasks to process")
+    }
+    
     val dedupResult          = deduplicateFinal(extractResultsFromTable(sinks))
     val allDoneTimeSec: Long = System.currentTimeMillis / 1000
 
@@ -131,14 +170,26 @@ class Engine(context: EngineContext) {
   }
 
   private def submitTasks(tasks: Vector[ReachableByTask], sources: Set[CfgNode]): Unit = {
+    var submittedCount = 0
+    var heldCount = 0
+    
     tasks.foreach { task =>
       if (started.contains(task.fingerprint)) {
         held ++= Vector(task)
+        heldCount += 1
+        logger.debug(s"[ENGINE_SUBMIT] HELD task for sink ${task.fingerprint.sink.id} (fingerprint already exists)")
       } else {
         started.add(task.fingerprint)
         numberOfTasksRunning += 1
         completionService.submit(new TaskSolver(task, context, sources))
+        submittedCount += 1
       }
+    }
+    
+    logger.debug(s"[ENGINE_SUBMIT] Submitted ${submittedCount} tasks, held ${heldCount} tasks (total running: ${numberOfTasksRunning})")
+    
+    if (heldCount > submittedCount) {
+      logger.info(s"[ENGINE_SUBMIT] HIGH HELD RATIO: ${heldCount} held vs ${submittedCount} submitted - indicates significant task overlap")
     }
   }
 
