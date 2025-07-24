@@ -15,8 +15,6 @@ import scala.collection.parallel.CollectionConverters.*
   */
 class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
 
-  private val logger: Logger = LoggerFactory.getLogger(classOf[ExtendedCfgNode])
-
   def ddgIn(implicit semantics: Semantics = DefaultSemantics()): Iterator[CfgNode] = {
     val cache  = mutable.HashMap[CfgNode, Vector[PathElement]]()
     val result = traversal.flatMap(x => x.ddgIn(Vector(PathElement(x)), withInvisible = false, cache))
@@ -43,28 +41,34 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
   def reachableByFlows[A](sourceTrav: IterableOnce[A], sourceTravs: IterableOnce[A]*)(implicit
     context: EngineContext
   ): Iterator[Path] = {
-    val startTime = System.currentTimeMillis()
-    val sources = sourceTravsToStartingPoints(sourceTrav +: sourceTravs*)
+    val startTime      = System.currentTimeMillis()
+    val sources        = sourceTravsToStartingPoints(sourceTrav +: sourceTravs*)
     val startingPoints = sources.map(_.startingPoint)
-    val sinks = traversal.toList
-    
-    logger.info(s"[REACHABLE_BY_FLOWS] Starting dataflow analysis: ${sources.size} sources → ${sinks.size} sinks")
-    
+    val sinks          = traversal.toList
+
+    ExtendedCfgNode.logger.info(s"[REACHABLE_BY_FLOWS] Starting dataflow analysis: ${sources.size} sources → ${sinks.size} sinks")
+
     // Log sample sources and sinks for debugging problematic combinations
     sources.take(3).foreach { src =>
       val srcNode = src.source
-      logger.info(s"[REACHABLE_BY_FLOWS] Sample source: ${srcNode.getClass.getSimpleName}:${srcNode.id} - ${srcNode.toString.take(100)}")
+      ExtendedCfgNode.logger.info(
+        s"[REACHABLE_BY_FLOWS] Sample source: ${srcNode.getClass.getSimpleName}:${srcNode.id} - ${srcNode.toString.take(100)}"
+      )
     }
     sinks.take(3).foreach { sink =>
-      logger.info(s"[REACHABLE_BY_FLOWS] Sample sink: ${sink.getClass.getSimpleName}:${sink.id} - ${sink.toString.take(100)}")
+      ExtendedCfgNode.logger.info(
+        s"[REACHABLE_BY_FLOWS] Sample sink: ${sink.getClass.getSimpleName}:${sink.id} - ${sink.toString.take(100)}"
+      )
     }
-    
+
     // Warn about potentially expensive queries
     val totalCombinations = sources.size.toLong * sinks.size.toLong
     if (totalCombinations > 100000) {
-      logger.warn(s"[REACHABLE_BY_FLOWS] LARGE QUERY WARNING: ${sources.size} sources × ${sinks.size} sinks = $totalCombinations potential combinations")
+      ExtendedCfgNode.logger.warn(
+        s"[REACHABLE_BY_FLOWS] LARGE QUERY WARNING: ${sources.size} sources × ${sinks.size} sinks = $totalCombinations potential combinations"
+      )
     }
-    
+
     val paths = reachableByInternal(sources).par
       .map { result =>
         // We can get back results that start in nodes that are invisible
@@ -82,15 +86,17 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
       .dedup
       .flatten
       .toVector
-    
+
     val totalDuration = System.currentTimeMillis() - startTime
-    logger.info(s"[REACHABLE_BY_FLOWS] Analysis completed in ${totalDuration}ms: found ${paths.size} paths")
-    
+    ExtendedCfgNode.logger.info(s"[REACHABLE_BY_FLOWS] Analysis completed in ${totalDuration}ms: found ${paths.size} paths")
+
     if (totalDuration > 30000) { // Warn for queries taking more than 30 seconds
-      logger.warn(s"[REACHABLE_BY_FLOWS] SLOW QUERY WARNING: Analysis took ${totalDuration}ms")
-      logger.warn(s"[REACHABLE_BY_FLOWS] Query characteristics: ${sources.size} sources, ${sinks.size} sinks, ${paths.size} results")
+      ExtendedCfgNode.logger.warn(s"[REACHABLE_BY_FLOWS] SLOW QUERY WARNING: Analysis took ${totalDuration}ms")
+      ExtendedCfgNode.logger.warn(
+        s"[REACHABLE_BY_FLOWS] Query characteristics: ${sources.size} sources, ${sinks.size} sinks, ${paths.size} results"
+      )
     }
-    
+
     paths.iterator
   }
 
@@ -108,13 +114,15 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
   private def reachableByInternal(
     startingPointsWithSources: List[StartingPointWithSource]
   )(implicit context: EngineContext): Vector[TableEntry] = {
-    val sinks  = traversal.dedup.toList.sortBy(_.id)
-    logger.debug(s"[REACHABLE_BY_INTERNAL] Processing ${sinks.size} sinks with ${startingPointsWithSources.size} starting points")
-    
+    val sinks = traversal.dedup.toList.sortBy(_.id)
+    ExtendedCfgNode.logger.debug(
+      s"[REACHABLE_BY_INTERNAL] Processing ${sinks.size} sinks with ${startingPointsWithSources.size} starting points"
+    )
+
     val engine = new Engine(context)
     val result = engine.backwards(sinks, startingPointsWithSources.map(_.startingPoint))
-    
-    logger.debug(s"[REACHABLE_BY_INTERNAL] Engine.backwards returned ${result.size} table entries")
+
+    ExtendedCfgNode.logger.debug(s"[REACHABLE_BY_INTERNAL] Engine.backwards returned ${result.size} table entries")
 
     engine.shutdown()
     val sources = startingPointsWithSources.map(_.source)
@@ -132,4 +140,8 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
     res.toVector
   }
 
+}
+
+object ExtendedCfgNode {
+  private val logger: Logger = LoggerFactory.getLogger(classOf[ExtendedCfgNode])
 }
