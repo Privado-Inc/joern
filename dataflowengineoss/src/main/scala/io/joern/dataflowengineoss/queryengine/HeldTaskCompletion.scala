@@ -2,6 +2,7 @@ package io.joern.dataflowengineoss.queryengine
 
 import scala.collection.mutable
 import scala.collection.parallel.CollectionConverters.*
+import io.shiftleft.codepropertygraph.generated.language.*
 
 /** Complete held tasks using the result table. The result table is modified in the process.
   *
@@ -34,6 +35,10 @@ class HeldTaskCompletion(
     * created, `changed` is set to true for the result's table entry and `resultsProductByTask` is updated.
     */
   def completeHeldTasks(): Unit = {
+    val startTime = System.currentTimeMillis()
+    val totalTasks = heldTasks.size
+    
+    println(s"[DATAFLOW-DEBUG] Starting completeHeldTasks with ${totalTasks} held tasks")
 
     deduplicateResultTable()
     val toProcess =
@@ -46,8 +51,15 @@ class HeldTaskCompletion(
     def noneChanged = toProcess.map { t => t.fingerprint -> false }.toMap
 
     var changed: Map[TaskFingerprint, Boolean] = allChanged
+    var iteration = 0
 
     while (changed.values.toList.contains(true)) {
+      iteration += 1
+      val iterationStartTime = System.currentTimeMillis()
+      val changedCount = changed.values.count(_ == true)
+      
+      println(s"[DATAFLOW-DEBUG] Iteration ${iteration}: Processing ${changedCount} changed tasks")
+      
       val taskResultsPairs = toProcess
         .filter(t => changed(t.fingerprint))
         .par
@@ -59,6 +71,9 @@ class HeldTaskCompletion(
         .filter { case (_, _, newResults) => newResults.nonEmpty }
         .seq
 
+      val tasksWithNewResults = taskResultsPairs.size
+      val totalNewResults = taskResultsPairs.map(_._3.size).sum
+
       changed = noneChanged
       taskResultsPairs.foreach { case (t, resultsForTask, newResults) =>
         addCompletedTasksToMainTable(newResults.toList)
@@ -67,8 +82,17 @@ class HeldTaskCompletion(
         }
         resultsProducedByTask += (t -> resultsForTask)
       }
+      
+      val iterationTime = System.currentTimeMillis() - iterationStartTime
+      println(s"[DATAFLOW-DEBUG] Iteration ${iteration} completed: ${tasksWithNewResults} tasks produced ${totalNewResults} new results in ${iterationTime}ms")
     }
+    
+    val finalDeduplicationStart = System.currentTimeMillis()
     deduplicateResultTable()
+    val finalDeduplicationTime = System.currentTimeMillis() - finalDeduplicationStart
+    
+    val totalTime = System.currentTimeMillis() - startTime
+    println(s"[DATAFLOW-DEBUG] completeHeldTasks finished: ${iteration} iterations, final deduplication took ${finalDeduplicationTime}ms, total time ${totalTime}ms")
   }
 
   /** In essence, completing a held task simply means appending the path stored in the held task to all results that are
@@ -142,30 +166,144 @@ class HeldTaskCompletion(
     *   - and select the flow with maximum length that is smallest in terms of this string representation.
     */
   private def deduplicateTableEntries(list: List[TableEntry]): List[TableEntry] = {
-    list
-      .groupBy { result =>
-        val head = result.path.headOption.map(x => (x.node, x.callSiteStack, x.isOutputArg)).get
-        val last = result.path.lastOption.map(x => (x.node, x.callSiteStack, x.isOutputArg)).get
-        (head, last)
+    val startTime = System.currentTimeMillis()
+    val originalSize = list.size
+    
+    // Early return for small lists
+    if (originalSize <= 1) {
+      return list
+    }
+    
+    // Log entry with collection size
+    if (originalSize > 100) {
+      println(s"[DATAFLOW-DEBUG] deduplicateTableEntries: Processing ${originalSize} entries")
+      logSampleNodeInfo(list.take(5))
+    }
+    
+    // Size limit to prevent runaway processing
+    val MAX_ENTRIES = 10000
+    val processedList = if (originalSize > MAX_ENTRIES) {
+      println(s"[DATAFLOW-DEBUG] WARNING: Collection size ${originalSize} exceeds limit ${MAX_ENTRIES}, truncating")
+      list.take(MAX_ENTRIES)
+    } else {
+      list
+    }
+    
+    try {
+      val groupingStartTime = System.currentTimeMillis()
+      
+      // Use simplified hash keys based on node IDs instead of full objects
+      val grouped = processedList.groupBy { result =>
+        val headPath = result.path.headOption
+        val lastPath = result.path.lastOption
+        
+        val headKey = headPath.map(x => (x.node.id, x.callSiteStack.map(_.id), x.isOutputArg)).getOrElse((0L, List.empty[Long], false))
+        val lastKey = lastPath.map(x => (x.node.id, x.callSiteStack.map(_.id), x.isOutputArg)).getOrElse((0L, List.empty[Long], false))
+        (headKey, lastKey)
       }
-      .map { case (_, list) =>
-        val lenIdPathPairs = list.map(x => (x.path.length, x))
-        val withMaxLength = (lenIdPathPairs.sortBy(_._1).reverse match {
-          case Nil    => Nil
-          case h :: t => h :: t.takeWhile(y => y._1 == h._1)
-        }).map(_._2)
-
-        if (withMaxLength.length == 1) {
-          withMaxLength.head
+      
+      val groupingTime = System.currentTimeMillis() - groupingStartTime
+      if (groupingTime > 1000) {
+        println(s"[DATAFLOW-DEBUG] Grouping took ${groupingTime}ms for ${processedList.size} entries")
+      }
+      
+      val processingStartTime = System.currentTimeMillis()
+      val result = grouped.map { case (_, groupList) =>
+        if (groupList.size == 1) {
+          // Fast path for single entries
+          groupList.head
         } else {
-          withMaxLength.minBy { x =>
-            x.path
-              .map(x => (x.node.id, x.callSiteStack.map(_.id), x.visible, x.isOutputArg, x.outEdgeLabel).toString)
-              .mkString("-")
-          }
+          // Optimize for multiple entries
+          deduplicateGroup(groupList)
         }
+      }.toList
+      
+      val processingTime = System.currentTimeMillis() - processingStartTime
+      val totalTime = System.currentTimeMillis() - startTime
+      
+      val finalSize = result.size
+      if (totalTime > 500 || originalSize > 100) {
+        println(s"[DATAFLOW-DEBUG] deduplicateTableEntries completed: ${originalSize} -> ${finalSize} entries in ${totalTime}ms")
       }
-      .toList
+      
+      result
+      
+    } catch {
+      case e: Exception =>
+        println(s"[DATAFLOW-DEBUG] ERROR in deduplicateTableEntries: ${e.getMessage}")
+        println(s"[DATAFLOW-DEBUG] Original list size: ${originalSize}")
+        logSampleNodeInfo(list.take(3))
+        throw e
+    }
+  }
+  
+  private def deduplicateGroup(groupList: List[TableEntry]): TableEntry = {
+    // Find entries with maximum path length
+    val maxLength = groupList.map(_.path.length).max
+    val maxLengthEntries = groupList.filter(_.path.length == maxLength)
+    
+    if (maxLengthEntries.size == 1) {
+      maxLengthEntries.head
+    } else {
+      // Use more efficient tie-breaking than string concatenation
+      maxLengthEntries.minBy { entry =>
+        // Create a more efficient comparison key
+        val pathIds = entry.path.map(_.node.id)
+        val pathKey = pathIds.mkString(",")
+        pathKey
+      }
+    }
+  }
+  
+  private def logSampleNodeInfo(samples: List[TableEntry]): Unit = {
+    samples.zipWithIndex.foreach { case (entry, idx) =>
+      val pathElements = entry.path
+      if (pathElements.nonEmpty) {
+        val firstNode = pathElements.head.node
+        val lastNode = pathElements.last.node
+        
+        println(s"[DATAFLOW-DEBUG] Sample ${idx + 1}:")
+        println(s"  Path length: ${pathElements.size}")
+        println(s"  First node: id=${firstNode.id}, ${getNodeInfo(firstNode)}")
+        println(s"  Last node: id=${lastNode.id}, ${getNodeInfo(lastNode)}")
+      }
+    }
+  }
+  
+  private def getNodeInfo(node: io.shiftleft.codepropertygraph.generated.nodes.AstNode): String = {
+    try {
+      val nodeLabel = node.label
+      val nodeId = node.id
+      
+      // Try to get code property safely
+      val codeOpt = try {
+        node.propertyOption("CODE").map(_.toString)
+      } catch {
+        case _: Exception => None
+      }
+      
+      // Try to get line number safely
+      val lineNumberOpt = try {
+        node.propertyOption("LINE_NUMBER").map(_.toString)
+      } catch {
+        case _: Exception => None
+      }
+      
+      // Try to get file name safely
+      val fileNameOpt = try {
+        node.propertyOption("FILENAME").map(_.toString)
+      } catch {
+        case _: Exception => None
+      }
+      
+      val code = codeOpt.map(c => s"'${c.take(50)}'").getOrElse("'unknown'")
+      val fileName = fileNameOpt.getOrElse("unknown")
+      val lineNumber = lineNumberOpt.getOrElse("-1")
+      
+      s"label=$nodeLabel, code=$code, file=$fileName, line=$lineNumber"
+    } catch {
+      case _: Exception => s"label=${node.label}, id=${node.id}"
+    }
   }
 
 }
