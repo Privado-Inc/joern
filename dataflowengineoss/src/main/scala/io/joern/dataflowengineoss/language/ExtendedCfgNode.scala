@@ -6,6 +6,7 @@ import io.joern.dataflowengineoss.queryengine.SourcesToStartingPoints.sourceTrav
 import io.joern.dataflowengineoss.semanticsloader.Semantics
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
+import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.mutable
 import scala.collection.parallel.CollectionConverters.*
@@ -40,8 +41,40 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
   def reachableByFlows[A](sourceTrav: IterableOnce[A], sourceTravs: IterableOnce[A]*)(implicit
     context: EngineContext
   ): Iterator[Path] = {
+    val startTime      = System.currentTimeMillis()
     val sources        = sourceTravsToStartingPoints(sourceTrav +: sourceTravs*)
     val startingPoints = sources.map(_.startingPoint)
+    val sinks          = traversal.toList
+
+    ExtendedCfgNode.logger.info(s"[REACHABLE_BY_FLOWS] Starting dataflow analysis: ${sources.size} sources → ${sinks.size} sinks")
+
+    // Log sample sources and sinks for debugging problematic combinations
+    sources.take(3).foreach { src =>
+      val srcNode = src.source
+      if (srcNode.isInstanceOf[AstNode]) {
+        ExtendedCfgNode.logger.info(
+          s"[REACHABLE_BY_FLOWS] Sample source: ${ExtendedCfgNode.nodeDebugInfo(srcNode.asInstanceOf[AstNode])}"
+        )
+      } else {
+        ExtendedCfgNode.logger.info(
+          s"[REACHABLE_BY_FLOWS] Sample source: ${srcNode.getClass.getSimpleName}:${srcNode.id}"
+        )
+      }
+    }
+    sinks.take(3).foreach { sink =>
+      ExtendedCfgNode.logger.info(
+        s"[REACHABLE_BY_FLOWS] Sample sink: ${ExtendedCfgNode.nodeDebugInfo(sink)}"
+      )
+    }
+
+    // Warn about potentially expensive queries
+    val totalCombinations = sources.size.toLong * sinks.size.toLong
+    if (totalCombinations > 100000) {
+      ExtendedCfgNode.logger.warn(
+        s"[REACHABLE_BY_FLOWS] LARGE QUERY WARNING: ${sources.size} sources × ${sinks.size} sinks = $totalCombinations potential combinations"
+      )
+    }
+
     val paths = reachableByInternal(sources).par
       .map { result =>
         // We can get back results that start in nodes that are invisible
@@ -59,6 +92,17 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
       .dedup
       .flatten
       .toVector
+
+    val totalDuration = System.currentTimeMillis() - startTime
+    ExtendedCfgNode.logger.info(s"[REACHABLE_BY_FLOWS] Analysis completed in ${totalDuration}ms: found ${paths.size} paths")
+
+    if (totalDuration > 30000) { // Warn for queries taking more than 30 seconds
+      ExtendedCfgNode.logger.warn(s"[REACHABLE_BY_FLOWS] SLOW QUERY WARNING: Analysis took ${totalDuration}ms")
+      ExtendedCfgNode.logger.warn(
+        s"[REACHABLE_BY_FLOWS] Query characteristics: ${sources.size} sources, ${sinks.size} sinks, ${paths.size} results"
+      )
+    }
+
     paths.iterator
   }
 
@@ -76,9 +120,15 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
   private def reachableByInternal(
     startingPointsWithSources: List[StartingPointWithSource]
   )(implicit context: EngineContext): Vector[TableEntry] = {
-    val sinks  = traversal.dedup.toList.sortBy(_.id)
+    val sinks = traversal.dedup.toList.sortBy(_.id)
+    ExtendedCfgNode.logger.debug(
+      s"[REACHABLE_BY_INTERNAL] Processing ${sinks.size} sinks with ${startingPointsWithSources.size} starting points"
+    )
+
     val engine = new Engine(context)
     val result = engine.backwards(sinks, startingPointsWithSources.map(_.startingPoint))
+
+    ExtendedCfgNode.logger.debug(s"[REACHABLE_BY_INTERNAL] Engine.backwards returned ${result.size} table entries")
 
     engine.shutdown()
     val sources = startingPointsWithSources.map(_.source)
@@ -96,4 +146,34 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
     res.toVector
   }
 
+}
+
+object ExtendedCfgNode {
+  private val logger: Logger = LoggerFactory.getLogger(classOf[ExtendedCfgNode])
+  
+  /** Extract meaningful debugging information from any AstNode for logging purposes */
+  private def nodeDebugInfo(node: io.shiftleft.codepropertygraph.generated.nodes.AstNode): String = {
+    import io.shiftleft.codepropertygraph.generated.nodes.*
+    
+    val nodeType = node.getClass.getSimpleName
+    
+    // Extract meaningful name and code
+    val (name, code) = node match {
+      case id: Identifier => (s"'${id.name}'", id.code)
+      case lit: Literal => (s"'${lit.code}'", lit.code)  
+      case expr: Expression => ("", expr.code.take(50))
+      case other => ("", other.toString.take(50))
+    }
+    
+    // Extract location information
+    val location = try {
+      val lineNum = node.lineNumber.map(_.toString).getOrElse("?")
+      val fileName = node.file.name.headOption.getOrElse("unknown")
+      s"$fileName:$lineNum"
+    } catch {
+      case _: Exception => "location unknown"
+    }
+    
+    s"$nodeType$name [$code] @ $location"
+  }
 }
