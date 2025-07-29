@@ -51,13 +51,19 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
     // Log sample sources and sinks for debugging problematic combinations
     sources.take(3).foreach { src =>
       val srcNode = src.source
-      ExtendedCfgNode.logger.info(
-        s"[REACHABLE_BY_FLOWS] Sample source: ${srcNode.getClass.getSimpleName}:${srcNode.id} - ${srcNode.toString.take(100)}"
-      )
+      if (srcNode.isInstanceOf[AstNode]) {
+        ExtendedCfgNode.logger.info(
+          s"[REACHABLE_BY_FLOWS] Sample source: ${ExtendedCfgNode.nodeDebugInfo(srcNode.asInstanceOf[AstNode])}"
+        )
+      } else {
+        ExtendedCfgNode.logger.info(
+          s"[REACHABLE_BY_FLOWS] Sample source: ${srcNode.getClass.getSimpleName}:${srcNode.id}"
+        )
+      }
     }
     sinks.take(3).foreach { sink =>
       ExtendedCfgNode.logger.info(
-        s"[REACHABLE_BY_FLOWS] Sample sink: ${sink.getClass.getSimpleName}:${sink.id} - ${sink.toString.take(100)}"
+        s"[REACHABLE_BY_FLOWS] Sample sink: ${ExtendedCfgNode.nodeDebugInfo(sink)}"
       )
     }
 
@@ -144,4 +150,30 @@ class ExtendedCfgNode(val traversal: Iterator[CfgNode]) extends AnyVal {
 
 object ExtendedCfgNode {
   private val logger: Logger = LoggerFactory.getLogger(classOf[ExtendedCfgNode])
+  
+  /** Extract meaningful debugging information from any AstNode for logging purposes */
+  private def nodeDebugInfo(node: io.shiftleft.codepropertygraph.generated.nodes.AstNode): String = {
+    import io.shiftleft.codepropertygraph.generated.nodes.*
+    
+    val nodeType = node.getClass.getSimpleName
+    
+    // Extract meaningful name and code
+    val (name, code) = node match {
+      case id: Identifier => (s"'${id.name}'", id.code)
+      case lit: Literal => (s"'${lit.code}'", lit.code)  
+      case expr: Expression => ("", expr.code.take(50))
+      case other => ("", other.toString.take(50))
+    }
+    
+    // Extract location information
+    val location = try {
+      val lineNum = node.lineNumber.map(_.toString).getOrElse("?")
+      val fileName = node.file.name.headOption.getOrElse("unknown")
+      s"$fileName:$lineNum"
+    } catch {
+      case _: Exception => "location unknown"
+    }
+    
+    s"$nodeType$name [$code] @ $location"
+  }
 }

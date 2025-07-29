@@ -3,6 +3,9 @@ package io.joern.dataflowengineoss.queryengine
 import org.slf4j.{Logger, LoggerFactory}
 import scala.collection.mutable
 import scala.collection.parallel.CollectionConverters.*
+import java.util.concurrent.ConcurrentHashMap
+import scala.jdk.CollectionConverters.*
+import io.shiftleft.semanticcpg.language.*
 
 /** Complete held tasks using the result table. The result table is modified in the process.
   *
@@ -23,6 +26,37 @@ class HeldTaskCompletion(
 ) {
 
   private val logger: Logger = LoggerFactory.getLogger(classOf[HeldTaskCompletion])
+  
+  // Configurable performance thresholds for parallel processing
+  private val PARALLEL_TABLE_THRESHOLD = sys.props.get("joern.dataflow.parallel.table.threshold").map(_.toInt).getOrElse(10)
+  private val PARALLEL_DEDUP_THRESHOLD = sys.props.get("joern.dataflow.parallel.dedup.threshold").map(_.toInt).getOrElse(1000)
+  private val PARALLEL_GROUPS_THRESHOLD = sys.props.get("joern.dataflow.parallel.groups.threshold").map(_.toInt).getOrElse(10)
+  
+  /** Extract meaningful debugging information from any AstNode for logging purposes */
+  private def nodeDebugInfo(node: io.shiftleft.codepropertygraph.generated.nodes.AstNode): String = {
+    import io.shiftleft.codepropertygraph.generated.nodes.*
+    
+    val nodeType = node.getClass.getSimpleName
+    
+    // Extract meaningful name and code
+    val (name, code) = node match {
+      case id: Identifier => (s"'${id.name}'", id.code)
+      case lit: Literal => (s"'${lit.code}'", lit.code)  
+      case expr: Expression => ("", expr.code.take(50))
+      case other => ("", other.toString.take(50))
+    }
+    
+    // Extract location information
+    val location = try {
+      val lineNum = node.lineNumber.map(_.toString).getOrElse("?")
+      val fileName = node.file.name.headOption.getOrElse("unknown")
+      s"$fileName:$lineNum"
+    } catch {
+      case _: Exception => "location unknown"
+    }
+    
+    s"$nodeType$name [$code] @ $location"
+  }
 
   /** Add results produced by held task until no more change can be observed.
     *
@@ -40,10 +74,11 @@ class HeldTaskCompletion(
     val startTime = System.currentTimeMillis()
     logger.info(s"[HELD_TASK_COMPLETION] Starting completion of ${heldTasks.size} held tasks")
     logger.info(s"[HELD_TASK_COMPLETION] Initial result table size: ${resultTable.size} entries")
+    logger.info(s"[HELD_TASK_COMPLETION] Parallelization thresholds: table=$PARALLEL_TABLE_THRESHOLD, dedup=$PARALLEL_DEDUP_THRESHOLD, groups=$PARALLEL_GROUPS_THRESHOLD")
 
     // Log sample of held tasks for debugging
     heldTasks.take(5).foreach { task =>
-      logger.info(s"[HELD_TASK_COMPLETION] Sample held task - Sink: ${task.fingerprint.sink.getClass.getSimpleName}:${task.fingerprint.sink.id}, CallDepth: ${task.callDepth}, InitialPathLength: ${task.initialPath.length}")
+      logger.info(s"[HELD_TASK_COMPLETION] Sample held task - Sink: ${nodeDebugInfo(task.fingerprint.sink)}, CallDepth: ${task.callDepth}, InitialPathLength: ${task.initialPath.length}")
     }
 
     deduplicateResultTable()
@@ -58,7 +93,6 @@ class HeldTaskCompletion(
     
     var resultsProducedByTask: Map[ReachableByTask, Set[(TaskFingerprint, TableEntry)]] = Map()
     var iterationCount = 0
-    val maxIterations = 1000 // Circuit breaker
 
     def allChanged  = toProcess.map { task => task.fingerprint -> true }.toMap
     def noneChanged = toProcess.map { t => t.fingerprint -> false }.toMap
@@ -66,7 +100,7 @@ class HeldTaskCompletion(
     var changed: Map[TaskFingerprint, Boolean] = allChanged
     logger.info(s"[HELD_TASK_COMPLETION] Starting fixed-point iteration with ${changed.count(_._2)} changed tasks")
 
-    while (changed.values.toList.contains(true) && iterationCount < maxIterations) {
+    while (changed.values.toList.contains(true)) {
       iterationCount += 1
       val iterationStartTime = System.currentTimeMillis()
       logger.info(s"[HELD_TASK_COMPLETION] Starting iteration $iterationCount with ${changed.count(_._2)} changed tasks")
@@ -104,11 +138,6 @@ class HeldTaskCompletion(
       }
     }
     
-    if (iterationCount >= maxIterations) {
-      logger.error(s"[HELD_TASK_COMPLETION] CIRCUIT BREAKER: Terminated after $maxIterations iterations to prevent infinite loop")
-      logger.error(s"[HELD_TASK_COMPLETION] Still have ${changed.count(_._2)} changed tasks when terminated")
-    }
-    
     val finalDedupStart = System.currentTimeMillis()
     deduplicateResultTable()
     val finalDedupDuration = System.currentTimeMillis() - finalDedupStart
@@ -139,7 +168,7 @@ class HeldTaskCompletion(
         // Log source information from initial path
         if (heldTask.initialPath.nonEmpty) {
           val sourcePath = heldTask.initialPath.head
-          logger.debug(s"[HELD_TASK_COMPLETION] Held task source: ${sourcePath.node.getClass.getSimpleName}:${sourcePath.node.id}")
+          logger.debug(s"[HELD_TASK_COMPLETION] Held task source: ${nodeDebugInfo(sourcePath.node)}")
         }
         
         val processedResults = results
@@ -200,21 +229,49 @@ class HeldTaskCompletion(
   private def deduplicateResultTable(): Unit = {
     val startTime = System.currentTimeMillis()
     val initialSize = resultTable.values.map(_.size).sum
-    logger.debug(s"[HELD_TASK_COMPLETION] Starting result table deduplication: ${resultTable.size} keys, $initialSize total entries")
+    val tableSize = resultTable.size
+    logger.debug(s"[HELD_TASK_COMPLETION] Starting result table deduplication: $tableSize keys, $initialSize total entries")
     
-    resultTable.keys.foreach { key =>
-      val results = resultTable(key)
-      val dedupResults = deduplicateTableEntries(results)
-      resultTable.put(key, dedupResults)
+    val useParallel = tableSize >= PARALLEL_TABLE_THRESHOLD
+    
+    if (useParallel) {
+      logger.info(s"[HELD_TASK_COMPLETION] Using PARALLEL deduplication for $tableSize table keys")
       
-      if (results.size != dedupResults.size) {
-        logger.debug(s"[HELD_TASK_COMPLETION] Deduplicated key ${key.sink.id}: ${results.size} -> ${dedupResults.size} entries")
+      // Convert to parallel processing
+      val keysList = resultTable.keys.toList
+      val updates = keysList.par.map { key =>
+        val results = resultTable(key)
+        val dedupResults = deduplicateTableEntries(results)
+        
+        if (results.size != dedupResults.size) {
+          logger.debug(s"[HELD_TASK_COMPLETION] Deduplicated key ${key.sink.id}: ${results.size} -> ${dedupResults.size} entries")
+        }
+        
+        (key, dedupResults)
+      }.seq
+      
+      // Apply updates to result table (sequential to avoid race conditions)
+      updates.foreach { case (key, dedupResults) =>
+        resultTable.put(key, dedupResults)
+      }
+    } else {
+      logger.debug(s"[HELD_TASK_COMPLETION] Using SEQUENTIAL deduplication for $tableSize table keys (below threshold)")
+      
+      resultTable.keys.foreach { key =>
+        val results = resultTable(key)
+        val dedupResults = deduplicateTableEntries(results)
+        resultTable.put(key, dedupResults)
+        
+        if (results.size != dedupResults.size) {
+          logger.debug(s"[HELD_TASK_COMPLETION] Deduplicated key ${key.sink.id}: ${results.size} -> ${dedupResults.size} entries")
+        }
       }
     }
     
     val finalSize = resultTable.values.map(_.size).sum
     val duration = System.currentTimeMillis() - startTime
-    logger.debug(s"[HELD_TASK_COMPLETION] Result table deduplication completed in ${duration}ms: $initialSize -> $finalSize entries")
+    val processingMode = if (useParallel) "PARALLEL" else "SEQUENTIAL"
+    logger.info(s"[HELD_TASK_COMPLETION] $processingMode deduplication completed in ${duration}ms: $initialSize -> $finalSize entries")
     
     if (duration > 30000) { // Warn if deduplication takes more than 30 seconds
       logger.warn(s"[HELD_TASK_COMPLETION] SLOW DEDUPLICATION: Result table deduplication took ${duration}ms")
@@ -240,34 +297,67 @@ class HeldTaskCompletion(
     
     logger.debug(s"[HELD_TASK_COMPLETION] Starting deduplication of $inputSize table entries")
     
+    val useParallel = inputSize >= PARALLEL_DEDUP_THRESHOLD
+    
     // Performance warning for large collections
     if (inputSize > 10000) {
       logger.warn(s"[HELD_TASK_COMPLETION] LARGE COLLECTION WARNING: Deduplicating $inputSize table entries - this may be slow")
     }
     
     val groupByStartTime = System.currentTimeMillis()
-    val groupedResults = list
-      .groupBy { result =>
+    
+    // Optimize with hash key caching and parallel processing
+    val groupedResults = if (useParallel) {
+      logger.debug(s"[HELD_TASK_COMPLETION] Using PARALLEL groupBy for $inputSize entries")
+      
+      // Pre-compute grouping keys to avoid repeated expensive hash calculations
+      val entriesWithKeys = list.par.map { result =>
+        val head = result.path.headOption.map(x => (x.node, x.callSiteStack, x.isOutputArg)).get
+        val last = result.path.lastOption.map(x => (x.node, x.callSiteStack, x.isOutputArg)).get
+        val groupingKey = (head, last)
+        (result, groupingKey)
+      }.seq
+      
+      // Group by pre-computed keys (avoids hash recalculation)
+      entriesWithKeys.groupBy(_._2).map { case (key, entries) => 
+        key -> entries.map(_._1)
+      }
+    } else {
+      logger.debug(s"[HELD_TASK_COMPLETION] Using SEQUENTIAL groupBy for $inputSize entries (below threshold)")
+      
+      list.groupBy { result =>
         val head = result.path.headOption.map(x => (x.node, x.callSiteStack, x.isOutputArg)).get
         val last = result.path.lastOption.map(x => (x.node, x.callSiteStack, x.isOutputArg)).get
         (head, last)
       }
+    }
+    
     val groupByDuration = System.currentTimeMillis() - groupByStartTime
     
-    logger.debug(s"[HELD_TASK_COMPLETION] GroupBy operation completed in ${groupByDuration}ms: $inputSize entries -> ${groupedResults.size} groups")
+    val processingMode = if (useParallel) "PARALLEL" else "SEQUENTIAL"
+    logger.debug(s"[HELD_TASK_COMPLETION] $processingMode GroupBy operation completed in ${groupByDuration}ms: $inputSize entries -> ${groupedResults.size} groups")
     
     if (groupByDuration > 30000) { // Warn if groupBy takes more than 30 seconds
-      logger.warn(s"[HELD_TASK_COMPLETION] SLOW GROUPBY: GroupBy operation took ${groupByDuration}ms for $inputSize entries")
+      logger.warn(s"[HELD_TASK_COMPLETION] SLOW GROUPBY: $processingMode GroupBy operation took ${groupByDuration}ms for $inputSize entries")
       
       // Log the largest groups for debugging
       val largestGroups = groupedResults.toSeq.sortBy(-_._2.size).take(5)
       largestGroups.foreach { case ((head, last), entries) =>
-        logger.warn(s"[HELD_TASK_COMPLETION] Large group: ${head._1.id} -> ${last._1.id} with ${entries.size} entries")
+        logger.warn(s"[HELD_TASK_COMPLETION] Large group: ${nodeDebugInfo(head._1)} -> ${nodeDebugInfo(last._1)} with ${entries.size} entries")
       }
     }
     
     val mapStartTime = System.currentTimeMillis()
-    val result = groupedResults
+    
+    // Use parallel processing for the map operation on groups when beneficial
+    val groupsCollection = if (useParallel && groupedResults.size > PARALLEL_GROUPS_THRESHOLD) {
+      logger.debug(s"[HELD_TASK_COMPLETION] Using PARALLEL map for ${groupedResults.size} groups")
+      groupedResults.par
+    } else {
+      groupedResults
+    }
+    
+    val result = groupsCollection
       .map { case (_, list) =>
         val sortStartTime = System.currentTimeMillis()
         val lenIdPathPairs = list.map(x => (x.path.length, x))
@@ -307,8 +397,8 @@ class HeldTaskCompletion(
     val outputSize = result.size
     val reductionRatio = if (inputSize > 0) (1.0 - outputSize.toDouble / inputSize) * 100 else 0.0
     
-    logger.debug(s"[HELD_TASK_COMPLETION] Deduplication completed in ${totalDuration}ms: $inputSize -> $outputSize entries (${reductionRatio.formatted("%.1f")}% reduction)")
-    logger.debug(s"[HELD_TASK_COMPLETION] Deduplication timing: groupBy=${groupByDuration}ms, map=${mapDuration}ms")
+    logger.debug(s"[HELD_TASK_COMPLETION] $processingMode deduplication completed in ${totalDuration}ms: $inputSize -> $outputSize entries (${reductionRatio.formatted("%.1f")}% reduction)")
+    logger.debug(s"[HELD_TASK_COMPLETION] $processingMode timing: groupBy=${groupByDuration}ms, map=${mapDuration}ms")
     
     if (totalDuration > 60000) { // Warn if total deduplication takes more than 1 minute
       logger.warn(s"[HELD_TASK_COMPLETION] SLOW DEDUPLICATION: Total deduplication took ${totalDuration}ms for $inputSize entries")
@@ -317,6 +407,9 @@ class HeldTaskCompletion(
     
     // Memory usage warning
     val estimatedMemoryMB = (inputSize * 1000) / (1024 * 1024) // Rough estimate
+    if (estimatedMemoryMB > 100) {
+      logger.warn(s"[HELD_TASK_COMPLETION] MEMORY WARNING: Processing ~${estimatedMemoryMB}MB of table entries")
+    }
     if (estimatedMemoryMB > 100) {
       logger.warn(s"[HELD_TASK_COMPLETION] MEMORY WARNING: Processing ~${estimatedMemoryMB}MB of table entries")
     }

@@ -53,10 +53,10 @@ class Engine(context: EngineContext) {
     
     // Log sample of sources and sinks for debugging
     sources.take(3).foreach { source =>
-      logger.debug(s"[ENGINE_BACKWARDS] Sample source: ${source.getClass.getSimpleName}:${source.id}")
+      logger.debug(s"[ENGINE_BACKWARDS] Sample source: ${Engine.nodeDebugInfo(source)}")
     }
     sinks.take(3).foreach { sink =>
-      logger.debug(s"[ENGINE_BACKWARDS] Sample sink: ${sink.getClass.getSimpleName}:${sink.id}")
+      logger.debug(s"[ENGINE_BACKWARDS] Sample sink: ${Engine.nodeDebugInfo(sink)}")
     }
     
     reset()
@@ -146,7 +146,7 @@ class Engine(context: EngineContext) {
       
       // Log sample held tasks for debugging
       held.take(5).foreach { task =>
-        logger.info(s"[ENGINE_SOLVE] Sample held task: sink=${task.fingerprint.sink.getClass.getSimpleName}:${task.fingerprint.sink.id}, callDepth=${task.callDepth}")
+        logger.info(s"[ENGINE_SOLVE] Sample held task: sink=${Engine.nodeDebugInfo(task.fingerprint.sink)}, callDepth=${task.callDepth}")
       }
       
       new HeldTaskCompletion(held.toList, mainResultTable).completeHeldTasks()
@@ -238,6 +238,32 @@ class Engine(context: EngineContext) {
 }
 
 object Engine {
+  
+  /** Extract meaningful debugging information from any AstNode for logging purposes */
+  private def nodeDebugInfo(node: io.shiftleft.codepropertygraph.generated.nodes.AstNode): String = {
+    import io.shiftleft.codepropertygraph.generated.nodes.*
+    
+    val nodeType = node.getClass.getSimpleName
+    
+    // Extract meaningful name and code
+    val (name, code) = node match {
+      case id: Identifier => (s"'${id.name}'", id.code)
+      case lit: Literal => (s"'${lit.code}'", lit.code)  
+      case expr: Expression => ("", expr.code.take(50))
+      case other => ("", other.toString.take(50))
+    }
+    
+    // Extract location information
+    val location = try {
+      val lineNum = node.lineNumber.map(_.toString).getOrElse("?")
+      val fileName = node.file.name.headOption.getOrElse("unknown")
+      s"$fileName:$lineNum"
+    } catch {
+      case _: Exception => "location unknown"
+    }
+    
+    s"$nodeType$name [$code] @ $location"
+  }
 
   /** Traverse from a node to incoming DDG nodes, taking into account semantics. This method is exposed via the `ddgIn`
     * step, but is also called by the engine internally by the `TaskSolver`.
