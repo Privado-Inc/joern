@@ -54,8 +54,10 @@ class ReachingDefFlowGraph(val method: Method) extends FlowGraph[StoredNode] {
       x.id != entryNode.id && x.id != exitNode.id
     ) ++ method.parameter.asOutput.toList ++ List(exitNode)
 
-  private val allNodesEvenUnreachable =
-    allNodesReversePostOrder ++ method.cfgNode.l.filterNot(x => allNodesReversePostOrder.contains(x))
+  private val allNodesEvenUnreachable = {
+    val reachable = allNodesReversePostOrder.toSet
+    allNodesReversePostOrder ++ method.cfgNode.l.filterNot(reachable.contains)
+  }
   val nodeToNumber: Map[StoredNode, Int] = allNodesEvenUnreachable.zipWithIndex.map { case (x, i) => x -> i }.toMap
   val numberToNode: Map[Int, StoredNode] = allNodesEvenUnreachable.zipWithIndex.map { case (x, i) => i -> x }.toMap
 
@@ -167,7 +169,7 @@ class ReachingDefTransferFunction(flowGraph: ReachingDefFlowGraph)
   val gen: Map[StoredNode, mutable.BitSet] =
     initGen(method).withDefaultValue(mutable.BitSet())
 
-  val kill: Map[StoredNode, mutable.BitSet] =
+  lazy val kill: Map[StoredNode, mutable.BitSet] =
     initKill(method, gen).withDefaultValue(mutable.BitSet())
 
   /** For a given flow graph node `n` and set of definitions, apply the transfer function to obtain the updated set of
@@ -311,8 +313,8 @@ class OptimizedReachingDefTransferFunction(flowGraph: ReachingDefFlowGraph)
     extends ReachingDefTransferFunction(flowGraph) {
 
   lazy val loneIdentifiers: Map[Call, List[Definition]] = {
-    val identifiersInReturns = method._returnViaContainsOut.ast.isIdentifier.name.l
-    val paramAndLocalNames   = method.parameter.name.l ++ method.local.name.l
+    val identifiersInReturns = method._returnViaContainsOut.ast.isIdentifier.name.toSet
+    val paramAndLocalNames   = (method.parameter.name.l ++ method.local.name.l).toSet
     val callArgPairs = method.call.flatMap { call =>
       call.argument.isIdentifier
         .filterNot(i => paramAndLocalNames.contains(i.name))
