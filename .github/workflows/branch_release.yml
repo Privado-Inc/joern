@@ -1,0 +1,50 @@
+name: branch release
+# Publishes a test build of a non-master branch to GitHub Packages, without a git tag or a GitHub release.
+# Version: <branch without feat/>-SNAPSHOT, e.g. reachingdef-perf-SNAPSHOT. SNAPSHOT lets each push replace the build.
+# privado-core-enterprise picks it up on a branch with the same name (project/Versions.scala).
+on:
+  push:
+    branches: [ 'feat/**' ]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or commit to publish (empty = the branch selected above)
+        required: false
+jobs:
+  branch-release:
+    if: github.repository_owner == 'Privado-Inc'
+    runs-on: ubuntu-22.04
+    concurrency: branch-release-${{ inputs.ref || github.ref_name }}
+    env:
+      REF: ${{ inputs.ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 2.7
+      - name: Install Bundler
+        run: gem install bundler -v 2.4.22
+      - name: Free disk space
+        run: rm -rf /home/runner/.rustup /home/runner/.cargo
+      - name: Compute version
+        id: v
+        run: |
+          name=$(printf '%s' "${REF#feat/}" | tr -c 'A-Za-z0-9.' '-' | tr -s '-' | sed 's/^-//; s/-$//')
+          echo "version=${name}-SNAPSHOT" >> "$GITHUB_OUTPUT"
+      - name: Publish
+        run: sbt "set ThisBuild / version := \"${{ steps.v.outputs.version }}\"" publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Summary
+        run: |
+          echo "Published joern \`${{ steps.v.outputs.version }}\` from \`$REF\` ($(git rev-parse --short=8 HEAD))." >> "$GITHUB_STEP_SUMMARY"
+          echo "In privado-core-enterprise build.sbt: \`val joernVersion = \"${{ steps.v.outputs.version }}\"\`" >> "$GITHUB_STEP_SUMMARY"
