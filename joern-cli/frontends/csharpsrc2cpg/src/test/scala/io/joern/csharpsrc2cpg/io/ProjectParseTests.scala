@@ -57,14 +57,41 @@ class ProjectParseTests extends CSharpCode2CpgFixture with BeforeAndAfterAll {
         val cpg          = newEmptyCpg()
         val config       = Config().withInputPath(projectDir.toString).withOutputPath(tmpDir.toString)
         val astGenResult = new DotNetAstGenRunner(config).execute(tmpDir)
-        val astCreators  = CSharpSrc2Cpg.processAstGenRunnerResults(astGenResult.parsedFiles, config)
-        new AstCreationPass(cpg, astCreators, new Report()).createAndApply()
+        new AstCreationPass(
+          cpg,
+          astGenResult.parsedFiles,
+          file => CSharpSrc2Cpg.astCreatorForFile(file, config),
+          new Report()
+        ).createAndApply()
         f(cpg)
       }
     }
   }
 
   "Parsing a project" should {
+
+    "preserve cross-file type information across AST batches" in {
+      File.usingTemporaryDirectory("csharpsrc2cpgBatchTests") { projectDir =>
+        val numberOfFiles = 257
+        val fileNames     = (1 to numberOfFiles).map(i => s"file$i.cs").toList
+        fileNames.zipWithIndex.foreach { case (name, index) =>
+          val members =
+            if (index == numberOfFiles - 1) ""
+            else s"Class${index + 1} Next; Class${index + 1} Alternate;"
+          (projectDir / name).write(s"class Class$index { $members }")
+        }
+        val config = Config().withInputPath(projectDir.toString).withOutputPath((projectDir / "cpg.bin").toString)
+        val cpg    = new CSharpSrc2Cpg().createCpg(config).get
+        try {
+          cpg.file.name.l should contain allElementsOf fileNames
+          val expectedMemberTypes = (1 until numberOfFiles).map(i => s"Class$i").toSet
+          cpg.member.nameExact("Next").typeFullName.l.toSet shouldBe expectedMemberTypes
+          cpg.member.nameExact("Alternate").typeFullName.l.toSet shouldBe expectedMemberTypes
+        } finally {
+          cpg.close()
+        }
+      }
+    }
 
     "generate correct filenames" in ProjectParseTestsFixture(projectWithSubfolders) { cpg =>
       cpg.file.name.l should contain allElementsOf List("a.cs", "b.cs", s"sub${sep}c.cs", s"sub${sep}d.cs")

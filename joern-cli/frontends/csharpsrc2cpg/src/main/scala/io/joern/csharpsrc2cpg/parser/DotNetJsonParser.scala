@@ -10,8 +10,7 @@ import scala.util.Try
 object DotNetJsonParser {
 
   def readFile(file: Path): ParserResult = {
-    val jsonContent       = IOUtils.readLinesInFile(file).mkString
-    val json              = ujson.read(jsonContent)
+    val json              = ujson.read(ujson.Readable.fromPath(file))
     val fullFilePath      = json(ParserKeys.FileName).str
     val filePath          = Paths.get(fullFilePath)
     val sourceFileContent = IOUtils.readEntireFile(filePath)
