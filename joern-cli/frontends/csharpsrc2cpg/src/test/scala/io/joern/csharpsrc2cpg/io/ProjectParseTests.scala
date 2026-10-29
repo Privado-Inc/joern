@@ -57,8 +57,12 @@ class ProjectParseTests extends CSharpCode2CpgFixture with BeforeAndAfterAll {
         val cpg          = newEmptyCpg()
         val config       = Config().withInputPath(projectDir.toString).withOutputPath(tmpDir.toString)
         val astGenResult = new DotNetAstGenRunner(config).execute(tmpDir)
-        val astCreators  = CSharpSrc2Cpg.processAstGenRunnerResults(astGenResult.parsedFiles, config)
-        new AstCreationPass(cpg, astCreators, new Report()).createAndApply()
+        new AstCreationPass(
+          cpg,
+          astGenResult.parsedFiles,
+          file => CSharpSrc2Cpg.astCreatorForFile(file, config),
+          new Report()
+        ).createAndApply()
         f(cpg)
       }
     }
@@ -66,7 +70,7 @@ class ProjectParseTests extends CSharpCode2CpgFixture with BeforeAndAfterAll {
 
   "Parsing a project" should {
 
-    "preserve cross-file type information across many AST batches" in {
+    "preserve cross-file type information across AST batches" in {
       File.usingTemporaryDirectory("csharpsrc2cpgBatchTests") { projectDir =>
         val numberOfFiles = 257
         val fileNames     = (1 to numberOfFiles).map(i => s"file$i.cs").toList

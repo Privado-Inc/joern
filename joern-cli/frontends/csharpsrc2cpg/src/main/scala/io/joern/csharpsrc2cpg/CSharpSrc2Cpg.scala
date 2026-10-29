@@ -11,14 +11,14 @@ import io.joern.x2cpg.astgen.AstGenRunner.AstGenRunnerResult
 import io.joern.x2cpg.astgen.ParserResult
 import io.joern.x2cpg.passes.callgraph.NaiveCallLinker
 import io.joern.x2cpg.passes.frontend.{MetaDataPass, TypeNodePass}
-import io.joern.x2cpg.utils.{Environment, HashUtil, Report}
+import io.joern.x2cpg.utils.{ConcurrentTaskUtil, Environment, HashUtil, Report}
 import io.joern.x2cpg.{SourceFiles, X2CpgFrontend}
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.Languages
 import io.shiftleft.passes.CpgPassBase
 import org.slf4j.LoggerFactory
 
-import java.nio.file.{Path, Paths}
+import java.nio.file.Paths
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
@@ -29,20 +29,24 @@ class CSharpSrc2Cpg extends X2CpgFrontend[Config] {
 
   private val logger         = LoggerFactory.getLogger(getClass)
   private val report: Report = new Report()
-  private val astBatchSize   = 8
+  // Keep pending diff graphs bounded without limiting parsing and AST creation to a small number of workers.
+  private val astBatchSize = 256
 
   override def createCpg(config: Config): Try[Cpg] = {
     withNewEmptyCpg(config.outputPath, config) { (cpg, config) =>
       File.usingTemporaryDirectory("csharpsrc2cpgOut") { tmpDir =>
         val astGenResult = new DotNetAstGenRunner(config).execute(tmpDir)
-        val sourcePaths  = List.newBuilder[Path]
-        // Summaries are needed before CPG creation, but retaining every parsed JSON tree exhausts the heap.
+        // Parse and summarize inside bounded worker tasks. Each worker retains only its current parsed JSON tree.
+        val summaryResults = ConcurrentTaskUtil
+          .runUsingThreadPool(astGenResult.parsedFiles.iterator.map { file => () =>
+            val astCreator = CSharpSrc2Cpg.astCreatorForFile(file, config)
+            Paths.get(astCreator.parserResult.fullPath) -> Try(astCreator.summarize())
+          })
+          .map(_.get)
         val internalProgramSummary =
-          astGenResult.parsedFiles.foldLeft(CSharpProgramSummary(imports = CSharpProgramSummary.initialImports)) {
-            (summary, file) =>
-              val astCreator = CSharpSrc2Cpg.astCreatorForFile(file, config)
-              sourcePaths += Paths.get(astCreator.parserResult.fullPath)
-              Try(astCreator.summarize()) match {
+          summaryResults.foldLeft(CSharpProgramSummary(imports = CSharpProgramSummary.initialImports)) {
+            case (summary, (_, fileSummary)) =>
+              fileSummary match {
                 case Failure(exception) =>
                   logger.warn("Unable to pre-parse C# file, skipping - ", exception)
                   summary
@@ -55,7 +59,7 @@ class CSharpSrc2Cpg extends X2CpgFrontend[Config] {
         val externalSummary           = createExternalSummary(config, internalAndBuiltinSummary)
         val localSummary              = internalAndBuiltinSummary ++= externalSummary
 
-        val hash = HashUtil.sha256(sourcePaths.result())
+        val hash = HashUtil.sha256(summaryResults.map(_._1))
         new MetaDataPass(cpg, Languages.CSHARPSRC, config.inputPath, Option(hash)).createAndApply()
 
         val packageIds = mutable.HashSet.empty[String]
@@ -67,8 +71,12 @@ class CSharpSrc2Cpg extends X2CpgFrontend[Config] {
           localSummary
         }
         astGenResult.parsedFiles.grouped(astBatchSize).foreach { files =>
-          val astCreators = files.map(file => CSharpSrc2Cpg.astCreatorForFile(file, config).withSummary(programSummary))
-          new AstCreationPass(cpg, astCreators, report).createAndApply()
+          new AstCreationPass(
+            cpg,
+            files,
+            file => CSharpSrc2Cpg.astCreatorForFile(file, config).withSummary(programSummary),
+            report
+          ).createAndApply()
         }
         TypeNodePass.withTypesFromCpg(cpg).createAndApply()
         report.print()

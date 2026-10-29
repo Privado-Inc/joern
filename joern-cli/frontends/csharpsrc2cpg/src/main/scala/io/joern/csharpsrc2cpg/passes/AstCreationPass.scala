@@ -1,6 +1,5 @@
 package io.joern.csharpsrc2cpg.passes
 
-import io.joern.csharpsrc2cpg.Config
 import io.joern.csharpsrc2cpg.astcreation.AstCreator
 import io.joern.x2cpg.utils.{Report, TimeUtils}
 import io.shiftleft.codepropertygraph.generated.Cpg
@@ -11,14 +10,15 @@ import org.slf4j.{Logger, LoggerFactory}
 import scala.util.{Try, Success, Failure}
 import java.nio.file.Paths
 
-class AstCreationPass(cpg: Cpg, astCreators: Seq[AstCreator], report: Report)
-    extends ForkJoinParallelCpgPass[AstCreator](cpg) {
+class AstCreationPass(cpg: Cpg, astFiles: Seq[String], createAstCreator: String => AstCreator, report: Report)
+    extends ForkJoinParallelCpgPass[String](cpg) {
 
   private val logger: Logger = LoggerFactory.getLogger(classOf[AstCreationPass])
 
-  override def generateParts(): Array[AstCreator] = astCreators.toArray
+  override def generateParts(): Array[String] = astFiles.toArray
 
-  override def runOnPart(diffGraph: DiffGraphBuilder, astCreator: AstCreator): Unit = {
+  override def runOnPart(diffGraph: DiffGraphBuilder, astFile: String): Unit = {
+    val astCreator = createAstCreator(astFile)
     val ((success, filename), duration) = TimeUtils.time {
       val fullPath = astCreator.parserResult.fullPath
       val fileLOC  = IOUtils.readLinesInFile(Paths.get(fullPath)).size
