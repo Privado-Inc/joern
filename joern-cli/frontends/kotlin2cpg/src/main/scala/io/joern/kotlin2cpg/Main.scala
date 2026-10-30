@@ -2,6 +2,7 @@ package io.joern.kotlin2cpg
 
 import io.joern.kotlin2cpg.Frontend.*
 import io.joern.x2cpg.{DependencyDownloadConfig, X2CpgConfig, X2CpgMain}
+import io.joern.x2cpg.utils.dependency.DependencyResolverV2
 import io.joern.x2cpg.utils.server.FrontendHTTPServer
 import scopt.OParser
 
@@ -16,49 +17,60 @@ final case class Config(
   includeJavaSourceFiles: Boolean = false,
   generateNodesForDependencies: Boolean = false,
   downloadDependencies: Boolean = false,
+  enableDependencyResolverV2: Boolean = false,
   keepTypeArguments: Boolean = false,
-  resolveTypes: Boolean = true
+  resolveTypes: Boolean = true,
+  override val genericConfig: X2CpgConfig.GenericConfig = X2CpgConfig.GenericConfig()
 ) extends X2CpgConfig[Config]
-    with DependencyDownloadConfig[Config] {
+    with DependencyDownloadConfig {
+
+  override def withGenericConfig(value: X2CpgConfig.GenericConfig): Config =
+    copy(genericConfig = value)
 
   def withClasspath(classpath: Set[String]): Config = {
-    this.copy(classpath = classpath).withInheritedFields(this)
+    this.copy(classpath = classpath)
   }
 
   def withStdLibJars(value: Boolean): Config = {
-    this.copy(withStdlibJarsInClassPath = value).withInheritedFields(this)
+    this.copy(withStdlibJarsInClassPath = value)
   }
 
   def withGradleProjectName(name: String): Config = {
-    this.copy(gradleProjectName = Some(name)).withInheritedFields(this)
+    this.copy(gradleProjectName = Some(name))
   }
 
   def withGradleConfigurationName(name: String): Config = {
-    this.copy(gradleConfigurationName = Some(name)).withInheritedFields(this)
+    this.copy(gradleConfigurationName = Some(name))
   }
 
   def withJar4ImportServiceUrl(url: String): Config = {
-    this.copy(jar4importServiceUrl = Some(url)).withInheritedFields(this)
+    this.copy(jar4importServiceUrl = Some(url))
   }
 
   def withIncludeJavaSourceFiles(value: Boolean): Config = {
-    this.copy(includeJavaSourceFiles = value).withInheritedFields(this)
+    this.copy(includeJavaSourceFiles = value)
   }
 
   def withGenerateNodesForDependencies(value: Boolean): Config = {
-    this.copy(generateNodesForDependencies = value).withInheritedFields(this)
+    this.copy(generateNodesForDependencies = value)
   }
 
   override def withDownloadDependencies(value: Boolean): Config = {
-    this.copy(downloadDependencies = value).withInheritedFields(this)
+    this.copy(downloadDependencies = value)
+  }
+
+  def withEnableDependencyResolverV2(value: Boolean): Config = {
+    // If v2 is enabled (value == true), also enable downloadDependencies to avoid having to specify
+    // 2 separate flags, otherwise leave downloadDependencies unchanged.
+    this.copy(enableDependencyResolverV2 = value, downloadDependencies = downloadDependencies || value)
   }
 
   def withKeepTypeArguments(value: Boolean): Config = {
-    copy(keepTypeArguments = value).withInheritedFields(this)
+    copy(keepTypeArguments = value)
   }
 
   def withResolveTypes(value: Boolean): Config = {
-    copy(resolveTypes = value).withInheritedFields(this)
+    copy(resolveTypes = value)
   }
 }
 
@@ -94,6 +106,12 @@ private object Frontend {
         .text("Generate nodes for the dependencies of the target project")
         .action((_, c) => c.withGenerateNodesForDependencies(true)),
       DependencyDownloadConfig.parserOptions,
+      opt[Unit]("enable-dependency-resolver-v2")
+        .text(
+          "use the new (experimental) dependency resolver pipeline; can also be enabled via the " +
+            s"${DependencyResolverV2.EnableEnvVar} environment variable."
+        )
+        .action((_, conf) => conf.withEnableDependencyResolverV2(true)),
       opt[Unit]("keep-type-arguments")
         .hidden()
         .action((_, c) => c.withKeepTypeArguments(true))
@@ -105,12 +123,4 @@ private object Frontend {
   }
 }
 
-object Main extends X2CpgMain(cmdLineParser, new Kotlin2Cpg()) with FrontendHTTPServer[Config, Kotlin2Cpg] {
-
-  override protected def newDefaultConfig(): Config = Config()
-
-  def run(config: Config, kotlin2cpg: Kotlin2Cpg): Unit = {
-    if (config.serverMode) { startup() }
-    else { kotlin2cpg.run(config) }
-  }
-}
+object Main extends X2CpgMain(new Kotlin2Cpg(), cmdLineParser)

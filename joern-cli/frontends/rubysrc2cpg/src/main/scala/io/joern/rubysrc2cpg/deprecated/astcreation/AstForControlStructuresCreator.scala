@@ -38,7 +38,7 @@ trait AstForControlStructuresCreator(implicit withSchemaValidation: ValidationMo
           jumpTargetNode(wh, "case", s"case ${code(wh)}", Option(wh.getClass.getSimpleName))
 
         val whenACondAsts = astForWhenArgumentContext(wh.whenArgument())
-        val thenAsts = astForCompoundStatement(
+        val thenAsts      = astForCompoundStatement(
           wh.thenClause().compoundStatement(),
           isMethodBody = true,
           canConsiderAsLeaf = false
@@ -47,14 +47,14 @@ trait AstForControlStructuresCreator(implicit withSchemaValidation: ValidationMo
       })
       .toList
 
-    val stmtAsts = whenThenAstsList ++ (Option(ctx.caseExpression().elseClause()) match
+    val stmtAsts = whenThenAstsList ++ (Option(ctx.caseExpression().elseClause()) match {
       case Some(elseClause) =>
         Ast(
           // name = "default" for behaviour determined by CfgCreator.cfgForJumpTarget
           jumpTargetNode(elseClause, "default", "else", Option(elseClause.getClass.getSimpleName))
         ) +: astForCompoundStatement(elseClause.compoundStatement(), isMethodBody = true, canConsiderAsLeaf = false)
       case None => Seq.empty[Ast]
-    )
+    })
     val block = blockNode(ctx.caseExpression())
     Seq(controlStructureAst(switchNode, conditionAst, Seq(Ast(block).withChildren(stmtAsts))))
   }
@@ -92,8 +92,8 @@ trait AstForControlStructuresCreator(implicit withSchemaValidation: ValidationMo
   }
 
   protected def astForJumpExpressionPrimaryContext(ctx: JumpExpressionPrimaryContext): Seq[Ast] = {
-    val parserTypeName = ctx.getClass.getSimpleName
-    val controlStructureAst = ctx.jumpExpression() match
+    val parserTypeName      = ctx.getClass.getSimpleName
+    val controlStructureAst = ctx.jumpExpression() match {
       case expr if expr.BREAK() != null =>
         astForControlStructure(parserTypeName, expr.BREAK(), ControlStructureTypes.BREAK, code(ctx))
       case expr if expr.NEXT() != null =>
@@ -104,14 +104,16 @@ trait AstForControlStructuresCreator(implicit withSchemaValidation: ValidationMo
         astForControlStructure(parserTypeName, expr.RETRY(), ControlStructureTypes.CONTINUE, Defines.ModifierRetry)
       case _ =>
         Ast()
+    }
     Seq(controlStructureAst)
   }
 
   protected def astForRescueClause(ctx: BodyStatementContext): Ast = {
     val compoundStatementAsts = astForCompoundStatement(ctx.compoundStatement)
-    val elseClauseAsts = Option(ctx.elseClause) match
+    val elseClauseAsts        = Option(ctx.elseClause) match {
       case Some(ctx) => astForCompoundStatement(ctx.compoundStatement)
       case None      => Seq.empty
+    }
 
     /*
      * TODO Conversion of last statement to return AST is needed here
@@ -120,9 +122,10 @@ trait AstForControlStructuresCreator(implicit withSchemaValidation: ValidationMo
     val tryBodyAsts = compoundStatementAsts ++ elseClauseAsts
     val tryBodyAst  = blockAst(blockNode(ctx), tryBodyAsts.toList)
 
-    val finallyAst = Option(ctx.ensureClause) match
+    val finallyAst = Option(ctx.ensureClause) match {
       case Some(ctx) => astForCompoundStatement(ctx.compoundStatement).headOption
       case None      => None
+    }
 
     val catchAsts = ctx.rescueClause.asScala
       .map(astForRescueClauseContext)

@@ -2,13 +2,13 @@
 
 package io.joern.swiftsrc2cpg.passes.ast
 
-import io.joern.swiftsrc2cpg.testfixtures.AstSwiftSrc2CpgSuite
+import io.joern.swiftsrc2cpg.testfixtures.SwiftSrc2CpgSuite
 
 import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
 
-class ToplevelLibraryTests extends AstSwiftSrc2CpgSuite {
+class ToplevelLibraryTests extends SwiftSrc2CpgSuite {
 
   "ToplevelLibraryTests" should {
 
@@ -32,13 +32,14 @@ class ToplevelLibraryTests extends AstSwiftSrc2CpgSuite {
       |{ }
       |({ 5 }())
       |""".stripMargin)
-      cpg.call.code.sorted.l shouldBe List("func <lambda>0 = { }", "let x = 42", "x + x", "x + x", "{ 5 }()")
+      cpg.call.code.sorted.l shouldBe List("let x = 42", "x + x", "x + x", "{ 5 }()")
       cpg.method.fullName.sorted.l shouldBe List(
+        "<operator>.addition",
         "<operator>.assignment",
-        "<operator>.plus",
+        "Swift.Function<()->ANY>.single_apply:()->ANY",
         "Test0.swift:<global>",
-        "Test0.swift:<global>:<lambda>0:ANY()",
-        "Test0.swift:<global>:<lambda>1:ANY()"
+        "Test0.swift:<global>.<lambda>0:()->ANY",
+        "Test0.swift:<global>.<lambda>1:()->ANY"
       )
     }
 
@@ -48,21 +49,21 @@ class ToplevelLibraryTests extends AstSwiftSrc2CpgSuite {
       val List(methodBlock) = method.astChildren.isBlock.l
       val List(loopBlock)   = methodBlock.astChildren.isBlock.l
 
-      val List(localIterator) = loopBlock.astChildren.isLocal.nameExact("_iterator_0").l
-      localIterator.code shouldBe "_iterator_0"
+      val List(localIterator) = loopBlock.astChildren.isLocal.nameExact("<iterator>0").l
+      localIterator.code shouldBe "<iterator>0"
 
-      val List(localResult) = loopBlock.astChildren.isLocal.nameExact("_result_0").l
-      localResult.code shouldBe "_result_0"
+      val List(localResult) = loopBlock.astChildren.isLocal.nameExact("<result>0").l
+      localResult.code shouldBe "<result>0"
 
       val List(localI) = loopBlock.astChildren.isLocal.nameExact("elem").l
       localI.code shouldBe "elem"
 
       val List(iteratorAssignment) =
-        loopBlock.astChildren.isCall.codeExact("_iterator_0 = <operator>.iterator(bar())").l
+        loopBlock.astChildren.isCall.codeExact("<iterator>0 = <operator>.iterator(bar())").l
       iteratorAssignment.name shouldBe Operators.assignment
 
       val List(iteratorAssignmentLhs) = iteratorAssignment.astChildren.isIdentifier.l
-      iteratorAssignmentLhs.name shouldBe "_iterator_0"
+      iteratorAssignmentLhs.name shouldBe "<iterator>0"
       iteratorAssignmentLhs.order shouldBe 1
       iteratorAssignmentLhs.argumentIndex shouldBe 1
 
@@ -79,8 +80,8 @@ class ToplevelLibraryTests extends AstSwiftSrc2CpgSuite {
       objectKeysCallArg.code shouldBe "bar()"
       objectKeysCallArg.order shouldBe 1
 
-      val List(varResult) = loopBlock.astChildren.isIdentifier.nameExact("_result_0").l
-      varResult.code shouldBe "_result_0"
+      val List(varResult) = loopBlock.astChildren.isIdentifier.nameExact("<result>0").l
+      varResult.code shouldBe "<result>0"
 
       val List(varI) = loopBlock.astChildren.isIdentifier.nameExact("elem").l
       varI.code shouldBe "elem"
@@ -88,24 +89,24 @@ class ToplevelLibraryTests extends AstSwiftSrc2CpgSuite {
       val List(loop) = loopBlock.astChildren.isControlStructure.l
       loop.controlStructureType shouldBe ControlStructureTypes.WHILE
 
-      val List(loopTestCall) = loop.astChildren.isCall.codeExact("!(_result_0 = _iterator_0.next()).done").l
-      loopTestCall.name shouldBe Operators.not
+      val List(loopTestCall) = loop.astChildren.isCall.codeExact("!(<result>0 = <iterator>0.next()).done").l
+      loopTestCall.name shouldBe Operators.logicalNot
       loopTestCall.order shouldBe 1
 
-      val List(doneMaCall) = loopTestCall.astChildren.isCall.codeExact("(_result_0 = _iterator_0.next()).done").l
+      val List(doneMaCall) = loopTestCall.astChildren.isCall.codeExact("(<result>0 = <iterator>0.next()).done").l
       doneMaCall.name shouldBe Operators.fieldAccess
 
-      val List(doneMaBase) = doneMaCall.astChildren.isCall.codeExact("(_result_0 = _iterator_0.next())").l
+      val List(doneMaBase) = doneMaCall.astChildren.isCall.codeExact("(<result>0 = <iterator>0.next())").l
       doneMaBase.name shouldBe Operators.assignment
       doneMaBase.order shouldBe 1
       doneMaBase.argumentIndex shouldBe 1
 
       val List(doneMaBaseLhs) = doneMaBase.astChildren.isIdentifier.order(1).l
-      doneMaBaseLhs.name shouldBe "_result_0"
+      doneMaBaseLhs.name shouldBe "<result>0"
       doneMaBaseLhs.argumentIndex shouldBe 1
 
       val List(doneMaBaseRhs) = doneMaBase.astChildren.isCall.order(2).l
-      doneMaBaseRhs.code shouldBe "_iterator_0.next()"
+      doneMaBaseRhs.code shouldBe "<iterator>0.next()"
       doneMaBaseRhs.argumentIndex shouldBe 2
 
       val List(doneMember) = doneMaCall.astChildren.isFieldIdentifier.canonicalNameExact("done").l
@@ -115,7 +116,7 @@ class ToplevelLibraryTests extends AstSwiftSrc2CpgSuite {
       val List(whileLoopBlock) = loop.astChildren.isBlock.l
       whileLoopBlock.order shouldBe 2
 
-      val List(loopVarAssignmentCall) = whileLoopBlock.astChildren.isCall.codeExact("elem = _result_0.value").l
+      val List(loopVarAssignmentCall) = whileLoopBlock.astChildren.isCall.codeExact("elem = <result>0.value").l
       loopVarAssignmentCall.name shouldBe Operators.assignment
       loopVarAssignmentCall.order shouldBe 1
 

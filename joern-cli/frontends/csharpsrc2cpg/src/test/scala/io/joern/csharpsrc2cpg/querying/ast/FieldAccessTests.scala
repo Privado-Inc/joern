@@ -1,0 +1,117 @@
+package io.joern.csharpsrc2cpg.querying.ast
+
+import io.joern.csharpsrc2cpg.testfixtures.CSharpCode2CpgFixture
+import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
+import io.shiftleft.semanticcpg.language.*
+
+class FieldAccessTests extends CSharpCode2CpgFixture {
+
+  "Console.WriteLine call while importing System" should {
+    val cpg = code("""
+        |using System;
+        |Console.WriteLine("foo");
+        |""".stripMargin)
+
+    "have WriteLine call correctly set" in {
+      inside(cpg.call.nameExact("WriteLine").l) { case writeLine :: Nil =>
+        writeLine.code shouldBe "Console.WriteLine(\"foo\")"
+        writeLine.methodFullName shouldBe "System.Console.WriteLine:System.Void(System.String)"
+      }
+    }
+
+    "have foo literal correctly set" in {
+      inside(cpg.call.nameExact("WriteLine").argument(1).isLiteral.l) { case foo :: Nil =>
+        foo.typeFullName shouldBe "System.String"
+        foo.code shouldBe "\"foo\""
+      }
+    }
+
+    "have Console correctly set" in {
+      inside(cpg.call.nameExact("WriteLine").argument(0).isIdentifier.l) { case console :: Nil =>
+        console.code shouldBe "Console"
+        console.typeFullName shouldBe "System.Console"
+      }
+    }
+  }
+
+  "System.Console.WriteLine call while importing System" should {
+    val cpg = code("""
+        |using System;
+        |System.Console.WriteLine("foo");
+        |""".stripMargin)
+
+    "have WriteLine call correctly set" in {
+      inside(cpg.call.nameExact("WriteLine").l) { case writeLine :: Nil =>
+        writeLine.methodFullName shouldBe "System.Console.WriteLine:System.Void(System.String)"
+        writeLine.code shouldBe "System.Console.WriteLine(\"foo\")"
+      }
+    }
+
+    "have foo literal correctly set" in {
+      inside(cpg.call.nameExact("WriteLine").argument(1).isLiteral.l) { case foo :: Nil =>
+        foo.typeFullName shouldBe "System.String"
+        foo.code shouldBe "\"foo\""
+      }
+    }
+
+    "have System.Console correctly set" in {
+      inside(cpg.call.nameExact("WriteLine").argument(0).isCall.isFieldAccess.l) { case sysConsole :: Nil =>
+        sysConsole.typeFullName shouldBe "System.Console"
+        sysConsole.code shouldBe "System.Console"
+        sysConsole.fieldIdentifier.code.l shouldBe List("Console")
+        sysConsole.fieldIdentifier.canonicalName.l shouldBe List("Console")
+      }
+    }
+  }
+
+  "System.Console.WriteLine call without importing System" should {
+    val cpg = code("""
+        |System.Console.WriteLine("foo");
+        |""".stripMargin)
+
+    "have WriteLine call correctly set" in {
+      inside(cpg.call.nameExact("WriteLine").l) { case writeLine :: Nil =>
+        writeLine.methodFullName shouldBe "System.Console.WriteLine:System.Void(System.String)"
+        writeLine.code shouldBe "System.Console.WriteLine(\"foo\")"
+      }
+    }
+
+    "have foo literal correctly set" in {
+      inside(cpg.call.nameExact("WriteLine").argument(1).isLiteral.l) { case foo :: Nil =>
+        foo.typeFullName shouldBe "System.String"
+        foo.code shouldBe "\"foo\""
+      }
+    }
+
+    "have System.Console correctly set" in {
+      inside(cpg.call.nameExact("WriteLine").argument(0).isCall.isFieldAccess.l) { case sysConsole :: Nil =>
+        sysConsole.typeFullName shouldBe "System.Console"
+        sysConsole.code shouldBe "System.Console"
+        sysConsole.fieldIdentifier.code.l shouldBe List("Console")
+        sysConsole.fieldIdentifier.canonicalName.l shouldBe List("Console")
+      }
+    }
+  }
+
+  "field access via explicit `this.X`" should {
+    val cpg = code("""
+        |using System;
+        |class C
+        |{
+        |  int x;
+        |  C()
+        |  {
+        |   Console.WriteLine(this.x);
+        |  }
+        |}""".stripMargin)
+    "have correct type for `this.x`" in {
+      inside(cpg.call("WriteLine").argument(1).isCall.isFieldAccess.l) { case fieldAccess :: Nil =>
+        fieldAccess.code shouldBe "this.x"
+        fieldAccess.typeFullName shouldBe "System.Int32"
+        fieldAccess.methodFullName shouldBe Operators.fieldAccess
+        fieldAccess.dispatchType shouldBe DispatchTypes.STATIC_DISPATCH
+        fieldAccess.referencedMember.l shouldBe cpg.typeDecl.nameExact("C").member.nameExact("x").l
+      }
+    }
+  }
+}

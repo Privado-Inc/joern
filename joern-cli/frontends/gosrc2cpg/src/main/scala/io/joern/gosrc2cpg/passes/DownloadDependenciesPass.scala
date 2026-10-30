@@ -1,39 +1,38 @@
 package io.joern.gosrc2cpg.passes
 
-import better.files.File
 import io.joern.gosrc2cpg.Config
 import io.joern.gosrc2cpg.datastructures.GoGlobal
 import io.joern.gosrc2cpg.model.{GoModDependency, GoModHelper}
 import io.joern.gosrc2cpg.parser.GoAstJsonParser
-import io.joern.gosrc2cpg.utils.AstGenRunner
-import io.joern.gosrc2cpg.utils.AstGenRunner.{GoAstGenRunnerResult, getClass}
-import io.joern.x2cpg.utils.ExternalCommand
+import io.joern.gosrc2cpg.utils.GoAstGenRunner
+import io.joern.gosrc2cpg.utils.GoAstGenRunner.{GoAstGenRunnerResult, getClass}
+import io.shiftleft.semanticcpg.utils.{ExternalCommand, FileUtil}
 import io.shiftleft.codepropertygraph.generated.Cpg
 import org.slf4j.LoggerFactory
 
 import java.io.File as JFile
 import java.nio.file.Paths
 import java.util.concurrent.LinkedBlockingQueue
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 class DownloadDependenciesPass(cpg: Cpg, parentGoMod: GoModHelper, goGlobal: GoGlobal, config: Config) {
-  private val logger = LoggerFactory.getLogger(getClass)
+  private val logger  = LoggerFactory.getLogger(getClass)
   def process(): Unit = {
     val processor       = new DependencyProcessorQueue()
     val processorThread = new Thread(processor)
     processorThread.start()
-    File.usingTemporaryDirectory("go-temp-download") { tmpDir =>
-      val projDir = tmpDir.pathAsString
+    FileUtil.usingTemporaryDirectory("go-temp-download") { projDir =>
       parentGoMod
         .getModMetaData()
-        .foreach(mod => {
-          ExternalCommand.run(Seq("go", "mod", "init", "joern.io/temp"), projDir).toTry match {
+        .foreach { mod =>
+          ExternalCommand.run(Seq("go", "mod", "init", "joern.io/temp"), Option(projDir)).toTry match {
             case Success(_) =>
               mod.dependencies
                 .filter(dep => dep.beingUsed)
-                .map(dependency => {
+                .map { dependency =>
                   val cmd     = Seq("go", "get", dependency.dependencyStr())
-                  val results = ExternalCommand.run(cmd, projDir).toTry
+                  val results = ExternalCommand.run(cmd, Option(projDir)).toTry
                   results match {
                     case Success(_) =>
                       print(". ")
@@ -41,11 +40,11 @@ class DownloadDependenciesPass(cpg: Cpg, parentGoMod: GoModHelper, goGlobal: GoG
                     case Failure(f) =>
                       logger.error(s"\t- command '$cmd' failed", f)
                   }
-                })
+                }
             case Failure(f) =>
               logger.error("\t- command 'go mod init joern.io/temp' failed", f)
           }
-        })
+        }
     }
     processor.queue.put(None)
     processorThread.join()
@@ -68,21 +67,21 @@ class DownloadDependenciesPass(cpg: Cpg, parentGoMod: GoModHelper, goGlobal: GoG
         }
       } catch {
         case exception: InterruptedException => logger.warn("Interrupted WriterThread", exception)
-        case exc: Exception =>
+        case NonFatal(exc)                   =>
           logger.error("error in writer thread, ", exc)
       }
     }
 
     private def processDependency(dependency: GoModDependency): Unit = {
-      val gopath = Try(sys.env("GOPATH")).getOrElse(Seq(os.home, "go").mkString(JFile.separator))
+      val gopath             = Try(sys.env("GOPATH")).getOrElse(Seq(os.home, "go").mkString(JFile.separator))
       val dependencyLocation =
         (Seq(gopath, "pkg", "mod") ++ dependency.dependencyStr().split("/")).mkString(JFile.separator)
-      File.usingTemporaryDirectory("godep") { astLocation =>
+      FileUtil.usingTemporaryDirectory("godep") { astLocation =>
         val depConfig = Config()
           .withInputPath(dependencyLocation)
           .withIgnoredFilesRegex(config.ignoredFilesRegex.toString())
           .withIgnoredFiles(config.ignoredFiles.toList)
-        val astGenResult = new AstGenRunner(depConfig, dependency.getIncludePackagesList())
+        val astGenResult = new GoAstGenRunner(depConfig, dependency.getIncludePackagesList())
           .executeForGo(astLocation)
           .headOption
           .getOrElse(GoAstGenRunnerResult())

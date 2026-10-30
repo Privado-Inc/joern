@@ -6,6 +6,10 @@ import io.shiftleft.semanticcpg.language.types.structure.FileTraversal
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import io.joern.x2cpg.Defines as XDefines
 import io.shiftleft.codepropertygraph.generated.Operators
+
+import scala.annotation.nowarn
+
+@nowarn("cat=deprecation")
 class ModuleTests extends RubyCode2CpgFixture(useDeprecatedFrontend = true) {
 
   "Simple module checks" should {

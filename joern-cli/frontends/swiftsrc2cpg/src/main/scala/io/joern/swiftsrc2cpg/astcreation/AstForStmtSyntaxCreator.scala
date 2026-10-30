@@ -1,51 +1,22 @@
 package io.joern.swiftsrc2cpg.astcreation
 
-import io.joern.swiftsrc2cpg.astcreation.AstCreatorHelper.OptionSafeAst
 import io.joern.swiftsrc2cpg.parser.SwiftNodeSyntax.*
-import io.joern.x2cpg.Ast
-import io.joern.x2cpg.ValidationMode
+import io.joern.x2cpg
 import io.joern.x2cpg.datastructures.Stack.*
-import io.joern.x2cpg.Defines
-import io.shiftleft.codepropertygraph.generated.ControlStructureTypes
-import io.shiftleft.codepropertygraph.generated.nodes.NewJumpLabel
-import io.shiftleft.codepropertygraph.generated.DispatchTypes
-import io.shiftleft.codepropertygraph.generated.EdgeTypes
-import io.shiftleft.codepropertygraph.generated.Operators
+import io.joern.x2cpg.frontendspecific.swiftsrc2cpg.Defines
+import io.joern.x2cpg.{Ast, ValidationMode}
+import io.shiftleft.codepropertygraph.generated.*
+
+import scala.annotation.unused
 
 trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   this: AstCreator =>
 
-  private def astForBreakStmtSyntax(node: BreakStmtSyntax): Ast = {
-    val labelAst = node.label.fold(Ast())(l =>
-      val labelCode = code(l)
-      Ast(
-        NewJumpLabel()
-          .parserTypeName(node.toString)
-          .name(labelCode)
-          .code(labelCode)
-          .lineNumber(line(node))
-          .columnNumber(column(node))
-          .order(1)
-      )
-    )
-    Ast(controlStructureNode(node, ControlStructureTypes.BREAK, code(node))).withChild(labelAst)
-  }
+  private def astForBreakStmtSyntax(node: BreakStmtSyntax): Ast =
+    breakAst(node, code(node), node.label.map(code))
 
-  private def astForContinueStmtSyntax(node: ContinueStmtSyntax): Ast = {
-    val labelAst = node.label.fold(Ast())(l =>
-      val labelCode = code(l)
-      Ast(
-        NewJumpLabel()
-          .parserTypeName(node.toString)
-          .name(labelCode)
-          .code(labelCode)
-          .lineNumber(line(node))
-          .columnNumber(column(node))
-          .order(1)
-      )
-    )
-    Ast(controlStructureNode(node, ControlStructureTypes.CONTINUE, code(node))).withChild(labelAst)
-  }
+  private def astForContinueStmtSyntax(node: ContinueStmtSyntax): Ast =
+    continueAst(node, code(node), node.label.map(code))
 
   private def astForDeferStmtSyntax(node: DeferStmtSyntax): Ast = {
     astForNode(node.body)
@@ -54,26 +25,24 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   private def astForDiscardStmtSyntax(node: DiscardStmtSyntax): Ast = notHandledYet(node)
 
   private def astForDoStmtSyntax(node: DoStmtSyntax): Ast = {
-    val tryNode   = controlStructureNode(node, ControlStructureTypes.TRY, code(node))
     val bodyAst   = astForNode(node.body)
     val catchAsts = node.catchClauses.children.map(astForCatchHandler)
-    tryCatchAst(tryNode, bodyAst, catchAsts, None)
+    tryCatchAst(node, bodyAst, catchAsts, None)
   }
 
   private def astForCatchHandler(catchClause: CatchClauseSyntax): Ast = {
     val catchNode = controlStructureNode(catchClause, ControlStructureTypes.CATCH, code(catchClause))
     val declAst   = astForNode(catchClause.catchItems)
     val bodyAst   = astForNode(catchClause.body)
-    setArgumentIndices(List(declAst, bodyAst))
     Ast(catchNode).withChild(declAst).withChild(bodyAst)
   }
 
   private def astForExpressionStmtSyntax(node: ExpressionStmtSyntax): Ast = {
-    astForNodeWithFunctionReference(node.expression)
+    astForNode(node.expression)
   }
 
   private def astForFallThroughStmtSyntax(node: FallThroughStmtSyntax): Ast = {
-    Ast(controlStructureNode(node, ControlStructureTypes.CONTINUE, code(node)))
+    continueAst(node, code(node))
   }
 
   private def extractLoopVariableNodeInfo(binding: ValueBindingPatternSyntax): Option[PatternSyntax] = {
@@ -89,24 +58,21 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   private def astForForStmtBody(node: ForStmtSyntax): Ast = {
     node.whereClause match {
       case Some(whereClause: WhereClauseSyntax) =>
-        val ifNode  = controlStructureNode(whereClause.condition, ControlStructureTypes.IF, code(whereClause.condition))
-        val testAst = astForNode(whereClause)
-        val consequentAst = astForNode(node.body)
-        setOrderExplicitly(testAst, 1)
-        setOrderExplicitly(consequentAst, 2)
-        Ast(ifNode)
-          .withChild(testAst)
-          .withConditionEdge(ifNode, testAst.nodes.head)
-          .withChild(consequentAst)
+        val testAstRaw = astForNode(whereClause)
+        val testAst    = testAstRaw.root match {
+          case Some(_) => testAstRaw
+          case None    => blockAst(blockNode(whereClause), List.empty)
+        }
+        val thenAst = astForNode(node.body)
+        ifThenElseAst(whereClause.condition, Some(testAst), thenAst, None)
       case None => astForNode(node.body)
     }
   }
 
   private def astForForStmtSyntaxWithWildcard(node: ForStmtSyntax): Ast = {
-    val initAsts = Seq(astForNodeWithFunctionReference(node.sequence))
+    val initAsts = Seq(astForNode(node.sequence))
     val bodyAst  = astForForStmtBody(node)
-    val forNode  = controlStructureNode(node, ControlStructureTypes.FOR, code(node))
-    forAst(forNode, Nil, initAsts, Nil, Nil, bodyAst)
+    forAst(node, Nil, initAsts, Nil, Nil, Seq(bodyAst))
   }
 
   /** De-sugaring from:
@@ -128,36 +94,33 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     val collectionName = code(collection)
 
     // _iterator assignment:
-    val iteratorName      = generateUnusedVariableName(usedVariableNames, "_iterator")
+    val iteratorName      = scopeLocalUniqueName("iterator")
     val iteratorLocalNode = localNode(node, iteratorName, iteratorName, Defines.Any).order(0)
     val iteratorNode      = identifierNode(node, iteratorName)
     diffGraph.addEdge(localAstParentStack.head, iteratorLocalNode, EdgeTypes.AST)
-    scope.addVariableReference(iteratorName, iteratorNode)
+    scope.addVariableReference(iteratorName, iteratorNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
 
+    // TODO: add operator to schema
+    var op           = "<operator>.iterator"
     val iteratorCall =
-      // TODO: add operator to schema
-      callNode(node, s"<operator>.iterator($collectionName)", "<operator>.iterator", DispatchTypes.STATIC_DISPATCH)
+      createStaticCallNode(node, s"<operator>.iterator($collectionName)", op, op, Defines.Iterator)
 
-    val objectKeysCallArgs = List(astForNodeWithFunctionReference(collection))
+    val objectKeysCallArgs = List(astForNode(collection))
     val objectKeysCallAst  = callAst(iteratorCall, objectKeysCallArgs)
 
+    op = Operators.assignment
     val iteratorAssignmentNode =
-      callNode(
-        node,
-        s"$iteratorName = <operator>.iterator($collectionName)",
-        Operators.assignment,
-        DispatchTypes.STATIC_DISPATCH
-      )
+      createStaticCallNode(node, s"$iteratorName = <operator>.iterator($collectionName)", op, op, Defines.Void)
 
     val iteratorAssignmentArgs = List(Ast(iteratorNode), objectKeysCallAst)
     val iteratorAssignmentAst  = callAst(iteratorAssignmentNode, iteratorAssignmentArgs)
 
     // _result:
-    val resultName      = generateUnusedVariableName(usedVariableNames, "_result")
+    val resultName      = scopeLocalUniqueName("result")
     val resultLocalNode = localNode(node, resultName, resultName, Defines.Any).order(0)
     val resultNode      = identifierNode(node, resultName)
     diffGraph.addEdge(localAstParentStack.head, resultLocalNode, EdgeTypes.AST)
-    scope.addVariableReference(resultName, resultNode)
+    scope.addVariableReference(resultName, resultNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
 
     // loop variable:
     val loopVariableName = code(id.identifier)
@@ -165,28 +128,33 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     val loopVariableLocalNode = localNode(node, loopVariableName, loopVariableName, Defines.Any).order(0)
     val loopVariableNode      = identifierNode(node, loopVariableName)
     diffGraph.addEdge(localAstParentStack.head, loopVariableLocalNode, EdgeTypes.AST)
-    scope.addVariableReference(loopVariableName, loopVariableNode)
-
-    // while loop:
-    val whileLoopNode = controlStructureNode(node, ControlStructureTypes.WHILE, code(node))
+    scope.addVariableReference(loopVariableName, loopVariableNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
 
     // while loop test:
-    val testCallNode =
-      callNode(node, s"!($resultName = $iteratorName.next()).done", Operators.not, DispatchTypes.STATIC_DISPATCH)
+    op = Operators.logicalNot
+    val testCallNode = createStaticCallNode(node, s"!($resultName = $iteratorName.next()).done", op, op, Defines.Bool)
 
+    op = Operators.assignment
     val doneBaseNode =
-      callNode(node, s"($resultName = $iteratorName.next())", Operators.assignment, DispatchTypes.STATIC_DISPATCH)
+      createStaticCallNode(node, s"($resultName = $iteratorName.next())", op, op, Defines.Void)
 
     val lhsNode = identifierNode(node, resultName)
 
-    val rhsNode = callNode(node, s"$iteratorName.next()", "next", DispatchTypes.DYNAMIC_DISPATCH)
+    val rhsNode = callNode(
+      node,
+      s"$iteratorName.next()",
+      "next",
+      x2cpg.Defines.DynamicCallUnknownFullName,
+      DispatchTypes.DYNAMIC_DISPATCH,
+      None,
+      Option(Defines.Any)
+    )
 
     val nextBaseNode = identifierNode(node, iteratorName)
 
-    val nextMemberNode = createFieldIdentifierNode("next", line(node), column(node))
+    val nextMemberNode = fieldIdentifierNode(node, "next", "next")
 
-    val nextReceiverNode =
-      createFieldAccessCallAst(nextBaseNode, nextMemberNode, line(node), column(node))
+    val nextReceiverNode = createFieldAccessCallAst(node, Ast(nextBaseNode), nextMemberNode)
 
     val thisNextNode = identifierNode(node, iteratorName)
 
@@ -195,28 +163,26 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
 
     val doneBaseArgs = List(Ast(lhsNode), rhsAst)
     val doneBaseAst  = callAst(doneBaseNode, doneBaseArgs)
-    Ast.storeInDiffGraph(doneBaseAst, diffGraph)
 
-    val doneMemberNode = createFieldIdentifierNode("done", line(node), column(node))
+    val doneMemberNode = fieldIdentifierNode(node, "done", "done")
 
-    val testNode = createFieldAccessCallAst(doneBaseNode, doneMemberNode, line(node), column(node))
+    val testNode = createFieldAccessCallAst(node, doneBaseAst, doneMemberNode)
 
     val testCallArgs = List(testNode)
     val testCallAst  = callAst(testCallNode, testCallArgs)
-
-    val whileLoopAst = Ast(whileLoopNode).withChild(testCallAst).withConditionEdge(whileLoopNode, testCallNode)
 
     // while loop variable assignment:
     val whileLoopVariableNode = identifierNode(node, loopVariableName)
 
     val baseNode = identifierNode(node, resultName)
 
-    val memberNode = createFieldIdentifierNode("value", line(node), column(node))
+    val memberNode = fieldIdentifierNode(node, "value", "value")
 
-    val accessAst = createFieldAccessCallAst(baseNode, memberNode, line(node), column(node))
+    val accessAst = createFieldAccessCallAst(node, Ast(baseNode), memberNode)
 
+    op = Operators.assignment
     val loopVariableAssignmentNode =
-      callNode(node, s"$loopVariableName = $resultName.value", Operators.assignment, DispatchTypes.STATIC_DISPATCH)
+      createStaticCallNode(node, s"$loopVariableName = $resultName.value", op, op, Defines.Void)
 
     val loopVariableAssignmentArgs = List(Ast(whileLoopVariableNode), accessAst)
     val loopVariableAssignmentAst  = callAst(loopVariableAssignmentNode, loopVariableAssignmentArgs)
@@ -229,8 +195,7 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     val bodyAst = astForForStmtBody(node)
 
     val whileLoopBlockChildren = List(loopVariableAssignmentAst, bodyAst)
-    setArgumentIndices(whileLoopBlockChildren)
-    val whileLoopBlockAst = blockAst(whileLoopBlockNode, whileLoopBlockChildren)
+    val whileLoopBlockAst      = blockAst(whileLoopBlockNode, whileLoopBlockChildren)
 
     scope.popScope()
     localAstParentStack.pop()
@@ -239,9 +204,8 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     scope.popScope()
     localAstParentStack.pop()
 
-    val blockChildren =
-      List(iteratorAssignmentAst, Ast(resultNode), Ast(loopVariableNode), whileLoopAst.withChild(whileLoopBlockAst))
-    setArgumentIndices(blockChildren)
+    val whileLoopAst  = whileAst(node, Some(testCallAst), List(whileLoopBlockAst))
+    val blockChildren = List(iteratorAssignmentAst, Ast(resultNode), Ast(loopVariableNode), whileLoopAst)
     blockAst(blockNode_, blockChildren)
   }
 
@@ -264,57 +228,59 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     val collectionName = code(collection)
 
     // _iterator assignment:
-    val iteratorName      = generateUnusedVariableName(usedVariableNames, "_iterator")
+    val iteratorName      = scopeLocalUniqueName("iterator")
     val iteratorLocalNode = localNode(node, iteratorName, iteratorName, Defines.Any).order(0)
     val iteratorNode      = identifierNode(node, iteratorName)
     diffGraph.addEdge(localAstParentStack.head, iteratorLocalNode, EdgeTypes.AST)
-    scope.addVariableReference(iteratorName, iteratorNode)
+    scope.addVariableReference(iteratorName, iteratorNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
 
+    // TODO: add operator to schema
+    var op           = "<operator>.iterator"
     val iteratorCall =
-      // TODO: add operator to schema
-      callNode(node, s"<operator>.iterator($collectionName)", "<operator>.iterator", DispatchTypes.STATIC_DISPATCH)
+      createStaticCallNode(node, s"<operator>.iterator($collectionName)", op, op, Defines.Iterator)
 
-    val objectKeysCallArgs = List(astForNodeWithFunctionReference(collection))
+    val objectKeysCallArgs = List(astForNode(collection))
     val objectKeysCallAst  = callAst(iteratorCall, objectKeysCallArgs)
 
+    op = Operators.assignment
     val iteratorAssignmentNode =
-      callNode(
-        node,
-        s"$iteratorName = <operator>.iterator($collectionName)",
-        Operators.assignment,
-        DispatchTypes.STATIC_DISPATCH
-      )
+      createStaticCallNode(node, s"$iteratorName = <operator>.iterator($collectionName)", op, op, Defines.Void)
 
     val iteratorAssignmentArgs = List(Ast(iteratorNode), objectKeysCallAst)
     val iteratorAssignmentAst  = callAst(iteratorAssignmentNode, iteratorAssignmentArgs)
 
     // _result:
-    val resultName      = generateUnusedVariableName(usedVariableNames, "_result")
+    val resultName      = scopeLocalUniqueName("result")
     val resultLocalNode = localNode(node, resultName, resultName, Defines.Any).order(0)
     val resultNode      = identifierNode(node, resultName)
     diffGraph.addEdge(localAstParentStack.head, resultLocalNode, EdgeTypes.AST)
-    scope.addVariableReference(resultName, resultNode)
-
-    // while loop:
-    val whileLoopNode = controlStructureNode(node, ControlStructureTypes.WHILE, code(node))
+    scope.addVariableReference(resultName, resultNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
 
     // while loop test:
-    val testCallNode =
-      callNode(node, s"!($resultName = $iteratorName.next()).done", Operators.not, DispatchTypes.STATIC_DISPATCH)
+    op = Operators.logicalNot
+    val testCallNode = createStaticCallNode(node, s"!($resultName = $iteratorName.next()).done", op, op, Defines.Bool)
 
+    op = Operators.assignment
     val doneBaseNode =
-      callNode(node, s"($resultName = $iteratorName.next())", Operators.assignment, DispatchTypes.STATIC_DISPATCH)
+      createStaticCallNode(node, s"($resultName = $iteratorName.next())", op, op, Defines.Void)
 
     val lhsNode = identifierNode(node, resultName)
 
-    val rhsNode = callNode(node, s"$iteratorName.next()", "next", DispatchTypes.DYNAMIC_DISPATCH)
+    val rhsNode = callNode(
+      node,
+      s"$iteratorName.next()",
+      "next",
+      x2cpg.Defines.DynamicCallUnknownFullName,
+      DispatchTypes.DYNAMIC_DISPATCH,
+      None,
+      Option(Defines.Any)
+    )
 
     val nextBaseNode = identifierNode(node, iteratorName)
 
-    val nextMemberNode = createFieldIdentifierNode("next", line(node), column(node))
+    val nextMemberNode = fieldIdentifierNode(node, "next", "next")
 
-    val nextReceiverNode =
-      createFieldAccessCallAst(nextBaseNode, nextMemberNode, line(node), column(node))
+    val nextReceiverNode = createFieldAccessCallAst(node, Ast(nextBaseNode), nextMemberNode)
 
     val thisNextNode = identifierNode(node, iteratorName)
 
@@ -325,27 +291,25 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     val doneBaseAst  = callAst(doneBaseNode, doneBaseArgs)
     Ast.storeInDiffGraph(doneBaseAst, diffGraph)
 
-    val doneMemberNode = createFieldIdentifierNode("done", line(node), column(node))
+    val doneMemberNode = fieldIdentifierNode(node, "done", "done")
 
-    val testNode =
-      createFieldAccessCallAst(doneBaseNode, doneMemberNode, line(node), column(node))
+    val testNode = createFieldAccessCallAst(node, Ast(doneBaseNode), doneMemberNode)
 
     val testCallArgs = List(testNode)
     val testCallAst  = callAst(testCallNode, testCallArgs)
-
-    val whileLoopAst = Ast(whileLoopNode).withChild(testCallAst).withConditionEdge(whileLoopNode, testCallNode)
 
     // while loop variable assignment:
     val whileLoopVariableNode = astForNode(id)
 
     val baseNode = identifierNode(node, resultName)
 
-    val memberNode = createFieldIdentifierNode("value", line(node), column(node))
+    val memberNode = fieldIdentifierNode(node, "value", "value")
 
-    val accessAst = createFieldAccessCallAst(baseNode, memberNode, line(node), column(node))
+    val accessAst = createFieldAccessCallAst(node, Ast(baseNode), memberNode)
 
+    op = Operators.assignment
     val loopVariableAssignmentNode =
-      callNode(node, s"${code(id.expression)} = $resultName.value", Operators.assignment, DispatchTypes.STATIC_DISPATCH)
+      createStaticCallNode(node, s"${code(id.expression)} = $resultName.value", op, op, Defines.Void)
 
     val loopVariableAssignmentArgs = List(whileLoopVariableNode, accessAst)
     val loopVariableAssignmentAst  = callAst(loopVariableAssignmentNode, loopVariableAssignmentArgs)
@@ -358,8 +322,7 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     val bodyAst = astForForStmtBody(node)
 
     val whileLoopBlockChildren = List(loopVariableAssignmentAst, bodyAst)
-    setArgumentIndices(whileLoopBlockChildren)
-    val whileLoopBlockAst = blockAst(whileLoopBlockNode, whileLoopBlockChildren)
+    val whileLoopBlockAst      = blockAst(whileLoopBlockNode, whileLoopBlockChildren)
 
     scope.popScope()
     localAstParentStack.pop()
@@ -368,8 +331,8 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     scope.popScope()
     localAstParentStack.pop()
 
-    val blockChildren = List(iteratorAssignmentAst, Ast(resultNode), whileLoopAst.withChild(whileLoopBlockAst))
-    setArgumentIndices(blockChildren)
+    val whileLoopAst  = whileAst(node, Some(testCallAst), List(whileLoopBlockAst))
+    val blockChildren = List(iteratorAssignmentAst, Ast(resultNode), whileLoopAst)
     blockAst(blockNode_, blockChildren)
   }
 
@@ -392,35 +355,33 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     val collectionName = code(collection)
 
     // _iterator assignment:
-    val iteratorName      = generateUnusedVariableName(usedVariableNames, "_iterator")
+    val iteratorName      = scopeLocalUniqueName("iterator")
     val iteratorLocalNode = localNode(node, iteratorName, iteratorName, Defines.Any).order(0)
     val iteratorNode      = identifierNode(node, iteratorName)
     diffGraph.addEdge(localAstParentStack.head, iteratorLocalNode, EdgeTypes.AST)
-    scope.addVariableReference(iteratorName, iteratorNode)
-    // TODO: add operator to schema
-    val iteratorCall =
-      callNode(node, s"<operator>.iterator($collectionName)", "<operator>.iterator", DispatchTypes.STATIC_DISPATCH)
+    scope.addVariableReference(iteratorName, iteratorNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
 
-    val objectKeysCallArgs = List(astForNodeWithFunctionReference(collection))
+    // TODO: add operator to schema
+    var op           = "<operator>.iterator"
+    val iteratorCall =
+      createStaticCallNode(node, s"<operator>.iterator($collectionName)", op, op, Defines.Iterator)
+
+    val objectKeysCallArgs = List(astForNode(collection))
     val objectKeysCallAst  = callAst(iteratorCall, objectKeysCallArgs)
 
+    op = Operators.assignment
     val iteratorAssignmentNode =
-      callNode(
-        node,
-        s"$iteratorName = <operator>.iterator($collectionName)",
-        Operators.assignment,
-        DispatchTypes.STATIC_DISPATCH
-      )
+      createStaticCallNode(node, s"$iteratorName = <operator>.iterator($collectionName)", op, op, Defines.Void)
 
     val iteratorAssignmentArgs = List(Ast(iteratorNode), objectKeysCallAst)
     val iteratorAssignmentAst  = callAst(iteratorAssignmentNode, iteratorAssignmentArgs)
 
     // _result:
-    val resultName      = generateUnusedVariableName(usedVariableNames, "_result")
+    val resultName      = scopeLocalUniqueName("result")
     val resultLocalNode = localNode(node, resultName, resultName, Defines.Any).order(0)
     val resultNode      = identifierNode(node, resultName)
     diffGraph.addEdge(localAstParentStack.head, resultLocalNode, EdgeTypes.AST)
-    scope.addVariableReference(resultName, resultNode)
+    scope.addVariableReference(resultName, resultNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
 
     // loop variable:
     val loopVariableNames = id.elements.children.map(c => code(c.pattern))
@@ -429,29 +390,35 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     val loopVariableNodes      = loopVariableNames.map(identifierNode(node, _))
     loopVariableLocalNodes.foreach(diffGraph.addEdge(localAstParentStack.head, _, EdgeTypes.AST))
     loopVariableNames.zip(loopVariableNodes).foreach { case (loopVariableName, loopVariableNode) =>
-      scope.addVariableReference(loopVariableName, loopVariableNode)
+      scope.addVariableReference(loopVariableName, loopVariableNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
     }
 
-    // while loop:
-    val whileLoopNode = controlStructureNode(node, ControlStructureTypes.WHILE, code(node))
-
     // while loop test:
+    op = Operators.logicalNot
     val testCallNode =
-      callNode(node, s"!($resultName = $iteratorName.next()).done", Operators.not, DispatchTypes.STATIC_DISPATCH)
+      createStaticCallNode(node, s"!($resultName = $iteratorName.next()).done", op, op, Defines.Bool)
 
+    op = Operators.assignment
     val doneBaseNode =
-      callNode(node, s"($resultName = $iteratorName.next())", Operators.assignment, DispatchTypes.STATIC_DISPATCH)
+      createStaticCallNode(node, s"($resultName = $iteratorName.next())", op, op, Defines.Void)
 
     val lhsNode = identifierNode(node, resultName)
 
-    val rhsNode = callNode(node, s"$iteratorName.next()", "next", DispatchTypes.DYNAMIC_DISPATCH)
+    val rhsNode = callNode(
+      node,
+      s"$iteratorName.next()",
+      "next",
+      x2cpg.Defines.DynamicCallUnknownFullName,
+      DispatchTypes.DYNAMIC_DISPATCH,
+      None,
+      Option(Defines.Any)
+    )
 
     val nextBaseNode = identifierNode(node, iteratorName)
 
-    val nextMemberNode = createFieldIdentifierNode("next", line(node), column(node))
+    val nextMemberNode = fieldIdentifierNode(node, "next", "next")
 
-    val nextReceiverNode =
-      createFieldAccessCallAst(nextBaseNode, nextMemberNode, line(node), column(node))
+    val nextReceiverNode = createFieldAccessCallAst(node, Ast(nextBaseNode), nextMemberNode)
 
     val thisNextNode = identifierNode(node, iteratorName)
 
@@ -460,35 +427,28 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
 
     val doneBaseArgs = List(Ast(lhsNode), rhsAst)
     val doneBaseAst  = callAst(doneBaseNode, doneBaseArgs)
-    Ast.storeInDiffGraph(doneBaseAst, diffGraph)
 
-    val doneMemberNode = createFieldIdentifierNode("done", line(node), column(node))
+    val doneMemberNode = fieldIdentifierNode(node, "done", "done")
 
-    val testNode =
-      createFieldAccessCallAst(doneBaseNode, doneMemberNode, line(node), column(node))
+    val testNode = createFieldAccessCallAst(node, doneBaseAst, doneMemberNode)
 
     val testCallArgs = List(testNode)
     val testCallAst  = callAst(testCallNode, testCallArgs)
-
-    val whileLoopAst = Ast(whileLoopNode).withChild(testCallAst).withConditionEdge(whileLoopNode, testCallNode)
 
     // while loop variable assignment:
     val loopVariableAssignmentAsts = loopVariableNames.zipWithIndex.map { case (loopVariableName, idx) =>
       val whileLoopVariableNode = identifierNode(node, loopVariableName)
       val baseNode              = identifierNode(node, resultName)
-      val memberNode            = createFieldIdentifierNode("value", line(node), column(node))
-      val accessAst             = createFieldAccessCallAst(baseNode, memberNode, line(node), column(node))
+      val memberNode            = fieldIdentifierNode(node, "value", "value")
+      val accessAst             = createFieldAccessCallAst(node, Ast(baseNode), memberNode)
       val index                 = idx + 1
-      val variableMemberNode =
-        createFieldIdentifierNode(s"_$index", line(node), column(node))
-      val variableAccessAst =
-        createFieldAccessCallAst(accessAst, variableMemberNode, line(node), column(node))
-      val loopVariableAssignmentNode = callNode(
-        node,
-        s"$loopVariableName = $resultName.value._$index",
-        Operators.assignment,
-        DispatchTypes.STATIC_DISPATCH
-      )
+      val variableMemberNode    = fieldIdentifierNode(node, s"_$index", s"_$index")
+      val variableAccessAst     = createFieldAccessCallAst(node, accessAst, variableMemberNode)
+
+      val op                         = Operators.assignment
+      val loopVariableAssignmentNode =
+        createStaticCallNode(node, s"$loopVariableName = $resultName.value._$index", op, op, Defines.Void)
+
       val loopVariableAssignmentArgs = List(Ast(whileLoopVariableNode), variableAccessAst)
       callAst(loopVariableAssignmentNode, loopVariableAssignmentArgs)
     }
@@ -501,8 +461,7 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     val bodyAst = astForForStmtBody(node)
 
     val whileLoopBlockChildren = loopVariableAssignmentAsts :+ bodyAst
-    setArgumentIndices(whileLoopBlockChildren)
-    val whileLoopBlockAst = blockAst(whileLoopBlockNode, whileLoopBlockChildren.toList)
+    val whileLoopBlockAst      = blockAst(whileLoopBlockNode, whileLoopBlockChildren.toList)
 
     scope.popScope()
     localAstParentStack.pop()
@@ -511,16 +470,14 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     scope.popScope()
     localAstParentStack.pop()
 
+    val whileLoopAst      = whileAst(node, Some(testCallAst), List(whileLoopBlockAst))
     val blockNodeChildren =
-      List(iteratorAssignmentAst, Ast(resultNode)) ++ loopVariableNodes.map(Ast(_)) :+ whileLoopAst.withChild(
-        whileLoopBlockAst
-      )
-    setArgumentIndices(blockNodeChildren)
+      List(iteratorAssignmentAst, Ast(resultNode)) ++ loopVariableNodes.map(Ast(_)) :+ whileLoopAst
     blockAst(blockNode_, blockNodeChildren)
   }
 
   private def astForForStmtSyntax(node: ForStmtSyntax): Ast = {
-    node.pattern match
+    node.pattern match {
       case binding: ValueBindingPatternSyntax =>
         extractLoopVariableNodeInfo(binding) match {
           case Some(id: IdentifierPatternSyntax)                        => astForForStmtSyntaxWithIdentifier(node, id)
@@ -534,52 +491,44 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
       case expr: ExpressionPatternSyntax                      => astForForStmtSyntaxWithExpression(node, expr)
       case _: WildcardPatternSyntax | _: MissingPatternSyntax => astForForStmtSyntaxWithWildcard(node)
       case _                                                  => notHandledYet(node)
+    }
   }
 
   private def astForGuardStmtSyntax(node: GuardStmtSyntax): Ast = {
-    val code         = this.code(node)
-    val ifNode       = controlStructureNode(node, ControlStructureTypes.IF, code)
-    val conditionAst = astForNode(node.conditions)
-    val thenAst      = Ast()
-    val elseAst      = astForNode(node.body)
-    setOrderExplicitly(elseAst, 3)
-    controlStructureAst(ifNode, Option(conditionAst), Seq(thenAst, elseAst))
+    // This is already handled in AstCreatorHelper.astsForBlockElements
+    Ast()
   }
 
   private def astForLabeledStmtSyntax(node: LabeledStmtSyntax): Ast = {
     val labeledNode = jumpTargetNode(node, code(node.label), code(node))
-
-    val blockNode_ = blockNode(node)
+    val blockNode_  = blockNode(node)
     scope.pushNewBlockScope(blockNode_)
     localAstParentStack.push(blockNode_)
-    val bodyAst = astForNodeWithFunctionReference(node.statement)
+    val bodyAst = astForNode(node.statement)
     scope.popScope()
     localAstParentStack.pop()
-
-    val labelAsts = List(Ast(labeledNode), bodyAst)
-    setArgumentIndices(labelAsts)
-    blockAst(blockNode_, labelAsts)
+    blockAst(blockNode_, List(Ast(labeledNode), bodyAst))
   }
 
-  private def astForMissingStmtSyntax(node: MissingStmtSyntax): Ast = notHandledYet(node)
+  private def astForMissingStmtSyntax(@unused node: MissingStmtSyntax): Ast = Ast()
 
   private def astForRepeatStmtSyntax(node: RepeatStmtSyntax): Ast = {
-    val code = this.code(node)
-    // In Swift, a repeat-while loop is semantically the same as a C do-while loop
-    val doNode       = controlStructureNode(node, ControlStructureTypes.DO, code)
-    val conditionAst = astForNodeWithFunctionReference(node.condition)
+    val conditionAst = astForNode(node.condition)
     val bodyAst      = astForNode(node.body)
-    setOrderExplicitly(conditionAst, 1)
-    setOrderExplicitly(bodyAst, 2)
-    controlStructureAst(doNode, Option(conditionAst), Seq(bodyAst), placeConditionLast = true)
+    // In Swift, a repeat-while loop is semantically the same as a C do-while loop
+    doWhileAst(node, Some(conditionAst), Seq(bodyAst))
   }
 
   private def astForReturnStmtSyntax(node: ReturnStmtSyntax): Ast = {
     val cpgReturn = returnNode(node, code(node))
     node.expression match {
       case Some(value) =>
-        val expr = astForNodeWithFunctionReference(value)
-        Ast(cpgReturn).withChild(expr).withArgEdge(cpgReturn, expr.root)
+        val expr = astForNode(value)
+        val ast  = Ast(cpgReturn).withChild(expr)
+        expr.root match {
+          case Some(value) => ast.withArgEdge(cpgReturn, value)
+          case None        => ast
+        }
       case None =>
         Ast(cpgReturn)
     }
@@ -588,31 +537,81 @@ trait AstForStmtSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   private def astForThenStmtSyntax(node: ThenStmtSyntax): Ast = notHandledYet(node)
 
   private def astForThrowStmtSyntax(node: ThrowStmtSyntax): Ast = {
-    val op        = "<operator>.throw"
-    val callNode_ = callNode(node, code(node), op, op, DispatchTypes.STATIC_DISPATCH)
-    val exprAst   = astForNodeWithFunctionReference(node.expression)
-    callAst(callNode_, List(exprAst))
+    throwAst(node, List(astForNode(node.expression)))
   }
 
   private def astForWhileStmtSyntax(node: WhileStmtSyntax): Ast = {
-    val code         = this.code(node)
-    val conditionAst = astForNodeWithFunctionReference(node.conditions)
-    val bodyAst      = astForNode(node.body)
-    setOrderExplicitly(conditionAst, 1)
-    setOrderExplicitly(bodyAst, 2)
-    whileAst(
-      Option(conditionAst),
-      Seq(bodyAst),
-      code = Option(code),
-      lineNumber = line(node),
-      columnNumber = column(node)
+    handleOptionalBindingConditions(
+      node.conditions.children,
+      onAllSimple = simpleBindings => astForWhileLetStmtSyntax(node, simpleBindings),
+      onPartial = (simpleBindings, tupleBindings, otherConditions) =>
+        astForWhileLetStmtSyntaxPartial(node, simpleBindings, tupleBindings, otherConditions),
+      onStandard = () => {
+        val conditionAst = astForNode(node.conditions)
+        val bodyAst      = astForNode(node.body)
+        whileAst(node, Some(conditionAst), Seq(bodyAst))
+      }
     )
+  }
+
+  /** Handles Swift optional binding (while-let) constructs.
+    *
+    * De-sugars `while let item = iterator.next() { body }` into:
+    *
+    * Condition: { (<tmp>0 = iterator.next()) != nil }
+    *
+    * Loop body: { let item = <tmp>0; body }
+    *
+    * For multiple bindings `while let a = foo(), let b = bar() { body }`:
+    *
+    * Condition: { ((<tmp>0 = foo()) != nil) && ((<tmp>1 = bar()) != nil) }
+    *
+    * Loop body: { a = <tmp>0; b = <tmp>1; body }
+    *
+    * For mixed cases with/without initializers `while let a = foo(), let b { body }`:
+    *
+    * Condition: { ((<tmp>0 = foo()) != nil) && (b != nil) }
+    *
+    * Loop body: { a = <tmp>0; body }
+    */
+  private def astForWhileLetStmtSyntax(
+    node: WhileStmtSyntax,
+    optionalBindings: Seq[OptionalBindingConditionSyntax]
+  ): Ast = {
+    val bindingInfos = collectBindingInfos(optionalBindings)
+    val conditionAst = buildOptionalBindingCondition(node, bindingInfos)
+    val bodyAst      = buildBodyWithUnwrapping(node.body, node.body.statements.children, bindingInfos)
+    whileAst(node, Some(conditionAst), Seq(bodyAst))
+  }
+
+  /** Handles partial optional binding desugaring with other conditions.
+    *
+    * De-sugars `while let a = foo(), someCondition { body }` into:
+    *
+    * Condition: { ((<tmp>0 = foo()) != nil) && someCondition }
+    *
+    * Loop body: { let a = <tmp>0; body }
+    */
+  private def astForWhileLetStmtSyntaxPartial(
+    node: WhileStmtSyntax,
+    simpleBindings: Seq[OptionalBindingConditionSyntax],
+    tupleBindings: Seq[OptionalBindingConditionSyntax],
+    otherConditions: Seq[ConditionElementSyntax]
+  ): Ast = {
+    val bindingInfos = collectBindingInfos(simpleBindings)
+    val conditionAst = buildOptionalBindingCondition(node, bindingInfos, otherConditions)
+    val bodyAst      = buildBodyWithUnwrapping(node.body, tupleBindings ++ node.body.statements.children, bindingInfos)
+    whileAst(node, Some(conditionAst), Seq(bodyAst))
   }
 
   private def astForYieldStmtSyntax(node: YieldStmtSyntax): Ast = {
     val cpgReturn = returnNode(node, code(node))
-    val expr      = astForNodeWithFunctionReference(node.yieldedExpressions)
-    Ast(cpgReturn).withChild(expr).withArgEdge(cpgReturn, expr.root)
+    val expr      = astForNode(node.yieldedExpressions)
+    val ast       = Ast(cpgReturn).withChild(expr)
+    expr.root match {
+      case Some(value) => ast.withArgEdge(cpgReturn, value)
+      case None        => ast
+    }
   }
 
   protected def astForStmtSyntax(stmtSyntax: StmtSyntax): Ast = stmtSyntax match {

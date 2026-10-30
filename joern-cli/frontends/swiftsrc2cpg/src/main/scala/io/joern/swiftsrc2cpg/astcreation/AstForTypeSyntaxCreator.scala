@@ -1,11 +1,10 @@
 package io.joern.swiftsrc2cpg.astcreation
 
 import io.joern.swiftsrc2cpg.parser.SwiftNodeSyntax.*
-import io.joern.swiftsrc2cpg.parser.SwiftNodeSyntax.TypeSyntax
-import io.joern.x2cpg.Ast
-import io.joern.x2cpg.ValidationMode
-import io.shiftleft.codepropertygraph.generated.nodes.NewTypeDecl
+import io.joern.x2cpg.frontendspecific.swiftsrc2cpg.Defines
+import io.joern.x2cpg.{Ast, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.EdgeTypes
+import io.shiftleft.codepropertygraph.generated.nodes.NewTypeDecl
 
 import scala.annotation.unused
 
@@ -13,20 +12,17 @@ trait AstForTypeSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   this: AstCreator =>
 
   private def typeDeclForTypeSyntax(node: TypeSyntax): NewTypeDecl = {
-    val name                     = nextAnonClassName()
-    val (typeName, typeFullName) = calcTypeNameAndFullName(name)
-    registerType(typeFullName)
-
-    val (astParentType, astParentFullName) = astParentInfo()
-    val typeDeclNode_ =
-      typeDeclNode(node, typeName, typeFullName, parserResult.filename, code(node), astParentType, astParentFullName)
-
-    seenAliasTypes.add(typeDeclNode_)
+    val TypeInfo(typeName, typeFullName) = typeNameInfoForTypeSyntax(node)
+    val typeDeclNode_                    = typeDeclNode(node, typeName, typeFullName, parserResult.filename, code(node))
     diffGraph.addEdge(methodAstParentStack.head, typeDeclNode_, EdgeTypes.AST)
     typeDeclNode_
   }
 
   private def astForArrayTypeSyntax(node: ArrayTypeSyntax): Ast = {
+    Ast(typeDeclForTypeSyntax(node))
+  }
+
+  private def astForInlineArrayTypeSyntax(node: InlineArrayTypeSyntax): Ast = {
     Ast(typeDeclForTypeSyntax(node))
   }
 
@@ -51,9 +47,18 @@ trait AstForTypeSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   private def astForIdentifierTypeSyntax(node: IdentifierTypeSyntax): Ast = {
-    val nodeCode = code(node)
-    registerType(nodeCode)
-    Ast(identifierNode(node, nodeCode, dynamicTypeHints = Seq(nodeCode)))
+    val nodeCode                      = code(node)
+    val (typeFullName, possibleTypes) = fullnameProvider.typeFullname(node) match {
+      case Some(tpe) => (tpe, Seq.empty)
+      case None      =>
+        val tpe = AstCreatorHelper.cleanType(nodeCode) match {
+          case value if Defines.SwiftTypes.contains(value) => value
+          case _                                           => Defines.Any
+        }
+        (tpe, Seq(nodeCode))
+    }
+    registerType(typeFullName)
+    Ast(identifierNode(node, nodeCode, nodeCode, typeFullName, possibleTypes))
   }
 
   private def astForImplicitlyUnwrappedOptionalTypeSyntax(node: ImplicitlyUnwrappedOptionalTypeSyntax): Ast = {
@@ -107,6 +112,7 @@ trait AstForTypeSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     case node: FunctionTypeSyntax                    => astForFunctionTypeSyntax(node)
     case node: IdentifierTypeSyntax                  => astForIdentifierTypeSyntax(node)
     case node: ImplicitlyUnwrappedOptionalTypeSyntax => astForImplicitlyUnwrappedOptionalTypeSyntax(node)
+    case node: InlineArrayTypeSyntax                 => astForInlineArrayTypeSyntax(node)
     case node: MemberTypeSyntax                      => astForMemberTypeSyntax(node)
     case node: MetatypeTypeSyntax                    => astForMetatypeTypeSyntax(node)
     case node: MissingTypeSyntax                     => astForMissingTypeSyntax(node)

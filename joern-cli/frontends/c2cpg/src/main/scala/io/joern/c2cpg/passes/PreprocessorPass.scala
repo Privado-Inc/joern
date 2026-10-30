@@ -2,32 +2,48 @@ package io.joern.c2cpg.passes
 
 import io.joern.c2cpg.C2Cpg.DefaultIgnoredFolders
 import io.joern.c2cpg.Config
-import io.joern.c2cpg.parser.{CdtParser, FileDefaults}
+import io.joern.c2cpg.parser.CdtParser
+import io.joern.c2cpg.parser.FileDefaults
+import io.joern.c2cpg.parser.HeaderFileFinder
 import io.joern.c2cpg.parser.JSONCompilationDatabaseParser
-import io.joern.c2cpg.parser.JSONCompilationDatabaseParser.CommandObject
+import io.joern.c2cpg.parser.JSONCompilationDatabaseParser.CompilationDatabase
 import io.joern.x2cpg.SourceFiles
 import org.eclipse.cdt.core.dom.ast.{
-  IASTPreprocessorIfdefStatement,
   IASTPreprocessorIfStatement,
+  IASTPreprocessorIfdefStatement,
   IASTPreprocessorStatement
 }
+import org.eclipse.cdt.core.model.ILanguage
 import org.slf4j.LoggerFactory
 
-import java.nio.file.Paths
-import scala.collection.mutable
-import scala.collection.parallel.CollectionConverters.ImmutableIterableIsParallelizable
-import scala.collection.parallel.immutable.ParIterable
+import java.nio.file.{Path, Paths}
 
 class PreprocessorPass(config: Config) {
 
   private val logger = LoggerFactory.getLogger(classOf[PreprocessorPass])
 
-  private val compilationDatabase: mutable.LinkedHashSet[CommandObject] =
-    config.compilationDatabase.map(JSONCompilationDatabaseParser.parse).getOrElse(mutable.LinkedHashSet.empty)
+  private val compilationDatabase: Option[CompilationDatabase] =
+    config.compilationDatabaseFilename.flatMap(JSONCompilationDatabaseParser.parse)
 
-  private val parser = new CdtParser(config, compilationDatabase)
+  private val headerFileFinder = new HeaderFileFinder(config)
+  private val parser           = new CdtParser(config, headerFileFinder, compilationDatabase)
+  private val accumulator      = AstCreationPass.Accumulator()
 
-  private def sourceFilesFromDirectory(): ParIterable[String] = {
+  def run(): Iterable[String] = {
+    val sourceFiles = if (config.compilationDatabaseFilename.isEmpty) {
+      sourceFilesFromDirectory()
+    } else {
+      sourceFilesFromCompilationDatabase(config.compilationDatabaseFilename.get)
+    }
+    sourceFiles
+      .flatMap { file =>
+        val path = Paths.get(file).toAbsolutePath
+        CdtParser.languageMappingForSourceFile(path, Map.empty, config)
+      }
+      .flatMap(runOnPart)
+  }
+
+  private def sourceFilesFromDirectory(): Iterable[String] = {
     SourceFiles
       .determine(
         config.inputPath,
@@ -36,44 +52,38 @@ class PreprocessorPass(config: Config) {
         ignoredFilesRegex = Option(config.ignoredFilesRegex),
         ignoredFilesPath = Option(config.ignoredFiles)
       )
-      .par
-      .flatMap(runOnPart)
   }
 
-  private def sourceFilesFromCompilationDatabase(compilationDatabaseFile: String): ParIterable[String] = {
-    if (compilationDatabase.isEmpty) {
-      logger.warn(s"'$compilationDatabaseFile' contains no source files.")
+  private def sourceFilesFromCompilationDatabase(compilationDatabaseFile: String): Iterable[String] = {
+    compilationDatabase match {
+      case Some(db) =>
+        SourceFiles
+          .filterFiles(
+            db.commands.map(_.compiledFile()).toList,
+            config.inputPath,
+            ignoredDefaultRegex = Option(DefaultIgnoredFolders),
+            ignoredFilesRegex = Option(config.ignoredFilesRegex),
+            ignoredFilesPath = Option(config.ignoredFiles)
+          )
+      case None =>
+        logger.warn(s"'$compilationDatabaseFile' contains no source files. CPG will be empty.")
+        Iterable.empty
     }
-    SourceFiles
-      .filterFiles(
-        compilationDatabase.map(_.compiledFile()).toList,
-        config.inputPath,
-        ignoredDefaultRegex = Option(DefaultIgnoredFolders),
-        ignoredFilesRegex = Option(config.ignoredFilesRegex),
-        ignoredFilesPath = Option(config.ignoredFiles)
-      )
-      .par
-      .flatMap(runOnPart)
   }
 
-  def run(): ParIterable[String] = {
-    if (config.compilationDatabase.isEmpty) {
-      sourceFilesFromDirectory()
-    } else {
-      sourceFilesFromCompilationDatabase(config.compilationDatabase.get)
+  private def preprocessorStatement2String(stmt: IASTPreprocessorStatement): Option[String] = {
+    stmt match {
+      case s: IASTPreprocessorIfStatement =>
+        Option(s"${s.getCondition.mkString}${if (s.taken()) "=true" else ""}")
+      case s: IASTPreprocessorIfdefStatement =>
+        Option(s"${s.getCondition.mkString}${if (s.taken()) "=true" else ""}")
+      case _ => None
     }
-
   }
 
-  private def preprocessorStatement2String(stmt: IASTPreprocessorStatement): Option[String] = stmt match {
-    case s: IASTPreprocessorIfStatement =>
-      Option(s"${s.getCondition.mkString}${if (s.taken()) "=true" else ""}")
-    case s: IASTPreprocessorIfdefStatement =>
-      Option(s"${s.getCondition.mkString}${if (s.taken()) "=true" else ""}")
-    case _ => None
+  private def runOnPart(fileAndLanguage: (Path, ILanguage)): Iterable[String] = {
+    val (path, language) = fileAndLanguage
+    parser.preprocessorStatements(path, language, accumulator).flatMap(preprocessorStatement2String).toSet
   }
-
-  private def runOnPart(filename: String): Iterable[String] =
-    parser.preprocessorStatements(Paths.get(filename)).flatMap(preprocessorStatement2String).toSet
 
 }

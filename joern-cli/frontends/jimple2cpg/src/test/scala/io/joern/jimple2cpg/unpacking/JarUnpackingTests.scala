@@ -1,8 +1,7 @@
 package io.joern.jimple2cpg.unpacking
 
-import better.files.File
 import io.joern.jimple2cpg.{Config, Jimple2Cpg}
-import io.joern.jimple2cpg.util.ProgramHandlingUtil
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.utils.ProjectRoot
@@ -39,18 +38,19 @@ class JarUnpackingTests extends AnyWordSpec with Matchers with BeforeAndAfterAll
   private def getUnpackingCpg(path: String, recurse: Boolean = true, depths: Int = 1): Cpg =
     Try(getClass.getResource(s"/unpacking/${path}").toURI) match {
       case Success(x) =>
-        implicit val config: Config = Config().withRecurse(recurse)
-        new Jimple2Cpg().createCpg(Paths.get(x).toString).get
+        val config = Config().withRecurse(recurse)
+        new Jimple2Cpg().createCpg(config.withInputPath(Paths.get(x).toString)).get
       case Failure(x: Throwable) =>
         fail("Unable to obtain test resources.", x)
     }
 
   "'resources/unpacking' should contain 'HelloWorld.jar' and 'NestedHelloWorld.jar'" in {
     val targetDir = ProjectRoot.relativise("joern-cli/frontends/jimple2cpg/src/test/resources/unpacking")
-    File(targetDir)
+    Paths
+      .get(targetDir)
       .walk()
-      .filter(f => f.isRegularFile && f.extension.exists(_ == ".jar"))
-      .map(_.name)
+      .filter(f => Files.isRegularFile(f) && f.extension().exists(_ == ".jar"))
+      .map(_.fileName)
       .toSet shouldBe Set("HelloWorld.jar", "NestedHelloWorld.jar")
   }
 
@@ -76,10 +76,10 @@ class JarUnpackingTests extends AnyWordSpec with Matchers with BeforeAndAfterAll
       val List(foo) = cpg.typeDecl.fullNameExact("Foo").l
       foo.name shouldBe "Foo"
 
-      if (name == "NestedHelloWorld.jar")
+      if (name == "NestedHelloWorld.jar") {
         cpg.typeDecl.fullNameExact("pac.Bar").l shouldBe Nil
         cpg.method.filterNot(_.isExternal).fullName.toSet shouldBe Set("Foo.<init>:void()", "Foo.add:int(int,int)")
-      else
+      } else {
         val List(bar) = cpg.typeDecl.fullNameExact("pac.Bar").l
         bar.name shouldBe "Bar"
         cpg.method.filterNot(_.isExternal).fullName.toSet shouldBe Set(
@@ -88,6 +88,7 @@ class JarUnpackingTests extends AnyWordSpec with Matchers with BeforeAndAfterAll
           "pac.Bar.sub:int(int,int)",
           "pac.Bar.<init>:void()"
         )
+      }
     }
   }
 
@@ -96,10 +97,10 @@ class JarUnpackingTests extends AnyWordSpec with Matchers with BeforeAndAfterAll
       val List(foo) = cpg.typeDecl.fullNameExact("Foo").l
       foo.name shouldBe "Foo"
 
-      if (name == "NestedHelloWorld.jar")
+      if (name == "NestedHelloWorld.jar") {
         cpg.typeDecl.fullNameExact("pac.Bar").l shouldBe Nil
         cpg.method.filterNot(_.isExternal).fullName.toSet shouldBe Set("Foo.<init>:void()", "Foo.add:int(int,int)")
-      else
+      } else {
         val List(bar) = cpg.typeDecl.fullNameExact("pac.Bar").l
         bar.name shouldBe "Bar"
         cpg.method.filterNot(_.isExternal).fullName.toSet shouldBe Set(
@@ -108,6 +109,7 @@ class JarUnpackingTests extends AnyWordSpec with Matchers with BeforeAndAfterAll
           "pac.Bar.sub:int(int,int)",
           "pac.Bar.<init>:void()"
         )
+      }
     }
   }
 

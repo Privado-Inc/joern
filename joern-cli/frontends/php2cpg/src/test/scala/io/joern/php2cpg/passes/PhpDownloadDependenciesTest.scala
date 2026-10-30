@@ -6,7 +6,7 @@ import io.joern.php2cpg.testfixtures.PhpCode2CpgFixture
 import io.joern.php2cpg.utils.*
 import io.shiftleft.semanticcpg.language.*
 
-class PhpDownloadDependenciesTest extends PhpCode2CpgFixture() {
+class PhpDownloadDependenciesTest extends PhpCode2CpgFixture(withPostProcessing = true) {
 
   "semantic versions from Packagist" should {
 
@@ -48,16 +48,15 @@ class PhpDownloadDependenciesTest extends PhpCode2CpgFixture() {
       .withConfig(Config().withDownloadDependencies(true))
 
     "download the AWS library and populate the CPG with external high-level nodes" in {
-      inside(cpg.typeDecl.fullNameExact("Aws\\S3\\S3Client").headOption) {
-        case Some(s3Client) =>
-          s3Client.isExternal shouldBe true
-          s3Client.method.size should be > 0
-        case None => fail("Expected a fully qualified AWS S3Client type stub")
+      inside(cpg.typeDecl.fullNameExact("Aws\\S3\\S3Client").headOption) { case Some(s3Client) =>
+        s3Client.isExternal shouldBe true
+        s3Client.method.size should be > 0
+
       }
     }
 
     "download the AWS library and infer the full name of `S3Client` correctly" in {
-      cpg.call.nameExact("__construct").methodFullName.toSet shouldBe Set("Aws\\S3\\S3Client->__construct")
+      cpg.call.nameExact("__construct").methodFullName.toSet shouldBe Set("Aws\\S3\\S3Client.__construct")
       cpg.identifier.nameExact("s3").typeFullName.toSet shouldBe Set("Aws\\S3\\S3Client")
     }
 

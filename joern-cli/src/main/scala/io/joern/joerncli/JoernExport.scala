@@ -1,7 +1,5 @@
 package io.joern.joerncli
 
-import better.files.Dsl.*
-import better.files.File
 import flatgraph.{Accessors, Edge, GNode}
 import flatgraph.formats.ExportResult
 import flatgraph.formats.dot.DotExporter
@@ -18,9 +16,8 @@ import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.layers.*
 
-import java.nio.file.{Path, Paths}
+import java.nio.file.{Files, Path, Paths}
 import scala.collection.mutable
-import scala.jdk.CollectionConverters.IteratorHasAsScala
 import scala.util.Using
 
 object JoernExport {
@@ -28,33 +25,37 @@ object JoernExport {
   case class Config(
     cpgFileName: String = "cpg.bin",
     outDir: String = "out",
-    repr: Representation.Value = Representation.Cpg14,
-    format: Format.Value = Format.Dot
+    repr: Representation = Representation.Cpg14,
+    format: Format = Format.Dot
   )
 
   /** Choose from either a subset of the graph, or the entire graph (all).
     */
-  object Representation extends Enumeration {
-    val Ast, Cfg, Ddg, Cdg, Pdg, Cpg14, Cpg, All = Value
-
-    lazy val byNameLowercase: Map[String, Value] =
-      values.map { value =>
-        value.toString.toLowerCase -> value
-      }.toMap
-
-    def withNameIgnoreCase(s: String): Value =
-      byNameLowercase.getOrElse(s, throw new NoSuchElementException(s"No value found for '$s'"))
-
+  enum Representation {
+    case Ast, Cfg, Ddg, Cdg, Pdg, Cpg14, Cpg, All
   }
-  object Format extends Enumeration {
-    val Dot, Neo4jCsv, Graphml, Graphson = Value
 
-    lazy val byNameLowercase: Map[String, Value] =
+  object Representation {
+    lazy val byNameLowercase: Map[String, Representation] =
       values.map { value =>
         value.toString.toLowerCase -> value
       }.toMap
 
-    def withNameIgnoreCase(s: String): Value =
+    def withNameIgnoreCase(s: String): Representation =
+      byNameLowercase.getOrElse(s, throw new NoSuchElementException(s"No value found for '$s'"))
+  }
+
+  enum Format {
+    case Dot, Neo4jCsv, Graphml, Graphson
+  }
+
+  object Format {
+    lazy val byNameLowercase: Map[String, Format] =
+      values.map { value =>
+        value.toString.toLowerCase -> value
+      }.toMap
+
+    def withNameIgnoreCase(s: String): Format =
       byNameLowercase.getOrElse(s, throw new NoSuchElementException(s"No value found for '$s'"))
   }
 
@@ -62,10 +63,11 @@ object JoernExport {
     parseConfig(args).foreach { config =>
       val outDir = config.outDir
       exitIfInvalid(outDir, config.cpgFileName)
-      mkdir(File(outDir))
+      val outDirPath = Paths.get(outDir)
+      Files.createDirectory(outDirPath)
 
       Using.resource(CpgBasedTool.loadFromFile(config.cpgFileName)) { cpg =>
-        exportCpg(cpg, config.repr, config.format, Paths.get(outDir).toAbsolutePath)
+        exportCpg(cpg, config.repr, config.format, outDirPath.toAbsolutePath)
       }
     }
   }
@@ -94,7 +96,7 @@ object JoernExport {
     }.parse(args, Config())
   }
 
-  def exportCpg(cpg: Cpg, representation: Representation.Value, format: Format.Value, outDir: Path): Unit = {
+  def exportCpg(cpg: Cpg, representation: Representation, format: Format, outDir: Path): Unit = {
     implicit val semantics: Semantics = DefaultSemantics()
     if (semantics == NoSemantics) {
       System.err.println("Warning: semantics are empty.")
@@ -114,12 +116,12 @@ object JoernExport {
         exportWithFlatgraphFormat(cpg, representation, outDir, GraphMLExporter)
       case Format.Graphson =>
         exportWithFlatgraphFormat(cpg, representation, outDir, GraphSONExporter)
-      case other =>
+      case null =>
         throw new NotImplementedError(s"repr=$representation not yet supported for format=$format")
     }
   }
 
-  private def exportDot(repr: Representation.Value, outDir: Path, context: LayerCreatorContext): Unit = {
+  private def exportDot(repr: Representation, outDir: Path, context: LayerCreatorContext): Unit = {
     val outDirStr = outDir.toString
     import Representation._
     repr match {
@@ -129,38 +131,37 @@ object JoernExport {
       case Cdg   => new DumpCdg(CdgDumpOptions(outDirStr)).create(context)
       case Pdg   => new DumpPdg(PdgDumpOptions(outDirStr)).create(context)
       case Cpg14 => new DumpCpg14(Cpg14DumpOptions(outDirStr)).create(context)
-      case other => throw new NotImplementedError(s"repr=$repr not yet supported for this format")
+      case _     => throw new NotImplementedError(s"repr=$repr not yet supported for this format")
     }
   }
 
   private def exportWithFlatgraphFormat(
     cpg: Cpg,
-    repr: Representation.Value,
+    repr: Representation,
     outDir: Path,
     exporter: flatgraph.formats.Exporter
   ): Unit = {
     val ExportResult(nodeCount, edgeCount, _, additionalInfo) = repr match {
       case Representation.All =>
         exporter.runExport(cpg.graph, outDir)
+      case Representation.Cpg if cpg.graph.nodeCount(NodeTypes.METHOD) == 0 =>
+        emptyExportResult
       case Representation.Cpg =>
-        if (cpg.graph.nodeCount(NodeTypes.METHOD) > 0) {
-          val windowsFilenameDeduplicationHelper = mutable.Set.empty[String]
-          splitByMethod(cpg).iterator
-            .map { case subGraph @ MethodSubGraph(methodName, methodFilename, nodes) =>
-              val relativeFilename = sanitizedFileName(
-                methodName,
-                methodFilename,
-                exporter.defaultFileExtension,
-                windowsFilenameDeduplicationHelper
-              )
-              val outFileName = outDir.resolve(relativeFilename)
-              exporter.runExport(cpg.graph.schema, nodes, subGraph.edges, outFileName)
-            }
-            .reduce(plus)
-        } else {
-          emptyExportResult
-        }
-      case other =>
+        val windowsFilenameDeduplicationHelper = mutable.Set.empty[String]
+        splitByMethod(cpg)
+          .map { case subGraph @ MethodSubGraph(methodName, methodFilename, nodes) =>
+            val relativeFilename = sanitizedFileName(
+              methodName,
+              methodFilename,
+              exporter.defaultFileExtension,
+              windowsFilenameDeduplicationHelper
+            )
+            val outFileName = outDir.resolve(relativeFilename)
+            Files.createDirectories(outFileName)
+            exporter.runExport(cpg.graph.schema, nodes, subGraph.edges, outFileName)
+          }
+          .reduce(plus)
+      case _ =>
         throw new NotImplementedError(s"repr=$repr not yet supported for this format")
     }
 
@@ -171,7 +172,7 @@ object JoernExport {
   /** for each method in the cpg: recursively traverse all AST edges to get the subgraph of nodes within this method add
     * the method and this subgraph to the export add all edges between all of these nodes to the export
     */
-  private def splitByMethod(cpg: Cpg): IterableOnce[MethodSubGraph] = {
+  private def splitByMethod(cpg: Cpg): Iterator[MethodSubGraph] = {
     cpg.method.map { method =>
       MethodSubGraph(methodName = method.name, methodFilename = method.filename, nodes = method.ast.toSet)
     }
@@ -180,14 +181,14 @@ object JoernExport {
   /** @param windowsFilenameDeduplicationHelper
     *   utility map to ensure we don't override output files for identical method names
     */
-  private def sanitizedFileName(
+  private[joerncli] def sanitizedFileName(
     methodName: String,
     methodFilename: String,
     fileExtension: String,
     windowsFilenameDeduplicationHelper: mutable.Set[String]
   ): String = {
     val sanitizedMethodName = methodName.replaceAll("[^a-zA-Z0-9-_\\.]", "_")
-    val sanitizedFilename =
+    val sanitizedFilename   =
       if (scala.util.Properties.isWin) {
         // windows has some quirks in it's file system, e.g. we need to ensure paths aren't too long - so we're using a
         // different strategy to sanitize windows file names: first occurrence of a given method uses the method name
@@ -201,7 +202,8 @@ object JoernExport {
       } else { // non-windows
         // handle leading `/` to ensure we're not writing outside of the output directory
         val sanitizedPath =
-          if (methodFilename.startsWith("/")) s"_root_/$methodFilename"
+          if (methodFilename.isEmpty) "_root_"
+          else if (methodFilename.startsWith("/")) s"_root_/$methodFilename"
           else methodFilename
         s"$sanitizedPath/$sanitizedMethodName"
       }

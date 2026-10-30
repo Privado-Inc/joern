@@ -30,13 +30,113 @@ class AstCreationPassTests extends AstC2CpgSuite {
       }
     }
 
-    "be correct for packed args" in {
+    "be correct for method signature with variadic parameter in plain C (ellipsis)" in {
+      val cpg = code("""
+          |int foo(const char *a, ...){ return 0; }
+          |int bar(const char *a...){ return 0; }
+          |""".stripMargin)
+      val List(foo) = cpg.method("foo").l
+      foo.fullName shouldBe "foo"
+      foo.signature shouldBe "int(char*,...)"
+      val List(a1, ellipsis1) = foo.parameter.l
+      a1.name shouldBe "a"
+      a1.code shouldBe "const char *a"
+      a1.typeFullName shouldBe "char*"
+      a1.index shouldBe 1
+      a1.isVariadic shouldBe false
+      ellipsis1.name shouldBe "<param>2"
+      ellipsis1.code shouldBe "<param>2..."
+      ellipsis1.typeFullName shouldBe "char*"
+      ellipsis1.index shouldBe 2
+      ellipsis1.isVariadic shouldBe true
+
+      val List(bar) = cpg.method("bar").l
+      bar.fullName shouldBe "bar"
+      bar.signature shouldBe "int(char*,...)"
+      val List(a2, ellipsis2) = bar.parameter.l
+      a2.name shouldBe "a"
+      a2.code shouldBe "const char *a"
+      a2.typeFullName shouldBe "char*"
+      a2.index shouldBe 1
+      a2.isVariadic shouldBe false
+      ellipsis2.name shouldBe "<param>2"
+      ellipsis2.code shouldBe "<param>2..."
+      ellipsis2.typeFullName shouldBe "char*"
+      ellipsis2.index shouldBe 2
+      ellipsis2.isVariadic shouldBe true
+    }
+
+    "be correct for method signature with variadic parameter in C++ (ellipsis)" in {
       val cpg = code(
         """
-       |void foo(int x, int*... args) {};
-       |""".stripMargin,
-        "test.cpp"
+          |int foo(const char *a, ...){ return 0; }
+          |int bar(const char *a...){ return 0; }
+          |
+          |void main() {
+          |  foo("a", "b", "c");
+          |}
+          |""".stripMargin,
+        "foo.cpp"
       )
+      val List(fooCall) = cpg.call.nameExact("foo").l
+      fooCall.methodFullName shouldBe "foo:int(char*,...)"
+      fooCall.signature shouldBe "int(char*,...)"
+
+      val List(foo) = cpg.method("foo").l
+      foo.fullName shouldBe "foo:int(char*,...)"
+      foo.signature shouldBe "int(char*,...)"
+      val List(a1, ellipsis1) = foo.parameter.l
+      a1.name shouldBe "a"
+      a1.code shouldBe "const char *a"
+      a1.typeFullName shouldBe "char*"
+      a1.index shouldBe 1
+      a1.isVariadic shouldBe false
+      ellipsis1.name shouldBe "<param>2"
+      ellipsis1.code shouldBe "<param>2..."
+      ellipsis1.typeFullName shouldBe "char*"
+      ellipsis1.index shouldBe 2
+      ellipsis1.isVariadic shouldBe true
+
+      val List(bar) = cpg.method("bar").l
+      bar.fullName shouldBe "bar:int(char*,...)"
+      bar.signature shouldBe "int(char*,...)"
+      val List(a2, ellipsis2) = foo.parameter.l
+      a2.name shouldBe "a"
+      a2.code shouldBe "const char *a"
+      a2.typeFullName shouldBe "char*"
+      a2.index shouldBe 1
+      a2.isVariadic shouldBe false
+      ellipsis2.name shouldBe "<param>2"
+      ellipsis2.code shouldBe "<param>2..."
+      ellipsis2.typeFullName shouldBe "char*"
+      ellipsis2.index shouldBe 2
+      ellipsis2.isVariadic shouldBe true
+    }
+
+    "be correct for full names and signatures for method problem bindings" in {
+      val cpg = code(
+        """
+          |char tpe<wchar_t>::foo(char_type a, char b) const {
+          |  return static_cast<char>(a);
+          |}
+          |const wchar_t* tpe<wchar_t>::foo(const char_type* a, const char_type* b, char c, char* d) const {
+          |  return a;
+          |}
+          |""".stripMargin,
+        "foo.cpp"
+      )
+      // tpe<wchar_t> can't be resolved for both methods resulting in problem bindings.
+      // We can however manually reconstruct the signature from the params and return type without
+      // relying on the resolved function binding signature.
+      val List(foo1, foo2) = cpg.method.nameExact("foo").l
+      foo1.fullName shouldBe "tpe.foo:char(char_type,char)<const>"
+      foo1.signature shouldBe "char(char_type,char)<const>"
+      foo2.fullName shouldBe "tpe.foo:wchar_t*(char_type*,char_type*,char,char*)<const>"
+      foo2.signature shouldBe "wchar_t*(char_type*,char_type*,char,char*)<const>"
+    }
+
+    "be correct for packed args" in {
+      val cpg = code("void foo(int x, int*... args) {};", "test.cpp")
       inside(cpg.method("foo").l) { case List(m) =>
         m.signature shouldBe "void(int,int*)"
         inside(m.parameter.l) { case List(x, args) =>
@@ -44,37 +144,80 @@ class AstCreationPassTests extends AstC2CpgSuite {
           x.code shouldBe "int x"
           x.typeFullName shouldBe "int"
           x.isVariadic shouldBe false
-          x.order shouldBe 1
+          x.index shouldBe 1
           args.name shouldBe "args"
           args.code shouldBe "int*... args"
           args.typeFullName shouldBe "int*"
           args.isVariadic shouldBe true
-          args.order shouldBe 2
+          args.index shouldBe 2
         }
       }
     }
 
     "be correct for varargs" in {
-      val cpg = code(
-        """
-       |void foo(int x, int args...) {};
-       |""".stripMargin,
-        "test.cpp"
-      )
+      val cpg = code("void foo(int x, int args...) {};", "test.cpp")
       inside(cpg.method("foo").l) { case List(m) =>
-        inside(m.parameter.l) { case List(x, args) =>
+        m.fullName shouldBe "foo:void(int,int,...)"
+        inside(m.parameter.l) { case List(x, args, param3) =>
           x.name shouldBe "x"
           x.code shouldBe "int x"
           x.typeFullName shouldBe "int"
           x.isVariadic shouldBe false
-          x.order shouldBe 1
+          x.index shouldBe 1
           args.name shouldBe "args"
-          args.code shouldBe "int args..."
+          args.code shouldBe "int args"
           args.typeFullName shouldBe "int"
-          args.isVariadic shouldBe true
-          args.order shouldBe 2
+          args.isVariadic shouldBe false
+          args.index shouldBe 2
+          param3.name shouldBe "<param>3"
+          param3.code shouldBe "<param>3..."
+          param3.typeFullName shouldBe "int"
+          param3.isVariadic shouldBe true
+          param3.index shouldBe 3
         }
       }
+    }
+
+    "be correct for pack expansion with template" in {
+      val cpg = code(
+        """
+          |template<typename... Args>
+          |void foo(char* a, Args... args) {}
+          |
+          |void main() {
+          |  foo("Hello", "World", "!");
+          |}
+          |""".stripMargin,
+        "test.cpp"
+      )
+      val List(fooMethod) = cpg.method.nameExact("foo").l
+      val List(fooCall)   = cpg.call.nameExact("foo").l
+
+      fooMethod.fullName shouldBe "foo:void(char*,Args)"
+      fooCall.methodFullName shouldBe "foo:void(char*,Args)"
+
+      fooMethod.fullName shouldBe fooCall.methodFullName
+    }
+
+    "be correct for pack expansion with dereferences with template" in {
+      val cpg = code(
+        """
+          |template<typename... Args>
+          |void foo(char* a, Args&&... args) {}
+          |
+          |void main() {
+          |  foo("Hello", "World", "!");
+          |}
+          |""".stripMargin,
+        "test.cpp"
+      )
+      val List(fooMethod) = cpg.method.nameExact("foo").l
+      val List(fooCall)   = cpg.call.nameExact("foo").l
+
+      fooMethod.fullName shouldBe "foo:void(char*,Args&&)"
+      fooCall.methodFullName shouldBe "foo:void(char*,Args&&)"
+
+      fooMethod.fullName shouldBe fooCall.methodFullName
     }
 
     "be correct for knr function declarations" in {
@@ -94,243 +237,6 @@ class AstCreationPassTests extends AstC2CpgSuite {
           y.code shouldBe "int *y;"
           y.typeFullName shouldBe "int*"
           y.order shouldBe 2
-        }
-      }
-    }
-
-    "be correct for simple lambda expressions" in {
-      val cpg = code(
-        """
-        |auto x = [] (int a, int b) -> int
-        | { return a + b; };
-        |auto y = [] (string a, string b) -> string
-        | { return a + b; };
-        |""".stripMargin,
-        "test.cpp"
-      )
-      val lambda1FullName = "<lambda>0"
-      val lambda2FullName = "<lambda>1"
-
-      cpg.local.nameExact("x").order.l shouldBe List(1)
-      cpg.local.nameExact("y").order.l shouldBe List(3)
-
-      inside(cpg.assignment.l) { case List(assignment1, assignment2) =>
-        assignment1.order shouldBe 2
-        inside(assignment1.astMinusRoot.isMethodRef.l) { case List(ref) =>
-          ref.methodFullName shouldBe lambda1FullName
-        }
-        assignment2.order shouldBe 4
-        inside(assignment2.astMinusRoot.isMethodRef.l) { case List(ref) =>
-          ref.methodFullName shouldBe lambda2FullName
-        }
-      }
-
-      inside(cpg.method.fullNameExact(lambda1FullName).isLambda.l) { case List(l1) =>
-        l1.name shouldBe lambda1FullName
-        l1.code should startWith("[] (int a, int b) -> int")
-        l1.signature shouldBe s"int(int,int)"
-        l1.body.code shouldBe "{ return a + b; }"
-      }
-
-      inside(cpg.method.fullNameExact(lambda2FullName).isLambda.l) { case List(l2) =>
-        l2.name shouldBe lambda2FullName
-        l2.code should startWith("[] (string a, string b) -> string")
-        l2.signature shouldBe s"string(string,string)"
-        l2.body.code shouldBe "{ return a + b; }"
-      }
-
-      inside(cpg.typeDecl(NamespaceTraversal.globalNamespaceName).head.bindsOut.l) {
-        case List(bX: Binding, bY: Binding) =>
-          bX.name shouldBe lambda1FullName
-          bX.signature shouldBe s"int(int,int)"
-          inside(bX.refOut.l) { case List(method: Method) =>
-            method.name shouldBe lambda1FullName
-            method.fullName shouldBe lambda1FullName
-            method.signature shouldBe s"int(int,int)"
-          }
-          bY.name shouldBe lambda2FullName
-          bY.signature shouldBe s"string(string,string)"
-          inside(bY.refOut.l) { case List(method: Method) =>
-            method.name shouldBe lambda2FullName
-            method.fullName shouldBe lambda2FullName
-            method.signature shouldBe s"string(string,string)"
-          }
-      }
-    }
-
-    "be correct for simple lambda expression in class" in {
-      val cpg = code(
-        """
-        |class Foo {
-        | auto x = [] (int a, int b) -> int
-        | {
-        |   return a + b;
-        | };
-        |};
-        |
-        |""".stripMargin,
-        "test.cpp"
-      )
-      val lambdaName     = "<lambda>0"
-      val lambdaFullName = s"Foo.$lambdaName"
-      val signature      = s"int(int,int)"
-
-      cpg.member.nameExact("x").order.l shouldBe List(1)
-
-      inside(cpg.assignment.l) { case List(assignment1) =>
-        inside(assignment1.astMinusRoot.isMethodRef.l) { case List(ref) =>
-          ref.methodFullName shouldBe lambdaFullName
-        }
-      }
-
-      inside(cpg.method.fullNameExact(lambdaFullName).isLambda.l) { case List(l1) =>
-        l1.name shouldBe lambdaName
-        l1.code should startWith("[] (int a, int b) -> int")
-        l1.signature shouldBe signature
-      }
-
-      inside(cpg.typeDecl("Foo").head.bindsOut.l) { case List(binding: Binding) =>
-        binding.name shouldBe lambdaName
-        binding.signature shouldBe signature
-        inside(binding.refOut.l) { case List(method: Method) =>
-          method.name shouldBe lambdaName
-          method.fullName shouldBe lambdaFullName
-          method.signature shouldBe signature
-        }
-      }
-    }
-
-    "be correct for simple lambda expression in class under namespaces" in {
-      val cpg = code(
-        """
-        |namespace A { class B {
-        |class Foo {
-        | auto x = [] (int a, int b) -> int
-        | {
-        |   return a + b;
-        | };
-        |};
-        |};}
-        |""".stripMargin,
-        "test.cpp"
-      )
-      val lambdaName     = "<lambda>0"
-      val lambdaFullName = s"A.B.Foo.$lambdaName"
-      val signature      = s"int(int,int)"
-
-      cpg.member.nameExact("x").order.l shouldBe List(1)
-
-      inside(cpg.assignment.l) { case List(assignment1) =>
-        inside(assignment1.astMinusRoot.isMethodRef.l) { case List(ref) =>
-          ref.methodFullName shouldBe lambdaFullName
-        }
-      }
-
-      inside(cpg.method.fullNameExact(lambdaFullName).isLambda.l) { case List(l1) =>
-        l1.name shouldBe lambdaName
-        l1.code should startWith("[] (int a, int b) -> int")
-        l1.signature shouldBe signature
-      }
-
-      inside(cpg.typeDecl.fullNameExact("A.B.Foo").head.bindsOut.l) { case List(binding: Binding) =>
-        binding.name shouldBe lambdaName
-        binding.signature shouldBe signature
-        inside(binding.refOut.l) { case List(method: Method) =>
-          method.name shouldBe lambdaName
-          method.fullName shouldBe lambdaFullName
-          method.signature shouldBe signature
-        }
-      }
-    }
-
-    "be correct when calling a lambda" in {
-      val cpg = code(
-        """
-        |auto x = [](int n) -> int
-        |{
-        |  return 32 + n;
-        |};
-        |
-        |constexpr int foo1 = x(10);
-        |constexpr int foo2 = [](int n) -> int
-        |{
-        |  return 32 + n;
-        |}(10);
-        |""".stripMargin,
-        "test.cpp"
-      )
-      val lambda1Name = "<lambda>0"
-      val signature1  = s"int(int)"
-      val lambda2Name = "<lambda>1"
-      val signature2  = s"int(int)"
-
-      cpg.local.nameExact("x").order.l shouldBe List(1)
-      cpg.local.nameExact("foo1").order.l shouldBe List(3)
-      cpg.local.nameExact("foo2").order.l shouldBe List(5)
-
-      inside(cpg.assignment.l) { case List(assignment1, assignment2, assignment3) =>
-        assignment1.order shouldBe 2
-        assignment2.order shouldBe 4
-        assignment3.order shouldBe 6
-        inside(assignment1.astMinusRoot.isMethodRef.l) { case List(ref) =>
-          ref.methodFullName shouldBe lambda1Name
-        }
-      }
-
-      inside(cpg.method.fullNameExact(lambda1Name).isLambda.l) { case List(l1) =>
-        l1.name shouldBe lambda1Name
-        l1.code should startWith("[](int n) -> int")
-        l1.signature shouldBe signature1
-      }
-
-      inside(cpg.typeDecl(NamespaceTraversal.globalNamespaceName).head.bindsOut.l) {
-        case List(b1: Binding, b2: Binding) =>
-          b1.name shouldBe lambda1Name
-          b1.signature shouldBe signature1
-          inside(b1.refOut.l) { case List(method: Method) =>
-            method.name shouldBe lambda1Name
-            method.fullName shouldBe lambda1Name
-            method.signature shouldBe signature1
-          }
-          b2.name shouldBe lambda2Name
-          b2.signature shouldBe signature2
-          inside(b2.refOut.l) { case List(method: Method) =>
-            method.name shouldBe lambda2Name
-            method.fullName shouldBe lambda2Name
-            method.signature shouldBe signature2
-          }
-      }
-
-      inside(cpg.call.nameExact("<operator>()").l) { case List(lambda1call, lambda2call) =>
-        lambda1call.name shouldBe "<operator>()"
-        lambda1call.methodFullName shouldBe "<operator>():int(int)"
-        lambda1call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
-        inside(lambda1call.astChildren.l) { case List(id: Identifier, lit: Literal) =>
-          id.code shouldBe "x"
-          lit.code shouldBe "10"
-        }
-        inside(lambda1call.argument.l) { case List(lit: Literal) =>
-          lit.code shouldBe "10"
-        }
-        inside(lambda1call.receiver.l) { case List(receiver: Identifier) =>
-          receiver.code shouldBe "x"
-        }
-
-        lambda2call.name shouldBe "<operator>()"
-        lambda2call.methodFullName shouldBe "<operator>():int(int)"
-        lambda2call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
-        inside(lambda2call.astChildren.l) { case List(ref: MethodRef, lit: Literal) =>
-          ref.methodFullName shouldBe lambda2Name
-          ref.code should startWith("[](int n) -> int")
-          lit.code shouldBe "10"
-        }
-
-        inside(lambda2call.argument.l) { case List(lit: Literal) =>
-          lit.code shouldBe "10"
-        }
-        inside(lambda2call.receiver.l) { case List(ref: MethodRef) =>
-          ref.methodFullName shouldBe lambda2Name
-          ref.code should startWith("[](int n) -> int")
         }
       }
     }
@@ -456,6 +362,150 @@ class AstCreationPassTests extends AstC2CpgSuite {
       }
     }
 
+    "be correct for locals from decl from header file" in {
+      val cpg = code(
+        """
+          |#include "a.h"
+          |
+          |int main() {
+          |  printf("%d\n", global);
+          |  return 0;
+          |}
+          |""".stripMargin,
+        "main.cc"
+      ).moreCode(
+        """
+          |int global;
+          |""".stripMargin,
+        "a.h"
+      )
+      val List(localFromHeader, localFromMain) = cpg.local.sortBy(_.lineNumber.get).l
+      localFromHeader.name shouldBe "global"
+      localFromHeader.code shouldBe "int global"
+      localFromMain.name shouldBe "global"
+      localFromMain.code shouldBe "<global> global"
+    }
+
+    "be correct for locals from decl from missing header file" in {
+      val cpg = code(
+        """
+          |#include "a.h"
+          |
+          |int localId = 0;
+          |
+          |int main() {
+          |  printf("%d\n", localId);
+          |  printf("%d\n", global);
+          |  printf("%d\n", unknown);
+          |  return 0;
+          |}
+          |""".stripMargin,
+        "main.cc"
+      ).moreCode(
+        """
+          |int global;
+          |""".stripMargin,
+        "a.h"
+      )
+      val List(localFromHeader, localId, globalLocalId, localFromMain, unknown) = cpg.local.sortBy(_.lineNumber.get).l
+      localFromHeader.name shouldBe "global"
+      localFromHeader.code shouldBe "int global"
+      localFromHeader.typeFullName shouldBe "int"
+
+      localId.name shouldBe "localId"
+      localId.code shouldBe "int localId"
+      localId.typeFullName shouldBe "int"
+
+      globalLocalId.name shouldBe "localId"
+      globalLocalId.code shouldBe "<global> localId"
+      globalLocalId.typeFullName shouldBe "int"
+
+      localFromMain.name shouldBe "global"
+      localFromMain.code shouldBe "<global> global"
+      localFromMain.typeFullName shouldBe "int"
+
+      unknown.name shouldBe "unknown"
+      unknown.code shouldBe "<unknown> unknown"
+    }
+
+    "be correct for locals from decl in global namespace from header file" in {
+      val cpg = code(
+        """
+          |#include "a.hpp"
+          |
+          |using namespace Foo;
+          |
+          |int main() {
+          |    printf("%d\n", global);
+          |    return 0;
+          |}
+          |""".stripMargin,
+        "main.cpp"
+      ).moreCode(
+        """
+          |namespace Foo {
+          |  int global;
+          |}
+          |""".stripMargin,
+        "a.hpp"
+      )
+      val List(localFromHeader, localFromMain) = cpg.local.sortBy(_.lineNumber.get).l
+      localFromHeader.name shouldBe "global"
+      localFromHeader.code shouldBe "int global"
+      localFromMain.name shouldBe "global"
+      localFromMain.code shouldBe "<global> global"
+    }
+
+    "be correct for locals from decl in global nested namespace from header file" in {
+      val cpg = code(
+        """
+          |#include "a.hpp"
+          |
+          |using namespace Foo;
+          |using namespace Bar;
+          |
+          |int main() {
+          |    printf("%d\n", global);
+          |    return 0;
+          |}
+          |""".stripMargin,
+        "main.cpp"
+      ).moreCode(
+        """
+          |namespace Foo {
+          |  namespace Bar {
+          |    int global;
+          |  }
+          |}
+          |""".stripMargin,
+        "a.hpp"
+      )
+      val List(localFromHeader, localFromMain) = cpg.local.sortBy(_.lineNumber.get).l
+      localFromHeader.name shouldBe "global"
+      localFromHeader.code shouldBe "int global"
+      localFromMain.name shouldBe "global"
+      localFromMain.code shouldBe "<global> global"
+    }
+
+    "be correct for decl assignment with parentheses" in {
+      val cpg = code(
+        """
+          |void method() {
+          |  int *val (new int[3]);
+          |}
+          |""".stripMargin,
+        "test.cpp"
+      )
+      inside(cpg.method.nameExact("method").block.astChildren.isCall.l) { case List(assignment: Call) =>
+        val List(identifier) = assignment.argument.isIdentifier.l
+        identifier.argumentIndex shouldBe 1
+        identifier.name shouldBe "val"
+        val List(call) = assignment.argument.isCall.l
+        call.code shouldBe "(new int[3])"
+        call.argumentIndex shouldBe 2
+      }
+    }
+
     "be correct for decl assignment with typedecl" in {
       val cpg = code(
         """
@@ -486,13 +536,66 @@ class AstCreationPassTests extends AstC2CpgSuite {
       }
     }
 
+    "be correct for qualified name with multiple :: parts" in {
+      val cpg = code(
+        """
+        |namespace A {
+        |  namespace B {
+        |    struct C {
+        |      static int value;
+        |    };
+        |  }
+        |}
+        |void foo() {
+        |  int x = A::B::C::value;
+        |}
+        |""".stripMargin,
+        "test.cpp"
+      )
+      inside(cpg.method.nameExact("foo").block.astChildren.isCall.nameExact(Operators.assignment).l) {
+        case List(assignment) =>
+          inside(assignment.arguments(2).l) { case List(outerAccess: Call) =>
+            outerAccess.methodFullName shouldBe Operators.fieldAccess
+            outerAccess.code shouldBe "A::B::C::value"
+            outerAccess.arguments(2).isFieldIdentifier.code.loneElement shouldBe "value"
+            inside(outerAccess.arguments(1).l) { case List(owner: TypeRef) =>
+              owner.code shouldBe "A::B::C"
+              owner.typeFullName shouldBe "A.B.C"
+            }
+          }
+      }
+    }
+
+    "be correct for qualified name with two :: parts" in {
+      val cpg = code(
+        """
+        |struct Foo {
+        |  static int bar;
+        |};
+        |void test() {
+        |  int x = Foo::bar;
+        |}
+        |""".stripMargin,
+        "test.cpp"
+      )
+      inside(cpg.method.nameExact("test").block.astChildren.isCall.nameExact(Operators.assignment).l) {
+        case List(assignment) =>
+          inside(assignment.arguments(2).l) { case List(access: Call) =>
+            access.methodFullName shouldBe Operators.fieldAccess
+            access.code shouldBe "Foo::bar"
+            access.argument(2).code shouldBe "bar"
+            access.argument(1).code shouldBe "Foo"
+          }
+      }
+    }
+
     "be correct for decl assignment with identifier on the right" in {
       val cpg = code("""
           |void method(int x) {
           |  int local = x;
           |}""".stripMargin)
       cpg.local.nameExact("local").order.l shouldBe List(1)
-      inside(cpg.method("method").block.astChildren.assignment.source.l) { case List(identifier: Identifier) =>
+      inside(cpg.method("method").block.astChildren.isCall.isAssignment.source.l) { case List(identifier: Identifier) =>
         identifier.code shouldBe "x"
         identifier.typeFullName shouldBe "int"
         identifier.order shouldBe 2
@@ -511,7 +614,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
       )
       val List(barLocal) = cpg.method.nameExact("addrOfLocalRef").local.l
       barLocal.name shouldBe "bar"
-      barLocal.code shouldBe "struct x& bar"
+      barLocal.code shouldBe "struct x &bar"
     }
 
     "be correct for decl assignment of multiple locals" in {
@@ -604,7 +707,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
           inside(controlStruct.condition.l) { case List(cndNode) =>
             cndNode.code shouldBe "x < 1"
           }
-          controlStruct.whenTrue.assignment.code.l shouldBe List("x += 1")
+          controlStruct.whenTrue.isBlock.expressionDown.isCall.isAssignment.code.l shouldBe List("x += 1")
           controlStruct.lineNumber shouldBe Option(3)
           controlStruct.columnNumber shouldBe Option(3)
       }
@@ -614,19 +717,17 @@ class AstCreationPassTests extends AstC2CpgSuite {
       val cpg = code("""
         |void method(int x) {
         |  int y;
-        |  if (x > 0) {
-        |    y = 0;
-        |  }
+        |  if (x > 0) { y = 0; }
         |}
       """.stripMargin)
       inside(cpg.method.nameExact("method").controlStructure.l) { case List(controlStruct: ControlStructure) =>
-        controlStruct.code shouldBe "if (x > 0)"
+        controlStruct.code shouldBe "if (x > 0) { y = 0; }"
         controlStruct.controlStructureType shouldBe ControlStructureTypes.IF
         inside(controlStruct.condition.l) { case List(cndNode) =>
           cndNode.code shouldBe "x > 0"
 
         }
-        controlStruct.whenTrue.assignment.code.l shouldBe List("y = 0")
+        controlStruct.whenTrue.isBlock.expressionDown.isCall.isAssignment.code.l shouldBe List("y = 0")
       }
     }
 
@@ -634,27 +735,21 @@ class AstCreationPassTests extends AstC2CpgSuite {
       val cpg = code("""
         |void method(int x) {
         |  int y;
-        |  if (x > 0) {
-        |    y = 0;
-        |  } else {
-        |    y = 1;
-        |  }
+        |  if (x > 0) { y = 0; } else { y = 1; }
         |}
       """.stripMargin)
-      inside(cpg.method.nameExact("method").controlStructure.l) { case List(ifStmt, elseStmt) =>
+      inside(cpg.method.nameExact("method").controlStructure.l) { case List(ifStmt) =>
         ifStmt.controlStructureType shouldBe ControlStructureTypes.IF
-        ifStmt.code shouldBe "if (x > 0)"
-        elseStmt.controlStructureType shouldBe ControlStructureTypes.ELSE
-        elseStmt.code shouldBe "else"
+        ifStmt.code shouldBe "if (x > 0) { y = 0; } else { y = 1; }"
 
         inside(ifStmt.condition.l) { case List(cndNode) =>
           cndNode.code shouldBe "x > 0"
         }
 
-        ifStmt.whenTrue.assignment
+        ifStmt.whenTrue.isBlock.expressionDown.isCall.isAssignment
           .map(x => (x.target.code, x.source.code))
           .headOption shouldBe Option(("y", "0"))
-        ifStmt.whenFalse.assignment
+        ifStmt.whenFalse.isBlock.expressionDown.isCall.isAssignment
           .map(x => (x.target.code, x.source.code))
           .headOption shouldBe Option(("y", "1"))
       }
@@ -687,40 +782,14 @@ class AstCreationPassTests extends AstC2CpgSuite {
           condition.argumentIndex shouldBe 1
           condition.code shouldBe "foo == 1"
           trueBranch.argumentIndex shouldBe 2
-          trueBranch.code shouldBe "bar"
+          trueBranch.code shouldBe s"${Defines.UnknownTag} bar"
           falseBranch.argumentIndex shouldBe 3
           falseBranch.code shouldBe "0"
         }
       }
     }
 
-    "be correct for ranged for-loop" in {
-      val cpg = code(
-        """
-       |void method() {
-       |  for (int x : list) {
-       |    int z = x;
-       |  }
-       |}""".stripMargin,
-        "file.cpp"
-      )
-      inside(cpg.method.nameExact("method").controlStructure.l) { case List(forStmt) =>
-        forStmt.controlStructureType shouldBe ControlStructureTypes.FOR
-        inside(forStmt.astChildren.order(1).l) { case List(ident: Identifier) =>
-          ident.code shouldBe "list"
-        }
-        inside(forStmt.astChildren.order(2).l) { case List(x: Local) =>
-          x.name shouldBe "x"
-          x.typeFullName shouldBe "int"
-          x.code shouldBe "int x"
-        }
-        inside(forStmt.astChildren.order(3).l) { case List(block: Block) =>
-          block.astChildren.isCall.code.l shouldBe List("z = x")
-        }
-      }
-    }
-
-    "be correct for ranged for-loop with structured binding" in {
+    "be correct for ranged for-loop with structured binding with array type" in {
       val cpg = code(
         """
         |void method() {
@@ -732,18 +801,50 @@ class AstCreationPassTests extends AstC2CpgSuite {
       )
       inside(cpg.method.nameExact("method").controlStructure.l) { case List(forStmt) =>
         forStmt.controlStructureType shouldBe ControlStructureTypes.FOR
-        inside(forStmt.astChildren.order(1).l) { case List(ident) =>
-          ident.code shouldBe "foo"
-        }
-        inside(forStmt.astChildren.order(2).astChildren.l) { case List(idA, idB) =>
-          idA.code shouldBe "a"
-          idB.code shouldBe "b"
-        }
-        inside(forStmt.astChildren.order(3).l) { case List(block) =>
-          block.code shouldBe "<empty>"
-          block.astChildren.l shouldBe empty
-        }
+        forStmt.astChildren.isBlock.astChildren.isCall.code.l shouldBe List(
+          "<tmp>0 = foo",
+          "a = <tmp>0[0]",
+          "b = <tmp>0[1]"
+        )
       }
+      cpg.local.map { l => (l.name, l.typeFullName) }.toMap shouldBe Map(
+        "foo"    -> "int[2]",
+        "<tmp>0" -> "int[2]",
+        "a"      -> "ANY",
+        "b"      -> "ANY"
+      )
+      pendingUntilFixed {
+        cpg.local.map { l => (l.name, l.typeFullName) }.toMap shouldBe Map(
+          "foo"    -> "int[2]",
+          "<tmp>0" -> "int[2]",
+          "a"      -> "int*",
+          "b"      -> "int*"
+        )
+      }
+    }
+
+    "be correct for ranged for-loop with structured binding with reference type" in {
+      val cpg = code(
+        """
+          |void method() {
+          |  auto foo = bar();
+          |  for(const auto& [a, b] : foo) {};
+          |}
+          |""".stripMargin,
+        "test.cpp"
+      )
+      inside(cpg.method.nameExact("method").controlStructure.l) { case List(forStmt) =>
+        forStmt.controlStructureType shouldBe ControlStructureTypes.FOR
+        forStmt.astChildren.isBlock.astChildren.isCall.code.l shouldBe List(
+          "<tmp>0 = foo",
+          "a = <tmp>0.a",
+          "b = <tmp>0.b"
+        )
+      }
+      val List(fieldAccessCall) = cpg.call.codeExact("<tmp>0.a").l
+      fieldAccessCall.name shouldBe Operators.fieldAccess
+      fieldAccessCall.argument(1).isIdentifier shouldBe true
+      fieldAccessCall.argument(2).isFieldIdentifier shouldBe true
     }
 
     "be correct for for-loop with multiple initializations" in {
@@ -769,8 +870,10 @@ class AstCreationPassTests extends AstC2CpgSuite {
     }
 
     def childContainsAssignments(node: AstNode, i: Int, list: List[String]) = {
-      inside(node.astChildren.order(i).l) { case List(child) =>
-        child.assignment.code.l shouldBe list
+      inside(node.astChildren.order(i).l) {
+        case List(child: Call) =>
+          child.start.isCall.isAssignment.code.l shouldBe list
+        case List(child: Block) => child.astChildren.isCall.isAssignment.code.l shouldBe list
       }
     }
 
@@ -796,14 +899,8 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  return (__sync_synchronize(), foo(x));
         |}
       """.stripMargin)
-      val List(bracketedPrimaryCall) = cpg.call("<operator>.bracketedPrimary").l
-      val List(expressionListCall)   = bracketedPrimaryCall.argument.isCall.l
-      expressionListCall.name shouldBe "<operator>.expressionList"
-
-      val List(arg1) = expressionListCall.argument(1).start.collectAll[Call].l
-      arg1.code shouldBe "__sync_synchronize()"
-      val List(arg2) = expressionListCall.argument(2).start.collectAll[Call].l
-      arg2.code shouldBe "foo(x)"
+      val List(exprListBlock) = cpg.method.nameExact("method").ast.isReturn.astChildren.isBlock.l
+      exprListBlock.astChildren.isCall.code.l shouldBe List("__sync_synchronize()", "foo(x)")
     }
 
     "not create an expression list for comma operator" in {
@@ -817,11 +914,11 @@ class AstCreationPassTests extends AstC2CpgSuite {
       """.stripMargin)
       val List(forLoop)        = cpg.controlStructure.l
       val List(conditionBlock) = forLoop.condition.collectAll[Block].l
-      conditionBlock.argumentIndex shouldBe 2
+      conditionBlock.order shouldBe 2
       val List(assignmentCall, greaterCall) = conditionBlock.astChildren.collectAll[Call].l
-      assignmentCall.argumentIndex shouldBe 1
+      assignmentCall.order shouldBe 1
       assignmentCall.code shouldBe "b = something()"
-      greaterCall.argumentIndex shouldBe 2
+      greaterCall.order shouldBe 2
       greaterCall.code shouldBe "b > c"
     }
 
@@ -974,16 +1071,97 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |}""".stripMargin,
         "file.cpp"
       )
-      cpg.method
-        .nameExact("method")
-        .ast
-        .isCall
-        .nameExact(Operators.sizeOf)
-        .argument(1)
-        .isIdentifier
-        .nameExact("int")
-        .argumentIndex(1)
-        .size shouldBe 1
+      inside(cpg.method.nameExact("method").ast.isCall.nameExact(Operators.sizeOf).l) { case List(call) =>
+        val List(typeRef) = call.argument(1).isTypeRef.l
+        typeRef.code shouldBe "int"
+        typeRef.typeFullName shouldBe "int"
+        typeRef.argumentIndex shouldBe 1
+      }
+      cpg.method.nameExact("method").local.size shouldBe 0
+    }
+
+    "not fabricate a local for a type-id operand of sizeof" in {
+      val cpg = code(
+        """
+        |struct Widget { int a; double b; };
+        |unsigned long probe() {
+        |  unsigned long s1 = sizeof(Widget);
+        |  unsigned long s2 = alignof(Widget);
+        |  return s1 + s2;
+        |}""".stripMargin,
+        "file.cpp"
+      )
+      cpg.method.nameExact("probe").local.name.l.sorted shouldBe List("s1", "s2")
+      cpg.identifier.nameExact("Widget").size shouldBe 0
+      inside(cpg.call.nameExact(Operators.sizeOf).l) { case List(sizeOfCall) =>
+        val List(sizeOfTypeRef) = sizeOfCall.argument(1).isTypeRef.l
+        sizeOfTypeRef.code shouldBe "Widget"
+        sizeOfTypeRef.typeFullName shouldBe "Widget"
+      }
+      inside(cpg.call.nameExact(Defines.OperatorAlignOf).l) { case List(alignOfCall) =>
+        val List(alignOfTypeRef) = alignOfCall.argument(1).isTypeRef.l
+        alignOfTypeRef.code shouldBe "Widget"
+        alignOfTypeRef.typeFullName shouldBe "Widget"
+      }
+    }
+
+    "tell sizeof, alignof and typeid apart by operator name" in {
+      val cpg = code(
+        """
+        |struct Widget { int a; };
+        |void probe() {
+        |  auto s = sizeof(Widget);
+        |  auto a = alignof(Widget);
+        |  auto t = typeid(Widget);
+        |  Widget w{};
+        |  auto te = typeid(w);
+        |}""".stripMargin,
+        "file.cpp"
+      )
+      cpg.call.codeExact("sizeof(Widget)").name.l shouldBe List(Operators.sizeOf)
+      cpg.call.codeExact("alignof(Widget)").name.l shouldBe List(Defines.OperatorAlignOf)
+      cpg.call.codeExact("alignof(Widget)").methodFullName.l shouldBe List(Defines.OperatorAlignOf)
+      cpg.call.codeExact("typeid(Widget)").name.l shouldBe List(Defines.OperatorTypeOf)
+      cpg.call.codeExact("typeid(w)").name.l shouldBe List(Defines.OperatorTypeOf)
+      cpg.call.codeExact("typeid(Widget)").argument(1).isTypeRef.size shouldBe 1
+      cpg.method.nameExact("probe").local.name.l.sorted shouldBe List("<tmp>0", "a", "s", "t", "te", "w")
+    }
+
+    "not fabricate a local for a type-id operand that is not a plain identifier" in {
+      val cpg = code(
+        """
+        |int probe() {
+        |  int a = 1;
+        |  unsigned long s1 = sizeof(const char*);
+        |  unsigned long s2 = sizeof(int[8]);
+        |  unsigned long s3 = sizeof(decltype(a));
+        |  return (int)(s1 + s2 + s3);
+        |}""".stripMargin,
+        "file.cpp"
+      )
+      cpg.method.nameExact("probe").local.name.l.sorted shouldBe List("a", "s1", "s2", "s3")
+      inside(cpg.call.nameExact(Operators.sizeOf).l) { case List(c1, c2, c3) =>
+        c1.argument(1).isTypeRef.code.l shouldBe List("const char*")
+        c2.argument(1).isTypeRef.code.l shouldBe List("int[8]")
+        c3.argument(1).isTypeRef.code.l shouldBe List("decltype(a)")
+      }
+    }
+
+    "keep lowering an expression operand of sizeof as an identifier" in {
+      val cpg = code(
+        """
+        |struct Widget { int a; double b; };
+        |unsigned long probe() {
+        |  Widget w{};
+        |  return sizeof w + sizeof(w);
+        |}""".stripMargin,
+        "file.cpp"
+      )
+      inside(cpg.call.nameExact(Operators.sizeOf).l) { case List(withoutBrackets, withBrackets) =>
+        withoutBrackets.argument(1).start.isIdentifier.nameExact("w").size shouldBe 1
+        withBrackets.argument(1).start.isIdentifier.nameExact("w").size shouldBe 1
+      }
+      cpg.method.nameExact("probe").local.nameExact("w").size shouldBe 1
     }
   }
 
@@ -1061,6 +1239,56 @@ class AstCreationPassTests extends AstC2CpgSuite {
       }
     }
 
+    "not create TYPE_REF nodes under TYPE_DECL for nested structs" in {
+      val cpg = code(
+        """
+        |struct Outer {
+        |  struct InnerA {
+        |    int a;
+        |  };
+        |  struct InnerB field;
+        |};
+        |""".stripMargin,
+        "file.c"
+      )
+      inside(cpg.typeDecl.nameExact("Outer").l) { case List(outer) =>
+        outer.astChildren.isTypeDecl.nameExact("InnerA").size shouldBe 1
+        outer.astChildren.isTypeRef.size shouldBe 0
+      }
+      // Only the top-level Outer should produce a TYPE_REF (to capture global variables)
+      // and not the nested Inner.
+      cpg.typeRef.typeFullNameExact("Outer").size shouldBe 1
+      cpg.typeRef.typeFullNameExact("Outer.InnerA").size shouldBe 0
+      cpg.typeRef.typeFullNameExact("Outer.InnerB").size shouldBe 0
+    }
+
+    "not create TYPE_REF nodes under TYPE_DECL for nested classes" in {
+      val cpg = code(
+        """
+        |class A {
+        |  class B {
+        |    class C {
+        |      int x;
+        |    };
+        |    int y;
+        |  };
+        |  int z;
+        |};
+        |""".stripMargin,
+        "file.cpp"
+      )
+      inside(cpg.typeDecl.nameExact("A").l) { case List(a) =>
+        a.astChildren.isTypeRef.size shouldBe 0
+        inside(a.astChildren.isTypeDecl.nameExact("B").l) { case List(b) =>
+          b.astChildren.isTypeRef.size shouldBe 0
+          b.astChildren.isTypeDecl.nameExact("C").size shouldBe 1
+        }
+      }
+      cpg.typeRef.typeFullNameExact("A").size shouldBe 1
+      cpg.typeRef.typeFullNameExact("A.B").size shouldBe 0
+      cpg.typeRef.typeFullNameExact("A.B.C").size shouldBe 0
+    }
+
     "be correct for typedef struct" in {
       val cpg = code("""
         |typedef struct foo {
@@ -1087,11 +1315,11 @@ class AstCreationPassTests extends AstC2CpgSuite {
         x.name shouldBe "x"
         x.typeFullName shouldBe "int"
       }
-      cpg.typeDecl.nameExact("B").size shouldBe 1
+      cpg.typeDecl.nameExact("B") shouldBe empty // b is an instance of B
       inside(cpg.local.l) { case List(localA, localB) =>
         localA.name shouldBe "a"
         localA.typeFullName shouldBe "A"
-        localA.code shouldBe "struct A a"
+        localA.code shouldBe "struct A { int x; } a"
         localB.name shouldBe "b"
         localB.typeFullName shouldBe "B"
         localB.code shouldBe "struct B b"
@@ -1128,9 +1356,13 @@ class AstCreationPassTests extends AstC2CpgSuite {
       localMyOtherFs.order shouldBe 2
       localMyOtherFs.referencingIdentifiers.name.l shouldBe List("my_other_fs")
       val List(localMyFs) = cpg.local.nameExact("my_fs").l
-      localMyFs.order shouldBe 4
+      localMyFs.order shouldBe 3
       localMyFs.referencingIdentifiers.name.l shouldBe List("my_fs")
-      cpg.typeDecl.nameNot(NamespaceTraversal.globalNamespaceName).fullName.l.distinct shouldBe List("filesystem")
+      cpg.typeDecl.nameNot(NamespaceTraversal.globalNamespaceName).fullName.l shouldBe List(
+        "filesystem",
+        "my_open",
+        "main"
+      )
     }
 
     "be correct for typedef enum" in {
@@ -1153,6 +1385,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
       )
       inside(cpg.typeDecl("Foo").astChildren.isTypeDecl.l) { case List(bar) =>
         bar.name shouldBe "Bar"
+        bar.fullName shouldBe "Foo.Bar"
         bar.aliasTypeFullName shouldBe Option("Bar")
       }
     }
@@ -1183,7 +1416,9 @@ class AstCreationPassTests extends AstC2CpgSuite {
       )
       inside(cpg.call.nameExact(Operators.cast).l) { case List(call: Call) =>
         call.argument(2).code shouldBe "{ 1 }"
-        call.argument(1).code shouldBe "int"
+        val List(typeRef) = call.argument(1).isTypeRef.l
+        typeRef.typeFullName shouldBe "int"
+        typeRef.code shouldBe "int"
       }
     }
 
@@ -1198,7 +1433,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         "file.cpp"
       )
       inside(cpg.call.codeExact("static_assert ( a == 0 , \"not 0!\");").l) { case List(call: Call) =>
-        call.name shouldBe "static_assert"
+        call.name shouldBe "<operator>.staticAssert"
         call.argument(1).code shouldBe "a == 0"
         call.argument(2).code shouldBe "\"not 0!\""
       }
@@ -1246,16 +1481,16 @@ class AstCreationPassTests extends AstC2CpgSuite {
       inside(cpg.controlStructure.isTry.l) { case List(t) =>
         val List(tryBlock) = t.astChildren.isBlock.l
         tryBlock.order shouldBe 1
-        tryBlock.astChildren.isIdentifier.order(1).code.l shouldBe List("a")
+        tryBlock.astChildren.isIdentifier.order(1).code.l shouldBe List(s"${Defines.UnknownTag} a")
         val List(catchX, catchY, catchZ) = t.astChildren.isControlStructure.isCatch.l
         catchX.order shouldBe 2
-        catchX.ast.isIdentifier.code.l shouldBe List("b")
+        catchX.ast.isIdentifier.code.l shouldBe List(s"${Defines.UnknownTag} b")
         catchX.ast.isLocal.code.l shouldBe List("short x")
         catchY.order shouldBe 3
-        catchY.ast.isIdentifier.code.l shouldBe List("c")
+        catchY.ast.isIdentifier.code.l shouldBe List(s"${Defines.UnknownTag} c")
         catchY.ast.isLocal.code.l shouldBe List("int y")
         catchZ.order shouldBe 4
-        catchZ.ast.isIdentifier.code.l shouldBe List("d")
+        catchZ.ast.isIdentifier.code.l shouldBe List(s"${Defines.UnknownTag} d")
         catchZ.ast.isLocal.code.l shouldBe List("long z")
       }
     }
@@ -1290,20 +1525,35 @@ class AstCreationPassTests extends AstC2CpgSuite {
         """
         |class Foo {
         |public:
-        | Foo(int i){};
+        |  Foo(int i){};
+        |  class Bar {
+        |    public:
+        |      Bar(float j){};
+        |  };
         |};
         |Foo f1(0);
+        |Foo::Bar f2(0.0f);
       """.stripMargin,
         "file.cpp"
       )
-      cpg.typeDecl
-        .fullNameExact("Foo")
-        .l
-        .size shouldBe 1
-      inside(cpg.call.codeExact("f1(0)").l) { case List(call: Call) =>
-        call.name shouldBe "f1"
-        call.argument(1).code shouldBe "0"
-      }
+      val List(fooTypeDecl, barTypeDecl) =
+        cpg.typeDecl.nameNot(NamespaceTraversal.globalNamespaceName).sortBy(_.lineNumber).l
+      fooTypeDecl.name shouldBe "Foo"
+      barTypeDecl.name shouldBe "Bar"
+
+      barTypeDecl.astParent shouldBe fooTypeDecl
+
+      val List(fooConstructor) = fooTypeDecl.method.isConstructor.l
+      fooConstructor.fullName shouldBe "Foo.Foo:void(int)"
+
+      val List(barConstructor) = barTypeDecl.method.isConstructor.l
+      barConstructor.fullName shouldBe "Foo.Bar.Bar:void(float)"
+
+      cpg.call.codeExact("f1 = Foo.Foo(0)").name.l shouldBe List(Operators.assignment)
+      cpg.call.codeExact("f2 = Foo.Bar.Bar(0.0f)").name.l shouldBe List(Operators.assignment)
+
+      cpg.call.codeExact("Foo.Foo(0)").methodFullName.l shouldBe List("Foo.Foo:void(int)")
+      cpg.call.codeExact("Foo.Bar.Bar(0.0f)").methodFullName.l shouldBe List("Foo.Bar.Bar:void(float)")
     }
 
     "be correct for template class" in {
@@ -1355,14 +1605,14 @@ class AstCreationPassTests extends AstC2CpgSuite {
       """.stripMargin,
         "file.cpp"
       )
-      cpg.typeDecl
-        .fullNameExact("Foo")
-        .l
-        .size shouldBe 1
-      inside(cpg.call.codeExact("Foo{0}").l) { case List(call: Call) =>
-        call.name shouldBe "Foo"
-        call.argument(1).code shouldBe "{0}"
-      }
+      val List(fooTypeDecl) =
+        cpg.typeDecl.nameNot(NamespaceTraversal.globalNamespaceName).sortBy(_.lineNumber).l
+      fooTypeDecl.name shouldBe "Foo"
+      val List(fooConstructor) = fooTypeDecl.method.isConstructor.l
+      fooConstructor.fullName shouldBe "Foo.Foo:void(int)"
+      cpg.call.codeExact("x = Foo{0}").name.l shouldBe List(Operators.assignment)
+      cpg.call.codeExact("Foo{0}").methodFullName.l shouldBe List("Foo.Foo:void(int)")
+      cpg.call.codeExact("Foo{0}").argument.code.l shouldBe List("&<tmp>0", "0")
     }
 
     "be correct for method calls" in {
@@ -1425,10 +1675,11 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |      return end ? (int)(end - str) : max;
         |    }
         |""".stripMargin)
-      inside(cpg.call.nameExact(Operators.cast).astChildren.l) { case List(tpe: Unknown, call: Call) =>
+      inside(cpg.call.nameExact(Operators.cast).astChildren.l) { case List(tpe: TypeRef, call: Call) =>
         call.code shouldBe "end - str"
         call.argumentIndex shouldBe 2
         tpe.code shouldBe "int"
+        tpe.typeFullName shouldBe "int"
         tpe.argumentIndex shouldBe 1
       }
     }
@@ -1460,9 +1711,9 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |  return sizeof(int);
         |}
         |""".stripMargin)
-      inside(cpg.call.nameExact(Operators.sizeOf).argument(1).l) { case List(i: Identifier) =>
-        i.code shouldBe "int"
-        i.name shouldBe "int"
+      inside(cpg.call.nameExact(Operators.sizeOf).argument(1).l) { case List(t: TypeRef) =>
+        t.code shouldBe "int"
+        t.typeFullName shouldBe "int"
       }
     }
 
@@ -1481,12 +1732,50 @@ class AstCreationPassTests extends AstC2CpgSuite {
     }
 
     "be correct for type casts" in {
-      val cpg = code("""
-        |int trunc(long x) {
-        |  return (int) x;
+      val cpg = code(
+        """
+        |namespace A {
+        |  class Foo {}
         |}
-        |""".stripMargin)
-      cpg.call.nameExact(Operators.cast).argument.code.l shouldBe List("int", "x")
+        |namespace B {
+        |  class Bar {}
+        |}
+        |
+        |using namespace A;
+        |using namespace B;
+        |
+        |Bar cast(Foo f) {
+        |  return (Bar) f;
+        |}
+        |""".stripMargin,
+        "file.cpp"
+      )
+      val List(cast)    = cpg.call.nameExact(Operators.cast).l
+      val List(typeRef) = cast.argument(1).isTypeRef.l
+      typeRef.code shouldBe "Bar"
+      typeRef.typeFullName shouldBe "B.Bar"
+      val List(id) = cast.argument(2).start.isIdentifier.l
+      id.name shouldBe "f"
+      id.typeFullName shouldBe "A.Foo"
+    }
+
+    "be correct for a cast-like binary expression with an unknown type name" in {
+      // `T` is unknown and `U` is a typedef, so CDT resolves `(T)(U)&x` to the binary expression `T(U) & x`.
+      // Its ambiguity resolution leaves both operands without a file location; this must not fail the file.
+      val cpg = code("""
+          |typedef long U;
+          |void foo(int x) {
+          |  (T)(U)&x;
+          |}
+          |""".stripMargin)
+      val List(and) = cpg.method.nameExact("foo").ast.isCall.nameExact(Operators.and).l
+      and.code shouldBe "(T)(U)&x"
+      and.lineNumber shouldBe Some(4)
+      inside(and.argument.l) { case List(call: Call, x: Identifier) =>
+        call.name shouldBe Defines.OperatorPointerCall
+        call.astChildren.isIdentifier.name.l shouldBe List("T", "U")
+        x.name shouldBe "x"
+      }
     }
 
     "be correct for 'new' array" in {
@@ -1499,29 +1788,126 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin,
         "file.cpp"
       )
-      // TODO: "<operator>.new" is not part of Operators
-      cpg.call.nameExact("<operator>.new").code("new int\\[n\\]").argument.code("int").size shouldBe 1
+      val List(newCall)         = cpg.call.methodFullNameExact(Defines.OperatorNew).l
+      val List(constructorCall) = newCall.argument.isCall.l
+      constructorCall.code shouldBe "new int[n]"
+      constructorCall.methodFullName shouldBe Operators.alloc
+      constructorCall.typeFullName shouldBe Defines.Any
+      constructorCall.argument.code.l shouldBe List("int", "n")
     }
 
-    "be correct for 'new' with explicit identifier" in {
+    "be correct for 'placement new'" in {
       val cpg = code(
         """
         |void a() {
         |  char buf[80];
-        |  new (buf) string("hi");
+        |  new (buf) Foo("hi");
         |}
         |""".stripMargin,
         "file.cpp"
       )
-      // TODO: "<operator>.new" is not part of Operators
-      val List(newCall)         = cpg.call.nameExact("<operator>.new").l
-      val List(string, hi, buf) = newCall.argument.l
-      string.argumentIndex shouldBe 1
-      string.code shouldBe "string"
-      hi.argumentIndex shouldBe 2
-      hi.code shouldBe "\"hi\""
-      buf.argumentIndex shouldBe 3
-      buf.code shouldBe "buf"
+      val List(newCall)          = cpg.call.methodFullNameExact(Defines.OperatorNew).l
+      val List(constructorBlock) = newCall.argument.isBlock.l
+      constructorBlock.argumentIndex shouldBe 1
+      val List(allocAssignment, constructorCall) = constructorBlock.astChildren.isCall.l
+      allocAssignment.code shouldBe "<tmp>0 = <operator>.alloc"
+      constructorCall.code shouldBe """new (buf) Foo("hi")"""
+      constructorCall.methodFullName shouldBe "Foo.Foo:void(char[3])"
+      constructorCall.signature shouldBe "void(char[3])"
+      constructorCall.typeFullName shouldBe Defines.Void
+      constructorCall.argument.code.l shouldBe List("&<tmp>0", """"hi"""")
+      val List(buf) = newCall.argument.isIdentifier.l
+      buf.argumentIndex shouldBe 2
+      buf.typeFullName shouldBe "char[80]"
+    }
+
+    "be correct for externally defined constructor" in {
+      val cpg = code(
+        """
+          |class Foo {
+          |  public:
+          |    Foo(int i) {};
+          |};
+          |
+          |Foo::Foo(int i, int j) {};
+          |Bar::Bar(float x) {};
+          |
+          |void method() {
+          |   Foo f1(0);
+          |   Foo f2(0, 1);
+          |   Bar b1(0.0f);
+          |
+          |   Foo f3 = new Foo(0);
+          |   Foo f4 = new Foo(0, 1);
+          |   Bar b2 = new Bar(0.0f);
+          |}
+          |""".stripMargin,
+        "file.cpp"
+      )
+      val List(fileGlobalMethod) = cpg.method.fullNameExact("file.cpp:<global>").l
+      val List(fooTypeDecl)      = cpg.typeDecl.fullNameExact("Foo").l
+      val List(c1, c2, c3)       = cpg.method.isConstructor.l
+      c1.fullName shouldBe "Foo.Foo:void(int)"
+      c2.fullName shouldBe "Foo.Foo:void(int,int)"
+      c3.fullName shouldBe "Bar.Bar:void(float)"
+      c1.astIn.l shouldBe List(fooTypeDecl)
+      c2.astIn.l shouldBe List(fooTypeDecl)
+      c3.astIn.l shouldBe List(fileGlobalMethod)
+
+      val constructorCallElements = cpg.method.nameExact("method").block.astChildren.isCall.isAssignment.argument(2).l
+      val List(f1Block, f2Block, b1Block) = constructorCallElements.isBlock.l
+      val List(f3Call, f4Call, b2Call)    = constructorCallElements.isCall.l
+
+      f3Call.methodFullName shouldBe Defines.OperatorNew
+      f4Call.methodFullName shouldBe Defines.OperatorNew
+      b2Call.methodFullName shouldBe Defines.OperatorNew
+
+      val List(f1ConstructorCall) = f1Block.astChildren.isCall.nameNot(Operators.assignment).l
+      f1ConstructorCall.methodFullName shouldBe "Foo.Foo:void(int)"
+      val List(f2ConstructorCall) = f2Block.astChildren.isCall.nameNot(Operators.assignment).l
+      f2ConstructorCall.methodFullName shouldBe "Foo.Foo:void(int,int)"
+      val List(b1ConstructorCall) = b1Block.astChildren.isCall.nameNot(Operators.assignment).l
+      b1ConstructorCall.methodFullName shouldBe "Bar.Bar:void(float)"
+
+      val List(f3ConstructorCall) = f3Call.argument.isBlock.astChildren.isCall.nameNot(Operators.assignment).l
+      f3ConstructorCall.methodFullName shouldBe "Foo.Foo:void(int)"
+      val List(f4ConstructorCall) = f4Call.argument.isBlock.astChildren.isCall.nameNot(Operators.assignment).l
+      f4ConstructorCall.methodFullName shouldBe "Foo.Foo:void(int,int)"
+      val List(b2ConstructorCall) = b2Call.argument.isBlock.astChildren.isCall.nameNot(Operators.assignment).l
+      b2ConstructorCall.methodFullName shouldBe "Bar.Bar:void(float)"
+    }
+
+    "be correct for externally defined constructor with class in different file" in {
+      val cpg = code(
+        """
+          |Bar::Bar(float x) {};
+          |
+          |void method() {
+          |   Bar b1(0.0f);
+          |   Bar b2 = new Bar(0.0f);
+          |}
+          |""".stripMargin,
+        "file.cpp"
+      ).moreCode("class Bar {};", "Bar.cpp")
+      val List(barTypeDecl) = cpg.typeDecl.fullNameExact("Bar").l
+      val List(c)           = cpg.method.isConstructor.l
+      c.fullName shouldBe "Bar.Bar:void(float)"
+      c.astIn.l shouldBe List(barTypeDecl)
+
+      val constructorElements = cpg.method.nameExact("method").block.astChildren.isCall.argument(2).l
+
+      val List(b1ConstructorCall) = constructorElements.isBlock.astChildren.isCall.nameNot(Operators.assignment).l
+      b1ConstructorCall.methodFullName shouldBe "Bar.Bar:void(float)"
+
+      val List(b2ConstructorCall) = constructorElements.isCall
+        .nameExact(Defines.OperatorNew)
+        .astChildren
+        .isBlock
+        .astChildren
+        .isCall
+        .nameNot(Operators.assignment)
+        .l
+      b2ConstructorCall.methodFullName shouldBe "Bar.Bar:void(float)"
     }
 
     // for: https://github.com/ShiftLeftSecurity/codepropertygraph/issues/1526
@@ -1561,11 +1947,11 @@ class AstCreationPassTests extends AstC2CpgSuite {
       inside(cpg.local.l) { case List(bufA: Local, bufB: Local) =>
         bufA.typeFullName shouldBe "char[256]"
         bufA.name shouldBe "bufA"
-        bufA.code shouldBe "char[256] bufA"
+        bufA.code shouldBe "char bufA[256]"
 
         bufB.typeFullName shouldBe "char[1+2]"
         bufB.name shouldBe "bufB"
-        bufB.code shouldBe "char[1+2] bufB"
+        bufB.code shouldBe "char bufB[1+2]"
       }
     }
 
@@ -1700,23 +2086,24 @@ class AstCreationPassTests extends AstC2CpgSuite {
         | .b = methodB,
         |};""".stripMargin)
       val List(methodA, methodB) = cpg.method.nameNot("<global>").l
-      inside(cpg.call.nameExact(Operators.arrayInitializer).assignment.l) { case List(callA: Call, callB: Call) =>
-        val argsAIdent = callA.argument(1).asInstanceOf[Identifier]
-        val argARef    = callA.argument(2).asInstanceOf[MethodRef]
-        argsAIdent.order shouldBe 1
-        argsAIdent.name shouldBe "a"
-        argsAIdent.code shouldBe "a"
-        argARef.order shouldBe 2
-        argARef.methodFullName shouldBe methodA.fullName
-        argARef.typeFullName shouldBe methodA.methodReturn.typeFullName
-        val argsBIdent = callB.argument(1).asInstanceOf[Identifier]
-        val argBRef    = callB.argument(2).asInstanceOf[MethodRef]
-        argsBIdent.order shouldBe 1
-        argsBIdent.code shouldBe "b"
-        argsBIdent.name shouldBe "b"
-        argBRef.order shouldBe 2
-        argBRef.methodFullName shouldBe methodB.fullName
-        argBRef.typeFullName shouldBe methodB.methodReturn.typeFullName
+      inside(cpg.call.nameExact(Operators.arrayInitializer).argument.isBlock.astChildren.l) {
+        case List(callA: Call, callB: Call) =>
+          val argsAIdent = callA.argument(1).asInstanceOf[Identifier]
+          val argARef    = callA.argument(2).asInstanceOf[MethodRef]
+          argsAIdent.order shouldBe 1
+          argsAIdent.name shouldBe "a"
+          argsAIdent.code shouldBe "a"
+          argARef.order shouldBe 2
+          argARef.methodFullName shouldBe methodA.fullName
+          argARef.typeFullName shouldBe methodA.methodReturn.typeFullName
+          val argsBIdent = callB.argument(1).asInstanceOf[Identifier]
+          val argBRef    = callB.argument(2).asInstanceOf[MethodRef]
+          argsBIdent.order shouldBe 1
+          argsBIdent.code shouldBe "b"
+          argsBIdent.name shouldBe "b"
+          argBRef.order shouldBe 2
+          argBRef.methodFullName shouldBe methodB.fullName
+          argBRef.typeFullName shouldBe methodB.methodReturn.typeFullName
       }
     }
 
@@ -1730,7 +2117,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
           |""".stripMargin)
       val List(methodA) = cpg.method.fullNameExact("getuid").l
       val List(methodB) = cpg.method.fullNameExact("someFunction").l
-      val List(methodC) = cpg.method.fullNameExact("checkFunctionPointerComparison").l
+      cpg.method.fullNameExact("checkFunctionPointerComparison").size shouldBe 1
       inside(cpg.call.nameExact(Operators.equals).l) { case List(callA: Call, callB: Call) =>
         val getuidRef = callA.argument(1).asInstanceOf[MethodRef]
         getuidRef.methodFullName shouldBe methodA.fullName
@@ -1745,8 +2132,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
       val cpg = code("""
         |bool x[2] = { TRUE, FALSE };
         |""".stripMargin)
-      inside(cpg.local.l) { case List(x) =>
-        x.name shouldBe "x"
+      inside(cpg.local.nameExact("x").l) { case List(x) =>
         x.typeFullName shouldBe "bool[2]"
       }
     }
@@ -1814,6 +2200,10 @@ class AstCreationPassTests extends AstC2CpgSuite {
     "be correct for 'new' object" in {
       val cpg = code(
         """
+        |class Foo {
+        |  public:
+        |    Foo(int i, int j) {};
+        |}
         |Foo* alloc(int n) {
         |   Foo* foo = new Foo(n, 42);
         |   return foo;
@@ -1821,7 +2211,13 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.nameExact("<operator>.new").codeExact("new Foo(n, 42)").argument.code("Foo").size shouldBe 1
+      val List(constructorCall) =
+        cpg.call.methodFullName(Defines.OperatorNew).argument.isBlock.astChildren.isCall.codeExact("new Foo(n, 42)").l
+      constructorCall.methodFullName shouldBe "Foo.Foo:void(int,int)"
+      constructorCall.signature shouldBe "void(int,int)"
+      constructorCall.typeFullName shouldBe Defines.Void
+      constructorCall.argument.code.l shouldBe List("&<tmp>0", "n", "42")
+      cpg.typeDecl.nameExact("Foo").astChildren.isMethod.isConstructor.fullName.l shouldBe List("Foo.Foo:void(int,int)")
     }
 
     "be correct for simple 'delete'" in {
@@ -1851,53 +2247,81 @@ class AstCreationPassTests extends AstC2CpgSuite {
     "be correct for const_cast" in {
       val cpg = code(
         """
-        |void foo() {
+        |void foo(float n) {
         |  int y = const_cast<int>(n);
         |  return;
         |}
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.nameExact(Operators.cast).codeExact("const_cast<int>(n)").argument.code.l shouldBe List("int", "n")
+      val List(cast) = cpg.call.nameExact(Operators.cast).l
+      cast.code shouldBe "const_cast<int>(n)"
+      val List(typeRef) = cast.argument(1).isTypeRef.l
+      typeRef.code shouldBe "int"
+      typeRef.typeFullName shouldBe "int"
+      val List(id) = cast.argument(2).start.isIdentifier.l
+      id.name shouldBe "n"
+      id.typeFullName shouldBe "float"
     }
 
     "be correct for static_cast" in {
       val cpg = code(
         """
-        |void foo() {
+        |void foo(float n) {
         |  int y = static_cast<int>(n);
         |  return;
         |}
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.nameExact(Operators.cast).codeExact("static_cast<int>(n)").argument.code.l shouldBe List("int", "n")
+      val List(cast) = cpg.call.nameExact(Operators.cast).l
+      cast.code shouldBe "static_cast<int>(n)"
+      val List(typeRef) = cast.argument(1).isTypeRef.l
+      typeRef.code shouldBe "int"
+      typeRef.typeFullName shouldBe "int"
+      val List(id) = cast.argument(2).start.isIdentifier.l
+      id.name shouldBe "n"
+      id.typeFullName shouldBe "float"
     }
 
     "be correct for dynamic_cast" in {
       val cpg = code(
         """
-        |void foo() {
+        |void foo(float n) {
         |  int y = dynamic_cast<int>(n);
         |  return;
         |}
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.nameExact(Operators.cast).codeExact("dynamic_cast<int>(n)").argument.code.l shouldBe List("int", "n")
+      val List(cast) = cpg.call.nameExact(Operators.cast).l
+      cast.code shouldBe "dynamic_cast<int>(n)"
+      val List(typeRef) = cast.argument(1).isTypeRef.l
+      typeRef.code shouldBe "int"
+      typeRef.typeFullName shouldBe "int"
+      val List(id) = cast.argument(2).start.isIdentifier.l
+      id.name shouldBe "n"
+      id.typeFullName shouldBe "float"
     }
 
     "be correct for reinterpret_cast" in {
       val cpg = code(
         """
-        |void foo() {
+        |void foo(float n) {
         |  int y = reinterpret_cast<int>(n);
         |  return;
         |}
         |""".stripMargin,
         "file.cpp"
       )
-      cpg.call.nameExact(Operators.cast).codeExact("reinterpret_cast<int>(n)").argument.code.l shouldBe List("int", "n")
+      val List(cast) = cpg.call.nameExact(Operators.cast).l
+      cast.code shouldBe "reinterpret_cast<int>(n)"
+      val List(typeRef) = cast.argument(1).isTypeRef.l
+      typeRef.code shouldBe "int"
+      typeRef.typeFullName shouldBe "int"
+      val List(id) = cast.argument(2).start.isIdentifier.l
+      id.name shouldBe "n"
+      id.typeFullName shouldBe "float"
     }
 
     "be correct for designated initializers in plain C" in {
@@ -2010,10 +2434,10 @@ class AstCreationPassTests extends AstC2CpgSuite {
       val cpg = code(
         """
         |class Point3D {
-        | public:
-        |  int x;
-        |  int y;
-        |  int z;
+        |  public:
+        |    int x;
+        |    int y;
+        |    int z;
         |};
         |
         |void foo() {
@@ -2022,32 +2446,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
       """.stripMargin,
         "test.cpp"
       )
-      inside(cpg.call.code("point3D \\{ .x = 1, .y = 2, .z = 3 \\}").l) { case List(call: Call) =>
-        call.name shouldBe "point3D"
-        call.methodFullName shouldBe "point3D"
-        inside(call.astChildren.l) { case List(initCall: Call) =>
-          initCall.code shouldBe "{ .x = 1, .y = 2, .z = 3 }"
-          initCall.name shouldBe Operators.arrayInitializer
-          initCall.methodFullName shouldBe Operators.arrayInitializer
-          val children = initCall.astMinusRoot.isCall.l
-          val args     = initCall.argument.astChildren.l
-          inside(children) { case List(call1, call2, call3) =>
-            call1.code shouldBe ".x = 1"
-            call1.name shouldBe Operators.assignment
-            call1.astMinusRoot.code.l shouldBe List("x", "1")
-            call1.argument.code.l shouldBe List("x", "1")
-            call2.code shouldBe ".y = 2"
-            call2.name shouldBe Operators.assignment
-            call2.astMinusRoot.code.l shouldBe List("y", "2")
-            call2.argument.code.l shouldBe List("y", "2")
-            call3.code shouldBe ".z = 3"
-            call3.name shouldBe Operators.assignment
-            call3.astMinusRoot.code.l shouldBe List("z", "3")
-            call3.argument.code.l shouldBe List("z", "3")
-          }
-          children shouldBe args
-        }
-      }
+      cpg.assignment.code.sorted.l shouldBe List("point3D.x = 1", "point3D.y = 2", "point3D.z = 3")
     }
 
     "be correct for call with pack expansion" in {
@@ -2131,7 +2530,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         | }
       """.stripMargin)
       cpg.method.nameExact("method").lineNumber.l shouldBe List(6)
-      cpg.method.nameExact("method").block.assignment.lineNumber.l shouldBe List(8)
+      cpg.method.nameExact("method").body.expressionDown.isCall.lineNumber.l shouldBe List(8)
     }
 
     // for https://github.com/ShiftLeftSecurity/codepropertygraph/issues/1321
@@ -2156,15 +2555,15 @@ class AstCreationPassTests extends AstC2CpgSuite {
 
     // for https://github.com/ShiftLeftSecurity/codepropertygraph/issues/1321
     "have correct line/column numbers on all platforms" in {
-      val windowsNewline = "\r\n"
+      val windowsNewline      = "\r\n"
       val windowsFixture: Cpg = code(
         s"void offset() {${windowsNewline}char * data = NULL;${windowsNewline}memset(data, 'A', 100-1); /* fill with 'A's */${windowsNewline}data = dataBuffer;$windowsNewline}"
       )
-      val macNewline = "\r"
+      val macNewline      = "\r"
       val macFixture: Cpg = code(
         s"void offset() {${macNewline}char * data = NULL;${macNewline}memset(data, 'A', 100-1); /* fill with 'A's */${macNewline}data = dataBuffer;$macNewline}"
       )
-      val linuxNewline = "\n"
+      val linuxNewline      = "\n"
       val linuxFixture: Cpg = code(
         s"void offset() {${linuxNewline}char * data = NULL;${linuxNewline}memset(data, 'A', 100-1); /* fill with 'A's */${linuxNewline}data = dataBuffer;$linuxNewline}"
       )
@@ -2208,7 +2607,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
       method.name shouldBe "x"
       method.fullName shouldBe "Foo.x:char(*(*)[5])()()"
       method.code shouldBe "char (*(*x())[5])()"
-      method.signature shouldBe "char()"
+      method.signature shouldBe "char(*(*)[5])()()"
     }
 
     "be consistent with pointer types" in {
@@ -2246,7 +2645,7 @@ class AstCreationPassTests extends AstC2CpgSuite {
         |""".stripMargin)
       val List(bufLocal) = cpg.local.nameExact("buf").l
       bufLocal.typeFullName shouldBe "char[0x111111111111111]"
-      bufLocal.code shouldBe "char[0x111111111111111] buf"
+      bufLocal.code shouldBe "char buf[BUFSIZE]"
       val List(bufAllocCall) = cpg.call.nameExact(Operators.alloc).l
       bufAllocCall.code shouldBe "buf[BUFSIZE]"
       bufAllocCall.argument.ast.isLiteral.code.l shouldBe List("0x111111111111111")

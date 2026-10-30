@@ -2,16 +2,10 @@ package io.joern.pysrc2cpg.dataflow
 
 import io.joern.dataflowengineoss.DefaultSemantics
 import io.joern.dataflowengineoss.language.toExtendedCfgNode
-import io.joern.dataflowengineoss.semanticsloader.{
-  FlowMapping,
-  FlowSemantic,
-  NilSemantics,
-  NoCrossTaintSemantics,
-  NoSemantics,
-  PassThroughMapping
-}
+import io.joern.dataflowengineoss.semanticsloader.{FlowSemantic, NilSemantics, NoCrossTaintSemantics, NoSemantics}
+import io.joern.dataflowengineoss.semanticsloader.FlowPath.{FlowMapping, PassThroughMapping}
 import io.joern.pysrc2cpg.testfixtures.PySrc2CpgFixture
-import io.shiftleft.codepropertygraph.generated.Cpg
+import io.shiftleft.codepropertygraph.generated.{Cpg, Operators}
 import io.shiftleft.codepropertygraph.generated.nodes.{Literal, Member, Method}
 import io.shiftleft.semanticcpg.language.*
 
@@ -479,8 +473,7 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
         |    y['B'] = x['A']
         |    sink(y)
         |""".stripMargin)
-
-    val sources = cpg.identifier("x").l
+    val sources = cpg.assignment.target.isIdentifier.nameExact("y").l
     val sinks   = cpg.call("sink").argument.l
     val flows   = sinks.reachableByFlows(sources)
     flows.size shouldBe 1
@@ -499,8 +492,8 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
         |       return sink(d)
         |""".stripMargin)
 
-    val sources = cpg.call("<operator>.indexAccess").argument.isIdentifier.l
-    val sinks   = cpg.call("sink").l
+    val sources = cpg.call(Operators.indexAccess).where(_.code(".*['(x|y|z)'].*")).l
+    val sinks   = cpg.call("sink").argument.l
     sinks.reachableByFlows(sources).size should not be 0
   }
 
@@ -575,7 +568,7 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
         "models.py"
       )
 
-    val List(method: Method) = cpg.identifier.name("foo").inAssignment.source.isCall.callee.l
+    val List(method: Method) = cpg.identifier.name("foo").inCall.isAssignment.source.isCall.callee.l
     method.fullName shouldBe "models.py:<module>.Foo.__init__"
     val List(typeDeclFullName) = method.typeDecl.fullName.l
     typeDeclFullName shouldBe "models.py:<module>.Foo"
@@ -594,7 +587,7 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
         "models.py"
       )
 
-    val List(method: Method) = cpg.identifier.name("foo").inAssignment.source.isCall.callee.l
+    val List(method: Method) = cpg.identifier.name("foo").inCall.isAssignment.source.isCall.callee.l
     method.fullName shouldBe "models.py:<module>.Foo.__init__"
     val List(typeDeclFullName) = method.typeDecl.fullName.l
     typeDeclFullName shouldBe "models.py:<module>.Foo"
@@ -735,7 +728,7 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
     val sink       = cpg.call("print").argument(1)
     val List(flow) = sink.reachableByFlows(source).map(flowToResultPairs).l
 
-    flow shouldBe List(("tmp0[\"Property1\"] = \"foo\"", 2), ("baz = import(p1.bar, baz)", 2), ("print(baz)", 3))
+    flow shouldBe List(("tmp0[\"Property1\"] = \"foo\"", 2), ("baz = from p1.bar import baz", 2), ("print(baz)", 3))
   }
 
   "flow from literal in an imported method-returned dictionary to `print`" in {
@@ -779,7 +772,7 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
     def sink       = cpg.call("print").argument.argumentIndex(1)
     def source     = cpg.literal("\"XYZ\"")
     val List(flow) = sink.reachableByFlows(source).map(flowToResultPairs).l
-    flow shouldBe List(("FOOBAR = \"XYZ\"", 2), ("FOOBAR = import(models, FOOBAR)", 2), ("print(FOOBAR)", 3))
+    flow shouldBe List(("FOOBAR = \"XYZ\"", 2), ("FOOBAR = from models import FOOBAR", 2), ("print(FOOBAR)", 3))
   }
 
   "flow from global variable defined in imported file and used inside a method as argument to `print`" in {
@@ -798,7 +791,7 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
     def sink       = cpg.call("print").argument.argumentIndex(1)
     def source     = cpg.literal("\"XYZ\"")
     val List(flow) = sink.reachableByFlows(source).map(flowToResultPairs).l
-    flow shouldBe List(("FOOBAR = \"XYZ\"", 2), ("FOOBAR = import(models, FOOBAR)", 2), ("print(FOOBAR)", 4))
+    flow shouldBe List(("FOOBAR = \"XYZ\"", 2), ("FOOBAR = from models import FOOBAR", 2), ("print(FOOBAR)", 4))
   }
 
   "flow from global variable defined in imported file and used as argument to another module's imported method" in {
@@ -818,7 +811,11 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
     def sink       = cpg.call("doThing").argument.argumentIndex(1)
     def source     = cpg.literal("\"XYZ\"")
     val List(flow) = sink.reachableByFlows(source).map(flowToResultPairs).l
-    flow shouldBe List(("FOOBAR = \"XYZ\"", 2), ("FOOBAR = import(models, FOOBAR)", 3), ("service.doThing(FOOBAR)", 5))
+    flow shouldBe List(
+      ("FOOBAR = \"XYZ\"", 2),
+      ("FOOBAR = from models import FOOBAR", 3),
+      ("service.doThing(FOOBAR)", 5)
+    )
   }
 
   "flow from global variable defined in imported file and used as field access to `print`" in {
@@ -836,7 +833,7 @@ class DataFlowTests extends PySrc2CpgFixture(withOssDataflow = true) {
     def sink       = cpg.call("print").argument.argumentIndex(1)
     def source     = cpg.literal("\"XYZ\"")
     val List(flow) = sink.reachableByFlows(source).map(flowToResultPairs).l
-    flow shouldBe List(("FOOBAR = \"XYZ\"", 2), ("models = import(, models)", 2), ("print(models.FOOBAR)", 3))
+    flow shouldBe List(("FOOBAR = \"XYZ\"", 2), ("models = import models", 2), ("print(models.FOOBAR)", 3))
   }
 
   "flows through nested try-except structures" in {
@@ -1242,9 +1239,9 @@ class RegexDefinedFlowsDataFlowTests
         |print(Foo.func())
         |""".stripMargin)
     "be found" in {
-      val src = cpg.identifier("Foo").l
+      val src = cpg.call("func").receiver.l
       val snk = cpg.call("print").argument(1).l
-      snk.reachableByFlows(src).size shouldBe 3
+      snk.reachableByFlows(src).size shouldBe 1
     }
   }
   "Import statement with method ref sample four" in {

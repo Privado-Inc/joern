@@ -68,7 +68,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
     val constructorNode =
       methodNode(ctx, name, code, fullName, None, relativeFilename, Option(typeDecl.label), Option(typeDecl.fullName))
     val thisParam = createMethodParameterIn("this", None, None, typeDecl.fullName)
-    val params =
+    val params    =
       thisParam +: fields.map(m => createMethodParameterIn(m.name, None, None, m.typeFullName))
     val assignments = fields.map { m =>
       val thisNode        = createThisIdentifier(ctx)
@@ -89,7 +89,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
     // TODO test for this is pending due to lack of understanding to generate an example
     val astExprOfCommand = astForExpressionOrCommand(ctx.classDefinition().expressionOrCommand())
     val astBodyStatement = astForBodyStatementContext(ctx.classDefinition().bodyStatement())
-    val blockNode = NewBlock()
+    val blockNode        = NewBlock()
       .code(text(ctx))
     val bodyBlockAst = blockAst(blockNode, astBodyStatement.toList)
     astExprOfCommand ++ Seq(bodyBlockAst)
@@ -101,7 +101,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
     if (className != Defines.Any) {
       classStack.push(className)
 
-      val fullName = classStack.reverse.mkString(pathSep)
+      val fullName       = classStack.reverse.mkString(pathSep)
       val namespaceBlock = NewNamespaceBlock()
         .name(className)
         .fullName(fullName)
@@ -135,7 +135,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
     val classTerminalNode = ctx.CONSTANT_IDENTIFIER()
 
     if (ctx.primary() != null) {
-      val primaryAst = astForPrimaryContext(ctx.primary())
+      val primaryAst     = astForPrimaryContext(ctx.primary())
       val moduleNameNode = primaryAst.head.nodes
         .filter(node => node.isInstanceOf[NewIdentifier])
         .head
@@ -149,13 +149,16 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
 
   def membersFromStatementAsts(ast: Ast): Seq[Ast] =
     ast.nodes
-      .collect { case i: NewIdentifier if i.name.startsWith("@") || i.name.isAllUpperCase => i }
+      .collect {
+        case i: NewIdentifier if i.name.startsWith("@") || i.name.forall(char => char.isUpper || !char.isLetter) => i
+      }
       .map { i =>
-        val code = ast.root.collect { case c: NewCall => c.code }.getOrElse(i.name)
-        val modifierType = i.name match
-          case x if x.startsWith("@@") => ModifierTypes.STATIC
-          case x if x.isAllUpperCase   => ModifierTypes.FINAL
-          case _                       => ModifierTypes.VIRTUAL
+        val code         = ast.root.collect { case c: NewCall => c.code }.getOrElse(i.name)
+        val modifierType = i.name match {
+          case x if x.startsWith("@@")                               => ModifierTypes.STATIC
+          case x if x.forall(char => char.isUpper || !char.isLetter) => ModifierTypes.FINAL
+          case _                                                     => ModifierTypes.VIRTUAL
+        }
         val modifierAst = Ast(NewModifier().modifierType(modifierType))
         Ast(
           NewMember()
@@ -185,16 +188,17 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
   private def retrieveAndGenerateClassChildren(classCtx: BodyStatementContext, rootStatements: Seq[Ast]): Seq[Ast] = {
     val (memberLikeStmts, blockStmts) = rootStatements
       .flatMap { ast =>
-        ast.root match
+        ast.root match {
           case Some(_: NewMethod)                                 => Seq(ast)
           case Some(x: NewCall) if x.name == Operators.assignment => Seq(ast) ++ membersFromStatementAsts(ast)
           case _                                                  => Seq(ast)
+        }
       }
-      .partition(_.root match
+      .partition(_.root match {
         case Some(_: NewMethod) => true
         case Some(_: NewMember) => true
         case _                  => false
-      )
+      })
 
     val methodStmts = memberLikeStmts.filter(_.root.exists(_.isInstanceOf[NewMethod]))
     val memberNodes = memberLikeStmts.flatMap(_.root).collect { case m: NewMember => m }
@@ -206,9 +210,10 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
           .code(code)
           .typeFullName(Defines.Any)
       }).toList.distinctBy(_.name).map { m =>
-        val modifierType = m.name match
+        val modifierType = m.name match {
           case x if x.startsWith("@@") => ModifierTypes.STATIC
           case _                       => ModifierTypes.VIRTUAL
+        }
         val modifierAst = Ast(NewModifier().modifierType(modifierType))
         Ast(m).withChild(modifierAst)
       }
@@ -216,7 +221,7 @@ trait AstForTypesCreator(implicit withSchemaValidation: ValidationMode) { this: 
     // Create class initialization method to host all field initializers
     val classInitMethodAst = if (blockStmts.nonEmpty) {
       val classInitFullName = (classStack.reverse :+ XDefines.StaticInitMethodName).mkString(pathSep)
-      val classInitMethod = methodNode(
+      val classInitMethod   = methodNode(
         classCtx,
         XDefines.StaticInitMethodName,
         XDefines.StaticInitMethodName,

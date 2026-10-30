@@ -1,21 +1,21 @@
 package io.joern.swiftsrc2cpg.astcreation
 
 import io.joern.swiftsrc2cpg.parser.SwiftNodeSyntax.*
-import io.joern.x2cpg.Ast
-import io.joern.x2cpg.ValidationMode
+import io.joern.x2cpg.{Ast, ValidationMode}
 import io.joern.x2cpg.datastructures.Stack.*
 import io.joern.x2cpg.frontendspecific.swiftsrc2cpg.Defines
-import io.shiftleft.codepropertygraph.generated.nodes.File.PropertyDefaults
-import io.shiftleft.codepropertygraph.generated.DispatchTypes
-import io.shiftleft.codepropertygraph.generated.Operators
+import io.shiftleft.codepropertygraph.generated.{Operators, PropertyDefaults}
 
 trait AstForSyntaxCollectionCreator(implicit withSchemaValidation: ValidationMode) {
   this: AstCreator =>
 
   protected def astForListSyntaxChildren(node: SwiftNode, children: Seq[SwiftNode]): Ast = {
     children.toList match {
-      case Nil         => Ast()
-      case head :: Nil => astForNodeWithFunctionReference(head)
+      case Nil =>
+        val blockNode_ = blockNode(node, PropertyDefaults.Code, Defines.Any)
+        blockAst(blockNode_, List.empty)
+      case head :: Nil =>
+        astForNode(head)
       case elements =>
         val blockNode_ = blockNode(node, PropertyDefaults.Code, Defines.Any)
         scope.pushNewBlockScope(blockNode_)
@@ -53,7 +53,10 @@ trait AstForSyntaxCollectionCreator(implicit withSchemaValidation: ValidationMod
   )
 
   private def astForCodeBlockItemListSyntax(node: CodeBlockItemListSyntax): Ast = {
-    astForListSyntaxChildren(node, node.children)
+    // Extension declarations are processed after all other items. `partition` keeps the original order within
+    // each group.
+    val (extensions, others) = node.children.partition(_.item.isInstanceOf[ExtensionDeclSyntax])
+    astForListSyntaxChildren(node, others ++ extensions)
   }
 
   private def astForCompositionTypeElementListSyntax(node: CompositionTypeElementListSyntax): Ast = notHandledYet(node)
@@ -111,7 +114,9 @@ trait AstForSyntaxCollectionCreator(implicit withSchemaValidation: ValidationMod
     astForListSyntaxChildren(node, node.children)
   }
 
-  private def astForObjCSelectorPieceListSyntax(node: ObjCSelectorPieceListSyntax): Ast     = notHandledYet(node)
+  private def astForObjCSelectorPieceListSyntax(node: ObjCSelectorPieceListSyntax): Ast =
+    node.children.headOption.map(astForNode).getOrElse(Ast())
+
   private def astForPatternBindingListSyntax(node: PatternBindingListSyntax): Ast           = notHandledYet(node)
   private def astForPlatformVersionItemListSyntax(node: PlatformVersionItemListSyntax): Ast = notHandledYet(node)
   private def astForPrecedenceGroupAttributeListSyntax(node: PrecedenceGroupAttributeListSyntax): Ast = notHandledYet(
@@ -121,29 +126,27 @@ trait AstForSyntaxCollectionCreator(implicit withSchemaValidation: ValidationMod
   private def astForPrimaryAssociatedTypeListSyntax(node: PrimaryAssociatedTypeListSyntax): Ast = notHandledYet(node)
 
   private def astForSimpleStringLiteralSegmentListSyntax(node: SimpleStringLiteralSegmentListSyntax): Ast = {
-    node.children match {
-      case child :: Nil => astForNodeWithFunctionReference(child)
-      case children =>
-        val stringFormatCall = callNode(node, code(node), Operators.formatString, DispatchTypes.STATIC_DISPATCH)
-        val childrenAsts     = children.map(astForNodeWithFunctionReference)
-        setArgumentIndices(childrenAsts)
-        callAst(stringFormatCall, childrenAsts)
-    }
+    createAstForStringLiteralSegmentListSyntax(node, node.children)
   }
 
   private def astForSpecializeAttributeArgumentListSyntax(node: SpecializeAttributeArgumentListSyntax): Ast = {
     Ast(literalNode(node, code(node), Option(Defines.String)))
   }
 
-  private def astForStringLiteralSegmentListSyntax(node: StringLiteralSegmentListSyntax): Ast = {
-    node.children match {
-      case child :: Nil => astForNodeWithFunctionReference(child)
-      case children =>
-        val stringFormatCall = callNode(node, code(node), Operators.formatString, DispatchTypes.STATIC_DISPATCH)
-        val childrenAsts     = children.map(astForNodeWithFunctionReference)
-        setArgumentIndices(childrenAsts)
+  private def createAstForStringLiteralSegmentListSyntax(node: SwiftNode, children: Seq[SwiftNode]): Ast = {
+    children match {
+      case child :: Nil => astForNode(child)
+      case children     =>
+        val tpe              = Defines.String
+        val op               = Operators.formatString
+        val stringFormatCall = createStaticCallNode(node, code(node), op, op, tpe)
+        val childrenAsts     = children.map(astForNode)
         callAst(stringFormatCall, childrenAsts)
     }
+  }
+
+  private def astForStringLiteralSegmentListSyntax(node: StringLiteralSegmentListSyntax): Ast = {
+    createAstForStringLiteralSegmentListSyntax(node, node.children)
   }
 
   private def astForSwitchCaseItemListSyntax(node: SwitchCaseItemListSyntax): Ast = {
@@ -154,8 +157,7 @@ trait AstForSyntaxCollectionCreator(implicit withSchemaValidation: ValidationMod
     val blockNode_ = blockNode(node, PropertyDefaults.Code, Defines.Any)
     scope.pushNewBlockScope(blockNode_)
     localAstParentStack.push(blockNode_)
-    val asts = node.children.toList.flatMap(astsForSwitchCase)
-    setArgumentIndices(asts)
+    val asts = node.children.toList.flatMap(astsForSwitchCase(_, None))
     localAstParentStack.pop()
     scope.popScope()
     blockAst(blockNode_, asts)

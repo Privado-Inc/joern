@@ -1,21 +1,21 @@
 package io.joern.x2cpg.astgen
 
-import better.files.File
 import com.typesafe.config.ConfigFactory
-import io.joern.x2cpg.utils.Environment.ArchitectureType.ArchitectureType
-import io.joern.x2cpg.utils.Environment.OperatingSystemType.OperatingSystemType
-import io.joern.x2cpg.utils.{Environment, ExternalCommand}
+import io.joern.x2cpg.astgen.AstGenRunner.AstGenProgramMetaData
+import io.joern.x2cpg.utils.Environment.{ArchitectureType, OperatingSystemType}
+import io.joern.x2cpg.utils.{Environment, JoernRunfilesLocator}
 import io.joern.x2cpg.{SourceFiles, X2CpgConfig}
+import io.shiftleft.semanticcpg.utils.ExternalCommand
 import org.slf4j.LoggerFactory
 import versionsort.VersionHelper
 
 import java.net.URL
-import java.nio.file.Paths
+import java.nio.file.{Files, Path, Paths}
 import scala.util.{Failure, Success, Try}
 
 object AstGenRunner {
 
-  private val logger = LoggerFactory.getLogger(getClass)
+  private val logger = LoggerFactory.getLogger(classOf[AstGenRunner])
 
   trait AstGenRunnerResult {
     def parsedFiles: List[String]
@@ -36,44 +36,51 @@ object AstGenRunner {
     *   the prefix of the executable's respective configuration path.
     * @param multiArchitectureBuilds
     *   whether there is a binary for specific architectures or not.
-    * @param packagePath
-    *   the code path for the frontend.
+    * @param binEnvVar
+    *   optional environment variable that may point to a user-provided binary location, e.g. `ASTGEN_BIN`.
+    * @param versionFlag
+    *   the CLI flag used to query the binary's version (or any flag whose successful exit indicates a working binary).
+    * @param skipVersionComparison
+    *   if true, only the successful exit of the version probe is required - the output is not compared against the
+    *   configured version. Useful for binaries that do not expose a comparable version string.
+    * @param versionConfigKey
+    *   optional override for the `application.conf` key holding the required binary version. Defaults to
+    *   `${configPrefix}.${name}_version` when not provided.
+    *
+    * This class must be abstract, because it determines the path of the ast gen binary from the class path location of
+    * its derived class.
     */
-  case class AstGenProgramMetaData(
-    name: String,
-    configPrefix: String,
-    multiArchitectureBuilds: Boolean,
-    packagePath: URL
-  )
-
-  def executableDir(implicit metaData: AstGenProgramMetaData): String =
-    ExternalCommand
-      .executableDir(Paths.get(metaData.packagePath.toURI))
-      .resolve("astgen")
-      .toString
-
-  def hasCompatibleAstGenVersion(compatibleVersion: String)(implicit metaData: AstGenProgramMetaData): Boolean = {
-    ExternalCommand.run(Seq(metaData.name, "-version"), ".").successOption.map(_.mkString.strip()) match {
-      case Some(installedVersion)
-          if installedVersion != "unknown" &&
-            Try(VersionHelper.compare(installedVersion, compatibleVersion)).toOption.getOrElse(-1) >= 0 =>
-        logger.debug(s"Using local ${metaData.name} v$installedVersion from systems PATH")
-        true
-      case Some(installedVersion) =>
-        logger.debug(
-          s"Found local ${metaData.name} v$installedVersion in systems PATH but ${metaData.name} requires at least v$compatibleVersion"
-        )
-        false
-      case _ =>
-        false
-    }
+  abstract class AstGenProgramMetaData(
+    val name: String,
+    val configPrefix: String,
+    val multiArchitectureBuilds: Boolean = false,
+    val binEnvVar: Option[String] = None,
+    val versionFlag: String = "-version",
+    val skipVersionComparison: Boolean = false,
+    versionConfigKey: Option[String] = None
+  ) {
+    val packagePath: URL                 = getClass.getProtectionDomain.getCodeSource.getLocation
+    val resolvedVersionConfigKey: String = versionConfigKey.getOrElse(s"$configPrefix.${name}_version")
   }
 
+  def isExecutableFile(filePath: String): Boolean = {
+    Paths.get(filePath) match {
+      case path if !Files.exists(path) =>
+        logger.warn(s"File '$filePath' does not exist.")
+        false
+      case path if !Files.isRegularFile(path) =>
+        logger.warn(s"File '$filePath' is not a regular file.")
+        false
+      case path if !Files.isExecutable(path) =>
+        logger.warn(s"File '$filePath' is not executable.")
+        false
+      case _ =>
+        true
+    }
+  }
 }
 
-trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
-
-  private val logger = LoggerFactory.getLogger(getClass)
+abstract class AstGenRunner(metaData: AstGenProgramMetaData, config: X2CpgConfig[?]) {
 
   import io.joern.x2cpg.astgen.AstGenRunner.*
 
@@ -84,6 +91,17 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
   protected val LinuxArm = "linux-arm"
   protected val MacX86   = "macos"
   protected val MacArm   = "macos-arm"
+
+  protected val bazelRuleSuffixDefaults = Map(
+    (OperatingSystemType.Windows, ArchitectureType.X86)   -> "_win_x86",
+    (OperatingSystemType.Windows, ArchitectureType.ARMv8) -> "_win_arm",
+    (OperatingSystemType.Linux, ArchitectureType.X86)     -> "_linux_x86",
+    (OperatingSystemType.Linux, ArchitectureType.ARMv8)   -> "_linux_arm",
+    (OperatingSystemType.Mac, ArchitectureType.X86)       -> "_macos_x86",
+    (OperatingSystemType.Mac, ArchitectureType.ARMv8)     -> "_macos_arm"
+  )
+
+  protected val bazelRuleSuffixes = bazelRuleSuffixDefaults
 
   /** All the supported combinations of architectures.
     */
@@ -96,11 +114,22 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
     Environment.OperatingSystemType.Mac     -> Environment.ArchitectureType.ARMv8
   )
 
+  protected def bazelRunfileRepo(frontendName: String): String = {
+    val suffix = bazelRuleSuffixes.getOrElse(
+      (Environment.operatingSystem, Environment.architecture), {
+        throw new UnsupportedOperationException(
+          s"No compatible astgen binary for your operating system and architecture!"
+        )
+      }
+    )
+    s"${frontendName}_astgen$suffix"
+  }
+
   /** Determines the name of the executable to run, based on the host system. Usually, AST GEN binaries support three
     * operating systems, and two architectures. Some binaries are multiplatform, in which case the suffix for x86 is
     * used for both architectures.
     */
-  protected def executableName(implicit metaData: AstGenProgramMetaData): String = {
+  protected def executableName: String = {
     if (!SupportedBinaries.contains(Environment.operatingSystem -> Environment.architecture)) {
       throw new UnsupportedOperationException(s"No compatible binary of ${metaData.name} for your operating system!")
     } else {
@@ -115,9 +144,7 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
     }
   }
 
-  protected def executableName(x86Suffix: String, armSuffix: String)(implicit
-    metaData: AstGenProgramMetaData
-  ): String = {
+  protected def executableName(x86Suffix: String, armSuffix: String): String = {
     if (metaData.multiArchitectureBuilds) {
       s"${metaData.name}-$x86Suffix"
     } else {
@@ -130,8 +157,8 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
 
   protected def isIgnoredByUserConfig(filePath: String): Boolean = {
     lazy val isInIgnoredFiles = config.ignoredFiles.exists {
-      case ignorePath if File(ignorePath).isDirectory => filePath.startsWith(ignorePath)
-      case ignorePath                                 => filePath == ignorePath
+      case ignorePath if Files.isDirectory(Paths.get(ignorePath)) => filePath.startsWith(ignorePath)
+      case ignorePath                                             => filePath == ignorePath
     }
     lazy val isInIgnoredFileRegex = config.ignoredFilesRegex.matches(filePath)
     if (isInIgnoredFiles || isInIgnoredFileRegex) {
@@ -142,39 +169,80 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
     }
   }
 
-  protected def filterFiles(files: List[String], out: File): List[String] = files.filter(fileFilter(_, out))
+  protected def filterFiles(files: List[String], out: Path): List[String] = files.filter(fileFilter(_, out))
 
-  protected def fileFilter(file: String, out: File): Boolean = {
-    file.stripSuffix(".json").replace(out.pathAsString, config.inputPath) match {
+  protected def fileFilter(file: String, out: Path): Boolean = {
+    file.stripSuffix(".json").replace(out.toString, config.inputPath) match {
       case filePath if isIgnoredByUserConfig(filePath) => false
       case _                                           => true
     }
   }
 
-  protected def skippedFiles(in: File, astGenOut: List[String]): List[String]
+  protected def skippedFiles(in: Path, astGenOut: List[String]): List[String]
 
-  protected def runAstGenNative(in: String, out: File, exclude: String, include: String)(implicit
-    metaData: AstGenProgramMetaData
-  ): Try[Seq[String]]
+  protected def runAstGenNative(in: String, out: Path, exclude: String, include: String): Try[Seq[String]]
 
-  protected def astGenCommand(implicit metaData: AstGenProgramMetaData): String = {
+  // Lazy so path resolution and the version probe run at most once per runner instance.
+  protected lazy val astGenCommand: String = {
     val conf          = ConfigFactory.load
-    val astGenVersion = conf.getString(s"${metaData.configPrefix}.${metaData.name}_version")
-    if (hasCompatibleAstGenVersion(astGenVersion)) {
-      metaData.name
-    } else {
-      s"$executableDir/$executableName"
-    }
+    val astGenVersion = conf.getString(metaData.resolvedVersionConfigKey)
+    val resolvedPath  = resolveAstGenPath(astGenVersion)
+    logger.info(s"Using ${metaData.name} from '$resolvedPath'")
+    // Do NOT absolutise a bare name. resolveAstGenPath returns `metaData.name` -- a name with no
+    // separator -- to mean "found on the system PATH". Paths.get(name).toAbsolutePath resolves that
+    // against the process working directory, turning "on PATH" into "in the current directory", so
+    // the binary is looked for at <cwd>/astgen and the run fails with
+    //   Cannot run program "<cwd>/astgen" ... error: 2 (No such file or directory)
+    // even though it is on PATH. Leave a bare name bare and let the process launcher do the lookup.
+    if (Paths.get(resolvedPath).getNameCount == 1 && !Paths.get(resolvedPath).isAbsolute) resolvedPath
+    else Paths.get(resolvedPath).toAbsolutePath.toString
   }
 
-  def execute(out: File): AstGenRunnerResult = {
-    implicit val metaData: AstGenProgramMetaData = config.astGenMetaData
-    val in                                       = File(config.inputPath)
+  /** Resolution order:
+    *
+    *   - user-provided path via `metaData.binEnvVar` (if set and binary passes the version probe)
+    *   - binary on the system `PATH` named `metaData.name` (if it passes the version probe)
+    *   - bundled binary at `$executableDir/$executableName`
+    */
+  private def resolveAstGenPath(astGenVersion: String): String = {
+    binFromEnvVar
+      .filter(path => hasCompatibleAstGenVersion(astGenVersion, Option(path)))
+      .orElse(Option.when(hasCompatibleAstGenVersion(astGenVersion, None))(metaData.name))
+      .orElse {
+        val runfileRepo = bazelRunfileRepo(metaData.configPrefix)
+        val path        = JoernRunfilesLocator.resolve(s"$runfileRepo/file/downloaded")
+        path
+      }
+      .getOrElse {
+        val localPath = s"$executableDir/$executableName"
+        if (AstGenRunner.isExecutableFile(localPath)) {
+          localPath
+        } else {
+          val envHint =
+            metaData.binEnvVar
+              .map(envVar => s" or set the environment variable $envVar to a working binary")
+              .getOrElse("")
+          logger.error(s"""Local ${metaData.name} binary not found at '$localPath' or is not executable!
+               |Please make sure to have a compatible ${metaData.name} version installed and available on this system$envHint.
+               |""".stripMargin)
+          scala.sys.exit(1)
+        }
+      }
+  }
+
+  private def binFromEnvVar: Option[String] = metaData.binEnvVar.flatMap(scala.util.Properties.envOrNone).flatMap {
+    case path if Files.isDirectory(Paths.get(path)) => Some(Paths.get(path).resolve(metaData.name).toString)
+    case path if Files.exists(Paths.get(path))      => Some(Paths.get(path).toString)
+    case _                                          => None
+  }
+
+  def execute(out: Path): AstGenRunnerResult = {
+    val in = Paths.get(config.inputPath)
     logger.info(s"Running ${metaData.name} on '${config.inputPath}'")
     runAstGenNative(config.inputPath, out, config.ignoredFilesRegex.toString(), "") match {
       case Success(result) =>
         val srcFiles = SourceFiles.determine(
-          out.toString(),
+          out.toString,
           Set(".json"),
           ignoredFilesRegex = Option(config.ignoredFilesRegex),
           ignoredFilesPath = Option(config.ignoredFiles)
@@ -187,4 +255,42 @@ trait AstGenRunnerBase(config: X2CpgConfig[?] & AstGenConfig[?]) {
         DefaultAstGenRunnerResult()
     }
   }
+
+  def executableDir: String =
+    ExternalCommand.executableDir(Paths.get(metaData.packagePath.toURI)).resolve("astgen").toString
+
+  def hasCompatibleAstGenVersion(compatibleVersion: String, path: Option[String]): Boolean = {
+    val command      = path.getOrElse(metaData.name)
+    val workingDir   = path.flatMap(binPath => Option(Paths.get(binPath).getParent))
+    val debugMsgPath = path.getOrElse("PATH")
+    ExternalCommand
+      .run(
+        Seq(command, metaData.versionFlag),
+        workingDir,
+        additionalContext =
+          s"version probe for ${metaData.name} at '$debugMsgPath' - failure is expected if binary is not available there"
+      )
+      .successOption match {
+      case Some(_) if metaData.skipVersionComparison =>
+        logger.debug(s"Using ${metaData.name} from '$debugMsgPath'")
+        true
+      case Some(out) =>
+        val installedVersion = out.mkString.strip()
+        if (
+          installedVersion != "unknown" &&
+          Try(VersionHelper.compare(installedVersion, compatibleVersion)).toOption.getOrElse(-1) >= 0
+        ) {
+          logger.debug(s"Using ${metaData.name} v$installedVersion from '$debugMsgPath'")
+          true
+        } else {
+          logger.debug(
+            s"Found ${metaData.name} v$installedVersion in '$debugMsgPath' but ${metaData.name} requires at least v$compatibleVersion"
+          )
+          false
+        }
+      case _ =>
+        false
+    }
+  }
+
 }

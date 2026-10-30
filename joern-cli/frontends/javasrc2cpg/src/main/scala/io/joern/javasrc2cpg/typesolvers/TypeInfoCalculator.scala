@@ -11,8 +11,9 @@ import com.github.javaparser.resolution.logic.InferenceVariableType
 import com.github.javaparser.resolution.model.typesystem.{LazyType, NullType}
 import com.github.javaparser.resolution.types.*
 import com.github.javaparser.resolution.types.parametrization.ResolvedTypeParametersMap
+import com.github.javaparser.symbolsolver.javaparsermodel.declarations.JavaParserRecordDeclaration
+import io.joern.javasrc2cpg.passes.AstCreationPass
 import io.joern.javasrc2cpg.typesolvers.TypeInfoCalculator.{TypeConstants, TypeNameConstants}
-import io.joern.x2cpg.datastructures.Global
 import org.slf4j.LoggerFactory
 
 import scala.collection.mutable
@@ -20,7 +21,11 @@ import scala.jdk.CollectionConverters.*
 import scala.jdk.OptionConverters.RichOptional
 import scala.util.{Failure, Try}
 
-class TypeInfoCalculator(global: Global, symbolResolver: SymbolResolver, keepTypeArguments: Boolean) {
+class TypeInfoCalculator(
+  accumulator: AstCreationPass.Accumulator,
+  symbolResolver: SymbolResolver,
+  keepTypeArguments: Boolean
+) {
   private val logger               = LoggerFactory.getLogger(this.getClass)
   private val emptyTypeParamValues = ResolvedTypeParametersMap.empty()
 
@@ -236,7 +241,7 @@ class TypeInfoCalculator(global: Global, symbolResolver: SymbolResolver, keepTyp
     */
   def registerType(typeName: String): String = {
     if (typeName != "ANY") {
-      global.usedTypes.putIfAbsent(typeName, true)
+      accumulator.registerType(typeName)
     }
     typeName
   }
@@ -259,8 +264,11 @@ object TypeInfoCalculator {
     val Object: String   = "java.lang.Object"
     val Class: String    = "java.lang.Class"
     val Iterator: String = "java.util.Iterator"
+    val Enum: String     = "java.lang.Enum"
+    val Record: String   = "java.lang.Record"
     val Void: String     = "void"
     val Any: String      = "ANY"
+    val Null: String     = "null"
   }
 
   object TypeNameConstants {
@@ -285,15 +293,9 @@ object TypeInfoCalculator {
     "registerNatives()"
   )
 
-  val NumericTypes: Set[String] = Set(
-    "byte",
-    "short",
-    "int",
-    "long",
-    "float",
-    "double",
-    "char",
-    "boolean",
+  val PrimitiveTypes: Set[String] = Set("byte", "short", "int", "long", "float", "double", "char", "boolean")
+
+  val NumericTypes: Set[String] = PrimitiveTypes ++ Set(
     "java.lang.Byte",
     "java.lang.Short",
     "java.lang.Integer",

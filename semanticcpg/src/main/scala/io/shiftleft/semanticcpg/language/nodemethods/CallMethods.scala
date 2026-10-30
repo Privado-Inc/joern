@@ -1,11 +1,18 @@
 package io.shiftleft.semanticcpg.language.nodemethods
 
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Expression, NewLocation}
+import io.shiftleft.codepropertygraph.generated.nodes.{Call, Expression}
 import io.shiftleft.codepropertygraph.generated.DispatchTypes
 import io.shiftleft.semanticcpg.NodeExtension
 import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.language.operatorextension.OpNodes.{Arithmetic, ArrayAccess, Assignment, FieldAccess}
+import io.shiftleft.semanticcpg.language.operatorextension.{
+  allArithmeticTypes,
+  allArrayAccessTypes,
+  allAssignmentTypes,
+  allFieldAccessTypes
+}
 
-class CallMethods(val node: Call) extends AnyVal with NodeExtension with HasLocation {
+class CallMethods(val node: Call) extends AnyVal with NodeExtension {
 
   def isStatic: Boolean =
     node.dispatchType == DispatchTypes.STATIC_DISPATCH
@@ -24,17 +31,20 @@ class CallMethods(val node: Call) extends AnyVal with NodeExtension with HasLoca
       case expr: Expression if expr.argumentIndex == index => expr
     }
 
+  def arguments(pattern: String): Iterator[Expression] =
+    argument.argumentName(pattern)
+  def argumentsExact(name: String): Iterator[Expression] =
+    argument.argumentNameExact(name)
+
   // TODO define as named step in the schema
   def argument: Iterator[Expression] =
     node._argumentOut.collectAll[Expression]
 
   def argument(index: Int): Expression =
-    arguments(index).next
+    arguments(index).next()
 
   def argumentOption(index: Int): Option[Expression] =
-    node._argumentOut.collectFirst {
-      case expr: Expression if expr.argumentIndex == index => expr
-    }
+    arguments(index).nextOption()
 
   def macroExpansion: Iterator[Expression] = {
     if (node.dispatchType != DispatchTypes.INLINED) return Iterator.empty
@@ -42,6 +52,15 @@ class CallMethods(val node: Call) extends AnyVal with NodeExtension with HasLoca
     node.astChildren.isBlock.maxByOption(_.order).iterator.expressionDown
   }
 
-  override def location: NewLocation =
-    LocationCreator(node, node.code, node.label, node.lineNumber, node.method)
+  def isAssignment: Option[Assignment] =
+    Option.when(allAssignmentTypes.contains(node.methodFullName))(node.asInstanceOf[Assignment])
+
+  def isArithmetic: Option[Arithmetic] =
+    Option.when(allArithmeticTypes.contains(node.methodFullName))(node.asInstanceOf[Arithmetic])
+
+  def isArrayAccess: Option[ArrayAccess] =
+    Option.when(allArrayAccessTypes.contains(node.methodFullName))(node.asInstanceOf[ArrayAccess])
+
+  def isFieldAccess: Option[FieldAccess] =
+    Option.when(allFieldAccessTypes.contains(node.methodFullName))(node.asInstanceOf[FieldAccess])
 }

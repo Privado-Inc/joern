@@ -7,12 +7,13 @@ trait QuotedLiteralHandling { this: DeprecatedRubyLexerBase =>
   private val delimiters    = mutable.Stack[Int]()
   private val endTokenTypes = mutable.Stack[Int]()
 
-  private def closingDelimiterFor(char: Int): Int = char match
+  private def closingDelimiterFor(char: Int): Int = char match {
     case '(' => ')'
     case '[' => ']'
     case '{' => '}'
     case '<' => '>'
     case c   => c
+  }
 
   private def currentOpeningDelimiter: Int = delimiters.top
 

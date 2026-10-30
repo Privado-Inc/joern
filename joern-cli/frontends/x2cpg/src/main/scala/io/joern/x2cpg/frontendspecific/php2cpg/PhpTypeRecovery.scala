@@ -40,6 +40,10 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
   override protected def prepopulateSymbolTableEntry(x: AstNode): Unit = x match {
     case x: Call =>
       x.methodFullName match {
+        case Operators.alloc =>
+          val allocRecv = x.code.takeWhile(_ != '.')
+          symbolTable.append(CallAlias(allocRecv), Set(x.typeFullName))
+          symbolTable.append(LocalVar(allocRecv), Set(x.typeFullName))
         case s"<operator>.$_" =>
         case _                => symbolTable.append(x, (x.methodFullName +: x.dynamicTypeHintFullName).toSet)
       }
@@ -48,7 +52,7 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
 
   protected val methodTypesTable = mutable.Map[Method, mutable.HashSet[String]]()
 
-  override val pathSep: String = "->"
+  override val pathSep: String = "."
 
   override def hasTypes(node: AstNode): Boolean = {
     node match {
@@ -75,7 +79,8 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
     unresolvedDynamicCalls.foreach(visitUnresolvedDynamicCall)
   }
   override protected def visitIdentifierAssignedToConstructor(i: Identifier, c: Call): Set[String] = {
-    val constructorPaths = symbolTable.get(c).map(_.stripSuffix(s"${pathSep}<init>"))
+    val allocRecv        = c.code.takeWhile(_ != '.')
+    val constructorPaths = symbolTable.get(CallAlias(allocRecv))
     associateTypes(i, constructorPaths)
   }
 
@@ -84,11 +89,11 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
     if (symbolTable.contains(c)) {
       val callReturns = methodReturnValues(symbolTable.get(c).toSeq)
       associateTypes(i, callReturns)
-    } else if (c.argument.exists(_.argumentIndex == 0)) {
-      val callFullNames = (c.argument(0) match {
-        case i: Identifier if symbolTable.contains(LocalVar(i.name))  => symbolTable.get(LocalVar(i.name))
-        case i: Identifier if symbolTable.contains(CallAlias(i.name)) => symbolTable.get(CallAlias(i.name))
-        case _                                                        => Set.empty
+    } else if (c.receiver.nonEmpty) {
+      val callFullNames = (c.receiver.headOption match {
+        case Some(i: Identifier) if symbolTable.contains(LocalVar(i.name))  => symbolTable.get(LocalVar(i.name))
+        case Some(i: Identifier) if symbolTable.contains(CallAlias(i.name)) => symbolTable.get(CallAlias(i.name))
+        case _                                                              => Set.empty
       }).map(_.concat(s"$pathSep${c.name}")).toSeq
       val callReturns = methodReturnValues(callFullNames)
       associateTypes(i, callReturns)
@@ -108,13 +113,18 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
      * return types as they get collected across the multiple return statements
      * for a single function.
      */
-    val m = ret.method
+    val method        = ret.method
     val existingTypes = mutable.HashSet.from(
-      (m.methodReturn.typeFullName +: m.methodReturn.dynamicTypeHintFullName)
+      (method.methodReturn.typeFullName +: method.methodReturn.dynamicTypeHintFullName)
         .filterNot(_ == "ANY")
         .filterNot(_.startsWith(Defines.UnresolvedNamespace))
     )
-    existingTypes.addAll(methodTypesTable.getOrElse(m, mutable.HashSet()))
+    existingTypes.addAll(methodTypesTable.getOrElse(method, mutable.HashSet()))
+
+    def appendDummyReturn(name: String, xs: Set[String]) = xs.map {
+      case fn if fn.endsWith(XTypeRecovery.DummyReturnType) => fn
+      case t => Seq(t, name, XTypeRecovery.DummyReturnType).mkString(pathSep)
+    }
 
     def extractTypes(xs: List[CfgNode]): Set[String] = xs match {
       case ::(head: Literal, Nil) if head.typeFullName != "ANY" =>
@@ -122,7 +132,7 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
       case (head: Call) :: _ if head.name == Operators.fieldAccess =>
         val fieldAccess = head.asInstanceOf[FieldAccess]
         val (sym, ts)   = getSymbolFromCall(fieldAccess)
-        val cpgTypes = cpg.typeDecl
+        val cpgTypes    = cpg.typeDecl
           .fullNameExact(ts.map(_.compUnitFullName).toSeq*)
           .member
           .nameExact(sym.identifier)
@@ -130,7 +140,9 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
           .filterNot { x => x == "ANY" || x == "this" }
           .toSet
         if (cpgTypes.nonEmpty) cpgTypes
-        else symbolTable.get(sym)
+        else if (symbolTable.get(sym).nonEmpty) symbolTable.get(sym)
+        else if (fieldAccess.argument(1).code == "$this") head.method.typeDecl.fullName.toSet
+        else Set.empty
       case (head: Call) :: _ if symbolTable.contains(head) =>
         val callPaths    = symbolTable.get(head)
         val returnValues = methodReturnValues(callPaths.toSeq)
@@ -139,14 +151,11 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
         else
           returnValues
       case (head: Call) :: _ if head.receiver.headOption.exists(symbolTable.contains) =>
-        symbolTable
-          .get(head.receiver.head)
-          .map(t => Seq(t, head.name, XTypeRecovery.DummyReturnType).mkString(pathSep))
+        appendDummyReturn(head.name, symbolTable.get(head.receiver.head))
       case ::(identifier: Identifier, Nil) if symbolTable.contains(identifier) =>
         symbolTable.get(identifier)
       case (head: Call) :: _ =>
-        val callees =
-          extractTypes(head.argument.l).map(t => Seq(t, head.name, XTypeRecovery.DummyReturnType).mkString(pathSep))
+        val callees = appendDummyReturn(head.name, extractTypes(head.argument.l))
         symbolTable.append(head, callees)
       case _ => Set.empty
     }
@@ -158,24 +167,36 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
       if (typeName.startsWith(Defines.UnresolvedNamespace)) {
         true
       } else if (typeName.endsWith(XTypeRecovery.DummyReturnType)) {
-        typeName.split(pathSep).toList.reverse match {
-          case _ :: methodFullName :: Nil =>
-            val methodReturns = methodReturnValues(Seq(methodFullName))
-              .filterNot(_.endsWith(s"${XTypeRecovery.DummyReturnType}"))
-            methodReturns.nonEmpty
-          case _ :: methodName :: typeFullName =>
-            val methodFullName = Seq(s"${typeFullName.mkString(pathSep)}$pathSep$methodName")
-            val methodReturns = methodReturnValues(methodFullName)
-              .filterNot(_.endsWith(s"${XTypeRecovery.DummyReturnType}"))
-            methodReturns.nonEmpty
-          case _ => false
+        if (typeName.contains("<metaclass>")) {
+          typeName.split("<metaclass>").toList.reverse match {
+            case methodNameWithReturn :: className :: Nil =>
+              val methodName     = methodNameWithReturn.split("\\.").dropRight(1).mkString(".")
+              val methodFullName = s"$className<metaclass>$methodName"
+              val methodReturns  =
+                methodReturnValues(Seq(methodFullName)).filterNot(_.endsWith(s"${XTypeRecovery.DummyReturnType}"))
+              methodReturns.nonEmpty
+            case _ => false
+          }
+        } else {
+          typeName.split(s"\\$pathSep").toList.reverse match {
+            case _ :: methodFullName :: Nil =>
+              val methodReturns = methodReturnValues(Seq(methodFullName))
+                .filterNot(_.endsWith(s"${XTypeRecovery.DummyReturnType}"))
+              methodReturns.nonEmpty
+            case _ :: methodName :: typeFullName =>
+              val methodFullName = Seq(s"${typeFullName.mkString(pathSep)}$pathSep$methodName")
+              val methodReturns  = methodReturnValues(methodFullName)
+                .filterNot(_.endsWith(s"${XTypeRecovery.DummyReturnType}"))
+              methodReturns.nonEmpty
+            case _ => false
+          }
         }
       } else {
         false
       }
     }
-    methodTypesTable.update(m, saveTypes)
-    builder.setNodeProperty(ret.method.methodReturn, PropertyNames.DYNAMIC_TYPE_HINT_FULL_NAME, saveTypes)
+    methodTypesTable.update(method, saveTypes)
+    builder.setNodeProperty(ret.method.methodReturn, PropertyNames.DynamicTypeHintFullName, saveTypes)
   }
 
   /* Necessary to change the filter regex from (this|self) to (\\$this|this), in order to account for $this PHP
@@ -204,11 +225,14 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
     }
   }
 
-  override protected def getTypesFromCall(c: Call): Set[String] = c.name match {
-    case Operators.fieldAccess        => symbolTable.get(LocalVar(getFieldName(c.asInstanceOf[FieldAccess])))
-    case _ if symbolTable.contains(c) => symbolTable.get(c)
-    case Operators.indexAccess        => getIndexAccessTypes(c)
-    case n                            => methodReturnValues(Seq(c.methodFullName))
+  override protected def getTypesFromCall(c: Call): Set[String] = {
+    lazy val methodReturnVals = methodReturnValues(Seq(c.methodFullName))
+    c.name match {
+      case Operators.fieldAccess => symbolTable.get(LocalVar(getFieldName(c.asInstanceOf[FieldAccess])))
+      case Operators.indexAccess => getIndexAccessTypes(c)
+      case _ if symbolTable.contains(c) && methodReturnVals.isEmpty => symbolTable.get(c)
+      case _                                                        => methodReturnVals
+    }
   }
 
   override protected def indexAccessToCollectionVar(c: Call): Option[CollectionVar] = {
@@ -227,8 +251,8 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
       case List(c: Call, idx: Call)             => CollectionVar(callName(c), callName(idx))
       case List(c: Call, idx: Literal)          => CollectionVar(callName(c), idx.code)
       case List(c: Call, idx: Identifier)       => CollectionVar(callName(c), idx.code)
-      case xs =>
-        logger.debug(s"Unhandled index access ${xs.map(x => (x.label, x.code)).mkString(",")} @ ${c.name}")
+      case xs                                   =>
+        logger.debug(s"Unhandled index access ${xs.map(elem => (elem.label, elem.code)).mkString(",")} @ ${c.name}")
         null
     })
 
@@ -252,14 +276,14 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
     // Check inheritance for resolved method full name patterns
     val fullNames = {
       val foundMethodFullNames = methodFullNames.flatMap {
-        case s"${typeFullName}->${methodName}" =>
+        case s"${typeFullName}$pathSep${methodName}" =>
           val targetTypes = cpg.typeDecl.fullNameExact(typeFullName).l
           val transtypes  = targetTypes.baseTypeDeclTransitive.l
           val methods     = transtypes.method.nameExact(methodName).l
           methods.fullName.toSet
         case _ => Set.empty
       }
-      if foundMethodFullNames.nonEmpty then foundMethodFullNames else methodFullNames
+      if (foundMethodFullNames.nonEmpty) foundMethodFullNames else methodFullNames
     }
 
     /* Look up methods in existing CPG */
@@ -273,9 +297,10 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
       .toSet
     if (rs.isEmpty)
       /* Return dummy return type if not found */
-      fullNames
-        .flatMap(m => Set(m.concat(s"$pathSep${XTypeRecovery.DummyReturnType}")))
-        .toSet
+      fullNames.flatMap {
+        case m if m.endsWith(XTypeRecovery.DummyReturnType) => Set(m)
+        case m => Set(m.concat(s"$pathSep${XTypeRecovery.DummyReturnType}"))
+      }.toSet
     else rs
   }
 
@@ -287,30 +312,27 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
   private def visitUnresolvedDynamicCall(c: Call): Option[String] = {
 
     def setNodeFullName(tgt: CfgNode, newFullName: String): Option[String] = {
-      if (tgt.isCall) builder.setNodeProperty(tgt, PropertyNames.METHOD_FULL_NAME, newFullName)
-      builder.setNodeProperty(
-        tgt,
-        PropertyNames.TYPE_FULL_NAME,
-        s"$newFullName$pathSep${XTypeRecovery.DummyReturnType}"
-      )
-      builder.setNodeProperty(tgt, PropertyNames.DYNAMIC_TYPE_HINT_FULL_NAME, Seq.empty)
+      if (tgt.isCall) builder.setNodeProperty(tgt, PropertyNames.MethodFullName, newFullName)
+      builder.setNodeProperty(tgt, PropertyNames.TypeFullName, s"$newFullName$pathSep${XTypeRecovery.DummyReturnType}")
+      builder.setNodeProperty(tgt, PropertyNames.DynamicTypeHintFullName, Seq.empty)
       Option(newFullName)
     }
 
     def setFromKnownTypes(i: CfgNode, tgt: CfgNode): Option[String] = {
       i.getKnownTypes.l match {
         case Nil      => None
-        case t :: Nil => setNodeFullName(tgt, s"$t->${c.name}")
+        case t :: Nil => setNodeFullName(tgt, s"$t$pathSep${c.name}")
         case x        => None /* TODO: case where multiple possible types are identified */
       }
     }
 
-    c.argumentOption(0).flatMap {
-      case rc: Call if rc.methodFullName.startsWith("<operator")                 => None // ignore operators
+    c.receiver.headOption.flatMap {
+      case rc: Call if rc.methodFullName.startsWith("<operator") =>
+        None // ignore operators
       case rc: Call if rc.methodFullName.startsWith(Defines.UnresolvedNamespace) =>
-        // Helps deal with with long call chains by attempting to perform an immediate resolve
+        // Helps deal with long call chains by attempting to perform an immediate resolve
         visitUnresolvedDynamicCall(rc).flatMap { rcFullName =>
-          val newFullName = s"$rcFullName->${c.name}"
+          val newFullName = s"$rcFullName$pathSep${c.name}"
           setNodeFullName(c, newFullName)
         }
       case p: Identifier if p.name == "this" =>
@@ -319,7 +341,7 @@ private class RecoverForPhpFile(cpg: Cpg, cu: NamespaceBlock, builder: DiffGraph
           .where(_.method.nameExact(c.name))
           .fullName
           .headOption
-          .flatMap(tfn => setNodeFullName(c, s"$tfn->${c.name}"))
+          .flatMap(tfn => setNodeFullName(c, s"$tfn$pathSep${c.name}"))
       case p: Identifier => setFromKnownTypes(p, c)
       case rc: Call      => setFromKnownTypes(rc, c)
       case _             => None

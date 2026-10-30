@@ -1,6 +1,5 @@
 package io.shiftleft.semanticcpg.language.nodemethods
 
-import io.shiftleft.Implicits.IterableOnceDeco
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.NodeExtension
 import io.shiftleft.semanticcpg.language.ICallResolver
@@ -22,8 +21,7 @@ class ExpressionMethods(val node: Expression) extends AnyVal with NodeExtension 
 
   @tailrec
   private final def _parentExpression(argument: AstNode): Option[Expression] = {
-    val parent = argument._astIn.onlyChecked
-    parent match {
+    argument.astParent match {
       case call: Call if MemberAccess.isGenericMemberAccessName(call.name) =>
         _parentExpression(call)
       case expression: Expression =>
@@ -59,14 +57,20 @@ class ExpressionMethods(val node: Expression) extends AnyVal with NodeExtension 
     }
 
   def parameter(implicit callResolver: ICallResolver): Iterator[MethodParameterIn] = {
-    // Expressions can have incoming argument edges not just from CallRepr nodes but also
-    // from Return nodes for which an expansion to parameter makes no sense. So we filter
-    // for CallRepr.
+    val predicate: MethodParameterIn => Boolean = node.argumentName match {
+      case Some(name) => _.name == name
+      case None => param => param.index == node.argumentIndex || (param.isVariadic && param.index < node.argumentIndex)
+    }
+
     for {
-      call          <- node._argumentIn if call.isInstanceOf[CallRepr]
-      calledMethods <- callResolver.getCalledMethods(call.asInstanceOf[CallRepr])
-      paramIn       <- calledMethods._astOut.collectAll[MethodParameterIn]
-      if paramIn.index == node.argumentIndex
+      // Expressions can have incoming argument edges not just from CallRepr nodes but also
+      // from Return nodes for which an expansion to parameter makes no sense. So we match
+      // on CallRepr.
+      case call: CallRepr <- node._argumentIn
+
+      calledMethods <- callResolver.getCalledMethods(call)
+      paramIn       <- calledMethods.parameter
+      if predicate(paramIn)
     } yield paramIn
   }
 

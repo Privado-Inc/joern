@@ -1,0 +1,745 @@
+package io.joern.c2cpg.passes.ast
+
+import io.joern.c2cpg.astcreation.Defines
+import io.joern.c2cpg.parser.FileDefaults
+import io.joern.c2cpg.testfixtures.AstC2CpgSuite
+import io.shiftleft.codepropertygraph.generated.DispatchTypes
+import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.codepropertygraph.generated.EvaluationStrategies
+import io.shiftleft.codepropertygraph.generated.Operators
+import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
+
+class LambdaExpressionTests extends AstC2CpgSuite(FileDefaults.CppExt) {
+
+  "a simple lambda expression as argument" should {
+    val cpg = code("""
+        |class Foo {
+        |  public:
+        |    string getFromSupplier(string input, std::function<string(string)>& mapper) {
+        |      return mapper.apply(input);
+        |    }
+        |
+        |    void foo(string input, string fallback) {
+        |      getFromSupplier(
+        |        input,
+        |        [fallback] (string lambdaInput) -> string { return lambdaInput.length() > 5 ? "Long" : fallback; }
+        |      );
+        |    }
+        |}
+        |""".stripMargin)
+
+    "create the correct typedecl node for the lambda" in {
+      cpg.typeDecl.name(".*lambda.*").name.l shouldBe List("<lambda>0")
+      cpg.typeDecl.name(".*lambda.*").fullName.l shouldBe List("Test0.cpp:<global>.Foo.foo.<lambda>0:string(string)")
+    }
+
+    "ref the lambda param correctly" in {
+      val List(lambdaMethod) = cpg.typeDecl.name("Foo").method.name(".*lambda.*").isLambda.l
+      val List(param)        = lambdaMethod.parameter.l
+      val List(reffedParam)  = cpg.identifier.nameExact("lambdaInput").refsTo.collectAll[MethodParameterIn].l
+      reffedParam shouldBe param
+    }
+
+    "create a method node for the lambda" in {
+      inside(cpg.typeDecl.name("Foo").method.name(".*lambda.*").isLambda.l) { case List(lambdaMethod) =>
+        lambdaMethod.name shouldBe "<lambda>0"
+        lambdaMethod.fullName shouldBe "Test0.cpp:<global>.Foo.foo.<lambda>0:string(string)"
+        inside(lambdaMethod.parameter.l) { case List(lambdaInput) =>
+          lambdaInput.name shouldBe "lambdaInput"
+          lambdaInput.typeFullName shouldBe "string"
+        }
+        lambdaMethod.methodReturn.typeFullName shouldBe "string"
+      }
+    }
+
+    "create a binding for the lambda method" in {
+      val List(typeDecl) = cpg.typeDecl.fullNameExact("Test0.cpp:<global>.Foo.foo.<lambda>0:string(string)").l
+      val List(binding)  = typeDecl.bindsOut.l
+      binding.name shouldBe Defines.OperatorCall
+      binding.methodFullName shouldBe "Test0.cpp:<global>.Foo.foo.<lambda>0:string(string)"
+      binding.signature shouldBe "string(string)"
+      val List(methodReffed) = binding.refOut.l
+      methodReffed.name shouldBe "<lambda>0"
+      methodReffed.fullName shouldBe "Test0.cpp:<global>.Foo.foo.<lambda>0:string(string)"
+      methodReffed.signature shouldBe "string(string)"
+    }
+
+    "create a method body for the lambda method" in {
+      inside(cpg.typeDecl.name("Foo").method.name(".*lambda.*").block.astChildren.l) {
+        case List(fallBack: Local, returnNode: Return) =>
+          returnNode.code shouldBe "return lambdaInput.length() > 5 ? \"Long\" : fallback;"
+          inside(returnNode.astChildren.l) { case List(expr: Call) =>
+            expr.methodFullName shouldBe Operators.conditional
+          }
+          fallBack.name shouldBe "fallback"
+          fallBack.typeFullName shouldBe "string"
+          fallBack.closureBindingId shouldBe Some("Test0.cpp:<global>.Foo.foo.<lambda>0:string(string):fallback")
+      }
+    }
+
+    "create locals for captured identifiers in the lambda method" in {
+      inside(cpg.typeDecl.name("Foo").method.name(".*lambda.*").local.sortBy(_.name)) {
+        case Seq(fallbackLocal: Local) =>
+          fallbackLocal.name shouldBe "fallback"
+          fallbackLocal.code shouldBe "fallback"
+          fallbackLocal.typeFullName shouldBe "string"
+          cpg.identifier.nameExact("fallback").refsTo.l shouldBe List(fallbackLocal)
+      }
+    }
+
+    "create closure bindings for captured identifiers" in {
+      inside(cpg.closureBinding.l) { case List(fallbackClosureBinding) =>
+        val fallbackLocal = cpg.method.name(".*lambda.*").local.name("fallback").head
+        fallbackClosureBinding.closureBindingId shouldBe fallbackLocal.closureBindingId
+
+        inside(fallbackClosureBinding._refOut.l) { case List(capturedParam: MethodParameterIn) =>
+          capturedParam.name shouldBe "fallback"
+          capturedParam.method.fullName shouldBe "Foo.foo:void(string,string)"
+        }
+
+        inside(fallbackClosureBinding._captureIn.l) { case List(outMethod: MethodRef) =>
+          outMethod.typeFullName shouldBe "Test0.cpp:<global>.Foo.foo.<lambda>0:string(string)"
+          outMethod.methodFullName shouldBe "Test0.cpp:<global>.Foo.foo.<lambda>0:string(string)"
+        }
+      }
+    }
+
+    "create a typeDecl node inheriting from correct interface" in {
+      inside(cpg.typeDecl.name(".*lambda.*").l) { case List(lambdaDecl) =>
+        lambdaDecl.name shouldBe "<lambda>0"
+        lambdaDecl.fullName shouldBe "Test0.cpp:<global>.Foo.foo.<lambda>0:string(string)"
+        lambdaDecl.inheritsFromTypeFullName should contain theSameElementsAs List("std.function")
+      }
+    }
+  }
+
+  "lambdas with different return type annotations" should {
+    val cpg = code("""
+        |void foo() {
+        |  auto l1 = [] () -> int { return 1; };  // explicit type
+        |  auto l2 = [] () { return 1; }; // inferred
+        |  auto l3 = [] () -> unknown { return bar(); }; // broken or unknown
+        |  auto l4 = [] () mutable -> int { return 1; };
+        |  auto l5 = [] () mutable { return 1; };
+        |}
+        |""".stripMargin)
+
+    "have the correct fullname" in {
+      val List(l0, l1, l2, l3, l4) = cpg.method.name(".*lambda.*").sortBy(_.name).l
+      l0.fullName shouldBe "Test0.cpp:<global>.foo.<lambda>0:int()"
+      l1.fullName shouldBe "Test0.cpp:<global>.foo.<lambda>1:int()"
+      l2.fullName shouldBe "Test0.cpp:<global>.foo.<lambda>2:unknown()"
+      l3.fullName shouldBe "Test0.cpp:<global>.foo.<lambda>3:int()"
+      l4.fullName shouldBe "Test0.cpp:<global>.foo.<lambda>4:int()"
+    }
+  }
+
+  "lambdas capturing this in method" should {
+    val cpg = code("""
+        |class Foo {
+        |  public:
+        |    int firstDirty;
+        |    void foo() {
+        |      bar(l, [this] { return this->firstDirty == nullptr; });
+        |    }
+        |}
+        |""".stripMargin)
+
+    "ref this correctly" in {
+      val List(lambda) = cpg.method.name(".*lambda.*").l
+      lambda.fullName shouldBe "Test0.cpp:<global>.Foo.foo.<lambda>0:bool()"
+      inside(cpg.closureBinding.l) { case List(thisClosureBinding) =>
+        val thisLocal = cpg.method.name(".*lambda.*").local.nameExact(Defines.This).head
+        thisClosureBinding.closureBindingId shouldBe thisLocal.closureBindingId
+
+        cpg.identifier.nameExact(Defines.This).refsTo.l shouldBe List(thisLocal)
+
+        inside(thisClosureBinding._refOut.l) { case List(capturedThisParam: MethodParameterIn) =>
+          capturedThisParam.name shouldBe Defines.This
+          capturedThisParam.typeFullName shouldBe "Foo*"
+          capturedThisParam.method.fullName shouldBe "Foo.foo:void()"
+        }
+
+        inside(thisClosureBinding._captureIn.l) { case List(outMethod: MethodRef) =>
+          outMethod.typeFullName shouldBe lambda.fullName
+          outMethod.methodFullName shouldBe lambda.fullName
+        }
+      }
+    }
+  }
+
+  "lambdas capturing with shadowing" should {
+    val cpg = code("""
+     |static void foo(int *x) {
+     |  auto f = [=] { float *x = nullptr; };
+     |}""".stripMargin)
+
+    "ref the shadowed variable correctly" in {
+      cpg.closureBinding shouldBe empty
+      val List(lambda) = cpg.method.name(".*lambda.*").l
+      val List(xLocal) = lambda.block.local.nameExact("x").l
+      xLocal.typeFullName shouldBe "float*"
+      xLocal.closureBindingId shouldBe None
+      xLocal.closureBinding shouldBe empty
+      cpg.identifier.nameExact("x").refsTo.l shouldBe List(xLocal)
+    }
+  }
+
+  "lambdas capturing with shadowing in nested lambdas" should {
+    val cpg = code("""
+        |static void foo(int *x) {
+        |  auto f = [=] {
+        |    x = nullptr; // x is captured
+        |    auto nested = [=] {
+        |      float *x = nullptr; // this x here is shadowed
+        |    };
+        |  };
+        |}""".stripMargin)
+
+    "ref the shadowed variable correctly" in {
+      val List(lambdaF, lambdaNested) = cpg.method.name(".*lambda.*").sortBy(_.lineNumber.get).l
+      inside(cpg.closureBinding.l) { case List(xClosureBinding) =>
+        val List(xLocalCaptured) = lambdaF.block.local.nameExact("x").l
+        xClosureBinding.closureBindingId shouldBe xLocalCaptured.closureBindingId
+
+        cpg.identifier.nameExact("x").lineNumber(4).refsTo.l shouldBe List(xLocalCaptured)
+
+        inside(xClosureBinding._refOut.l) { case List(capturedThisParam: MethodParameterIn) =>
+          capturedThisParam.name shouldBe "x"
+          capturedThisParam.typeFullName shouldBe "int*"
+          capturedThisParam.method.fullName shouldBe "foo:void(int*)"
+        }
+
+        inside(xClosureBinding._captureIn.l) { case List(outMethod: MethodRef) =>
+          outMethod.typeFullName shouldBe lambdaF.fullName
+          outMethod.methodFullName shouldBe lambdaF.fullName
+        }
+      }
+
+      val List(xLocalNested) = lambdaNested.block.local.nameExact("x").l
+      xLocalNested.typeFullName shouldBe "float*"
+      xLocalNested.closureBindingId shouldBe None
+      xLocalNested.closureBinding shouldBe empty
+      cpg.identifier.nameExact("x").lineNumber(6).refsTo.l shouldBe List(xLocalNested)
+    }
+  }
+
+  "lambdas capturing with shadowing in nested blocks" should {
+    val cpg = code("""
+        |static void foo(int *x) {
+        |  auto f = [&] {
+        |    *x = 0; // capture
+        |    {
+        |      float *x = nullptr; // first shadowing
+        |      {
+        |        double *x = nullptr; // second shadowing
+        |      }
+        |    }
+        |  };
+        |}
+        |""".stripMargin)
+
+    "ref the shadowed variable correctly" in {
+      val List(x1, x2, x3) = cpg.method.name(".*lambda.*").ast.isLocal.sortBy(_.lineNumber.get).nameExact("x").l
+
+      x1.typeFullName shouldBe "int*"
+      x1.closureBindingId shouldBe Some("Test0.cpp:<global>.foo.<lambda>0:void():x")
+      cpg.identifier.nameExact("x").lineNumber(4).refsTo.l shouldBe List(x1)
+
+      x2.typeFullName shouldBe "float*"
+      x2.closureBindingId shouldBe None
+      cpg.identifier.nameExact("x").lineNumber(6).refsTo.l shouldBe List(x2)
+
+      x3.typeFullName shouldBe "double*"
+      x3.closureBindingId shouldBe None
+      cpg.identifier.nameExact("x").lineNumber(8).refsTo.l shouldBe List(x3)
+    }
+  }
+
+  "lambdas capturing with shadowing in nested blocks 2" should {
+    val cpg = code("""
+        |static void foo(int *x) {
+        |  auto f = [&] {
+        |    *x = 0; // capture
+        |    {
+        |      float *x = nullptr; // shadowing
+        |      {
+        |        *x = 0;
+        |      }
+        |    }
+        |  };
+        |}
+        |""".stripMargin)
+
+    "ref the shadowed variable correctly" in {
+      val List(x1, x2) = cpg.method.name(".*lambda.*").ast.isLocal.sortBy(_.lineNumber.get).nameExact("x").l
+
+      x1.typeFullName shouldBe "int*"
+      x1.closureBindingId shouldBe Some("Test0.cpp:<global>.foo.<lambda>0:void():x")
+      cpg.identifier.nameExact("x").lineNumber(4).refsTo.l shouldBe List(x1)
+
+      x2.typeFullName shouldBe "float*"
+      x2.closureBindingId shouldBe None
+      cpg.identifier.nameExact("x").lineNumber(6).refsTo.l shouldBe List(x2)
+
+      cpg.identifier.nameExact("x").lineNumber(8).refsTo.l shouldBe List(x2)
+    }
+  }
+
+  "lambdas capturing with shadowing in nested blocks 3" should {
+    val cpg = code("""
+        |static void foo() {
+        |  int *x;
+        |  auto f = [&] {
+        |    *x = 0; // capture
+        |    {
+        |      float *x = nullptr; // first shadowing
+        |      {
+        |        double *x = nullptr; // second shadowing
+        |      }
+        |    }
+        |  };
+        |}
+        |""".stripMargin)
+
+    "ref the shadowed variable correctly" in {
+      val List(x1, x2, x3) = cpg.method.name(".*lambda.*").ast.isLocal.sortBy(_.lineNumber.get).nameExact("x").l
+
+      x1.typeFullName shouldBe "int*"
+      x1.closureBindingId shouldBe Some("Test0.cpp:<global>.foo.<lambda>0:void():x")
+      val List(x1Id) = cpg.identifier.nameExact("x").lineNumber(5).l
+      x1Id.lineNumber shouldBe x1.lineNumber
+      x1Id.columnNumber shouldBe x1.columnNumber
+      x1Id.refsTo.l shouldBe List(x1)
+
+      x2.typeFullName shouldBe "float*"
+      x2.closureBindingId shouldBe None
+      val List(x2Id) = cpg.identifier.nameExact("x").lineNumber(7).l
+      x2Id.refsTo.l shouldBe List(x2)
+      x2Id.lineNumber shouldBe x2.lineNumber
+      x2Id.columnNumber shouldBe x2.columnNumber
+
+      x3.typeFullName shouldBe "double*"
+      x3.closureBindingId shouldBe None
+      val List(x3Id) = cpg.identifier.nameExact("x").lineNumber(9).l
+      x3Id.refsTo.l shouldBe List(x3)
+      x3Id.lineNumber shouldBe x3.lineNumber
+      x3Id.columnNumber shouldBe x3.columnNumber
+    }
+  }
+
+  "lambdas capturing with shadowing in nested blocks 4" should {
+    val cpg = code("""
+        |static void foo(int *x) {
+        |  {
+        |    float *x = nullptr; // first shadowing
+        |    {
+        |      double *x = nullptr; // second shadowing
+        |      auto f = [&] {
+        |        *x = 0.0L; // capture of double*
+        |      };
+        |    }
+        |  }
+        |}
+        |""".stripMargin)
+
+    "ref the shadowed variable correctly" in {
+      val List(x1, x2, x3) = cpg.local.sortBy(_.lineNumber.get).nameExact("x").l
+
+      x1.typeFullName shouldBe "float*"
+      x1.closureBindingId shouldBe None
+      cpg.identifier.nameExact("x").lineNumber(4).refsTo.l shouldBe List(x1)
+
+      x2.typeFullName shouldBe "double*"
+      x2.closureBindingId shouldBe None
+      cpg.identifier.nameExact("x").lineNumber(6).refsTo.l shouldBe List(x2)
+
+      x3.typeFullName shouldBe "double*"
+      x3.closureBindingId shouldBe Some("Test0.cpp:<global>.foo.<lambda>0:void():x")
+      cpg.identifier.nameExact("x").lineNumber(8).refsTo.l shouldBe List(x3)
+    }
+  }
+
+  "lambdas capturing this in global method" should {
+    val cpg = code("""
+        |class Foo {}
+        |void Foo::foo() {
+        |  bar(l, [this] { return this->firstDirty == nullptr; });
+        |}
+        |""".stripMargin)
+
+    "ref this correctly" in {
+      val List(lambda) = cpg.method.name(".*lambda.*").l
+      lambda.fullName shouldBe "Test0.cpp:<global>.Foo.foo.<lambda>0:bool()"
+      inside(cpg.closureBinding.l) { case List(thisClosureBinding) =>
+        val thisLocal = cpg.method.name(".*lambda.*").local.nameExact(Defines.This).head
+        thisClosureBinding.closureBindingId shouldBe thisLocal.closureBindingId
+
+        cpg.identifier.nameExact(Defines.This).refsTo.l shouldBe List(thisLocal)
+
+        inside(thisClosureBinding._refOut.l) { case List(capturedThisParam: MethodParameterIn) =>
+          capturedThisParam.name shouldBe Defines.This
+          capturedThisParam.typeFullName shouldBe "Foo*"
+          capturedThisParam.method.fullName shouldBe "Foo.foo:void()"
+        }
+
+        inside(thisClosureBinding._captureIn.l) { case List(outMethod: MethodRef) =>
+          outMethod.typeFullName shouldBe lambda.fullName
+          outMethod.methodFullName shouldBe lambda.fullName
+        }
+      }
+    }
+  }
+
+  "lambda capturing local variable by value" should {
+    val cpg = code("""
+        |class Foo {
+        |  public:
+        |    void foo(Object arg) {
+        |      string myValue = "abc";
+        |      std::list<string> userPayload = {};
+        |      auto userNamesList = userPayload.map([myValue] (string item) -> string {
+        |        sink2(myValue);
+        |        return item + myValue;
+        |      });
+        |      sink1(userNamesList);
+        |      return;
+        |    }
+        |}
+        |""".stripMargin)
+
+    "be captured precisely" in {
+      inside(cpg.closureBinding.l) { case List(myValue) =>
+        myValue.evaluationStrategy shouldBe EvaluationStrategies.BY_VALUE
+        myValue.closureBindingId shouldBe Some("Test0.cpp:<global>.Foo.foo.<lambda>0:string(string):myValue")
+        myValue._localViaRefOut.get.name shouldBe "myValue"
+        myValue._captureIn.collectFirst { case x: MethodRef =>
+          x.methodFullName
+        }.head shouldBe "Test0.cpp:<global>.Foo.foo.<lambda>0:string(string)"
+      }
+    }
+
+  }
+
+  "lambda capturing local variable by reference" should {
+    val cpg = code("""
+        |class Foo {
+        |  public:
+        |    void foo(Object arg) {
+        |      string myValue = "abc";
+        |      std::list<string> userPayload = {};
+        |      auto userNamesList = userPayload.map([&] (string item) -> string {
+        |        sink2(myValue);
+        |        return item + myValue;
+        |      });
+        |      sink1(userNamesList);
+        |      return;
+        |    }
+        |}
+        |""".stripMargin)
+
+    "be captured precisely" in {
+      inside(cpg.closureBinding.l) { case List(myValue) =>
+        myValue.evaluationStrategy shouldBe EvaluationStrategies.BY_REFERENCE
+        myValue.closureBindingId shouldBe Some("Test0.cpp:<global>.Foo.foo.<lambda>0:string(string):myValue")
+        myValue._localViaRefOut.get.name shouldBe "myValue"
+        myValue._captureIn.collectFirst { case x: MethodRef =>
+          x.methodFullName
+        }.head shouldBe "Test0.cpp:<global>.Foo.foo.<lambda>0:string(string)"
+      }
+    }
+
+  }
+
+  "be correct for simple lambda expressions" in {
+    val cpg = code("""
+        |auto x = [] (int a, int b) -> int
+        | { return a + b; };
+        |auto y = [] (string a, string b) -> string
+        | { return a + b; };
+        |""".stripMargin)
+    val lambda1FullName = "Test0.cpp:<global>.<lambda>0:int(int,int)"
+    val lambda2FullName = "Test0.cpp:<global>.<lambda>1:string(string,string)"
+
+    cpg.local.nameExact("x").order.l shouldBe List(1)
+    cpg.local.nameExact("y").order.l shouldBe List(3)
+
+    inside(cpg.assignment.l) { case List(assignment1, assignment2) =>
+      assignment1.order shouldBe 2
+      inside(assignment1.astMinusRoot.isMethodRef.l) { case List(ref) =>
+        ref.methodFullName shouldBe lambda1FullName
+      }
+      assignment2.order shouldBe 4
+      inside(assignment2.astMinusRoot.isMethodRef.l) { case List(ref) =>
+        ref.methodFullName shouldBe lambda2FullName
+      }
+    }
+
+    inside(cpg.method.fullNameExact(lambda1FullName).isLambda.l) { case List(l1) =>
+      l1.name shouldBe "<lambda>0"
+      l1.code should startWith("[] (int a, int b) -> int")
+      l1.signature shouldBe "int(int,int)"
+      l1.body.code shouldBe "{ return a + b; }"
+    }
+
+    inside(cpg.method.fullNameExact(lambda2FullName).isLambda.l) { case List(l2) =>
+      l2.name shouldBe "<lambda>1"
+      l2.code should startWith("[] (string a, string b) -> string")
+      l2.signature shouldBe "string(string,string)"
+      l2.body.code shouldBe "{ return a + b; }"
+    }
+    cpg.typeDecl(NamespaceTraversal.globalNamespaceName).head.bindsOut.size shouldBe 0
+  }
+
+  "be correct for simple lambda expression in class" in {
+    val cpg = code("""
+        |class Foo {
+        | auto x = [] (int a, int b) -> int
+        | {
+        |   return a + b;
+        | };
+        |};
+        |
+        |""".stripMargin)
+    val lambdaName     = "<lambda>0"
+    val signature      = "int(int,int)"
+    val lambdaFullName = s"Test0.cpp:<global>.Foo.$lambdaName:$signature"
+
+    cpg.member.nameExact("x").order.l shouldBe List(1)
+
+    inside(cpg.assignment.l) { case List(assignment1) =>
+      inside(assignment1.astMinusRoot.isMethodRef.l) { case List(ref) =>
+        ref.methodFullName shouldBe lambdaFullName
+      }
+    }
+
+    inside(cpg.method.fullNameExact(lambdaFullName).isLambda.l) { case List(l1) =>
+      l1.name shouldBe lambdaName
+      l1.code should startWith("[] (int a, int b) -> int")
+      l1.signature shouldBe signature
+    }
+  }
+
+  "be correct for simple lambda expression in class under namespaces" in {
+    val cpg = code("""
+        |namespace A { class B {
+        |class Foo {
+        | auto x = [] (int a, int b) -> int
+        | {
+        |   return a + b;
+        | };
+        |};
+        |};}
+        |""".stripMargin)
+    val lambdaName     = "<lambda>0"
+    val signature      = "int(int,int)"
+    val lambdaFullName = s"Test0.cpp:<global>.A.B.Foo.$lambdaName:$signature"
+
+    cpg.member.nameExact("x").order.l shouldBe List(1)
+
+    inside(cpg.assignment.l) { case List(assignment1) =>
+      inside(assignment1.astMinusRoot.isMethodRef.l) { case List(ref) =>
+        ref.methodFullName shouldBe lambdaFullName
+      }
+    }
+
+    inside(cpg.method.fullNameExact(lambdaFullName).isLambda.l) { case List(l1) =>
+      l1.name shouldBe lambdaName
+      l1.code should startWith("[] (int a, int b) -> int")
+      l1.signature shouldBe signature
+    }
+
+  }
+
+  "be correct when calling a lambda" in {
+    val cpg = code("""
+        |void foo() {
+        |auto x = [](int n) -> int
+        |{
+        |  return 32 + n;
+        |};
+        |
+        |constexpr int foo1 = x(10);
+        |constexpr int foo2 = [](int n) -> int
+        |{
+        |  return 32 + n;
+        |}(10);
+        |}
+        |""".stripMargin)
+    val signature       = "int(int)"
+    val lambda1Name     = "<lambda>0"
+    val lambda1FullName = s"Test0.cpp:<global>.foo.$lambda1Name:$signature"
+    val lambda2Name     = "<lambda>1"
+    val lambda2FullName = s"Test0.cpp:<global>.foo.$lambda2Name:$signature"
+
+    cpg.local.nameExact("x").order.l shouldBe List(1)
+    cpg.local.nameExact("x").typeFullName.l shouldBe List(Defines.Function)
+    cpg.local.nameExact("foo1").order.l shouldBe List(3)
+    cpg.local.nameExact("foo2").order.l shouldBe List(5)
+
+    inside(cpg.assignment.l) { case List(assignment1, assignment2, assignment3) =>
+      assignment1.order shouldBe 2
+      assignment2.order shouldBe 4
+      assignment3.order shouldBe 6
+      inside(assignment1.astMinusRoot.isMethodRef.l) { case List(ref) =>
+        ref.methodFullName shouldBe lambda1FullName
+      }
+    }
+
+    inside(cpg.method.fullNameExact(lambda1FullName).isLambda.l) { case List(l1) =>
+      l1.name shouldBe lambda1Name
+      l1.code should startWith("[](int n) -> int")
+      l1.signature shouldBe signature
+    }
+
+    inside(cpg.call.nameExact("<operator>()").l) { case List(lambda1call, lambda2call) =>
+      lambda1call.name shouldBe "<operator>()"
+      lambda1call.methodFullName shouldBe "<operator>():int(int)"
+      lambda1call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
+      val List(rec) = lambda1call.receiver.collectAll[Identifier].l
+      rec.name shouldBe "x"
+      rec.typeFullName shouldBe Defines.Function
+      inside(lambda1call.astChildren.l) { case List(id: Identifier, lit: Literal) =>
+        id.code shouldBe "x"
+        lit.code shouldBe "10"
+      }
+      inside(lambda1call.argument.l) { case List(lit: Literal) =>
+        lit.code shouldBe "10"
+      }
+      inside(lambda1call.receiver.l) { case List(receiver: Identifier) =>
+        receiver.code shouldBe "x"
+      }
+
+      lambda2call.name shouldBe "<operator>()"
+      lambda2call.methodFullName shouldBe "<operator>():int(int)"
+      lambda2call.dispatchType shouldBe DispatchTypes.DYNAMIC_DISPATCH
+      inside(lambda2call.astChildren.l) { case List(ref: MethodRef, lit: Literal) =>
+        ref.methodFullName shouldBe lambda2FullName
+        ref.code shouldBe lambda2FullName
+        lit.code shouldBe "10"
+      }
+
+      inside(lambda2call.argument.l) { case List(lit: Literal) =>
+        lit.code shouldBe "10"
+      }
+      inside(lambda2call.receiver.l) { case List(ref: MethodRef) =>
+        ref.methodFullName shouldBe lambda2FullName
+        ref.code shouldBe lambda2FullName
+      }
+    }
+  }
+
+  "a lambda with a C++14 init-capture" should {
+    val cpg = code("""
+        |void sink(int);
+        |int source();
+        |void foo() {
+        |  int len = source();
+        |  auto f = [&n = len]() { sink(n); };
+        |  f();
+        |}
+        |""".stripMargin)
+
+    "declare the init-capture as a local of the lambda method" in {
+      def lambdaLocals = cpg.method.name(".*lambda.*").local
+      inside(lambdaLocals.nameExact("n").l) { case List(n) =>
+        n.typeFullName shouldBe "int"
+        n.code shouldBe "&n = len"
+        n.closureBindingId shouldBe None
+        // the assignment target and the use in the body, each with exactly one REF edge to the local
+        val List(target, use) = cpg.identifier.nameExact("n").l
+        target._refOut.l shouldBe List(n)
+        use._refOut.l shouldBe List(n)
+      }
+    }
+
+    "assign the initializer to it before the body" in {
+      val List(lambda)     = cpg.method.name(".*lambda.*").l
+      val List(assignment) = lambda.body.astChildren.isCall.nameExact(Operators.assignment).l
+      val List(sinkCall)   = lambda.body.astChildren.isCall.nameExact("sink").l
+      assignment.code shouldBe "n = len"
+      assignment.order should be < sinkCall.order
+      inside(assignment.argument.l) { case List(target: Identifier, source: Identifier) =>
+        target.name shouldBe "n"
+        source.name shouldBe "len"
+      }
+    }
+
+    "capture the variable the initializer reads" in {
+      inside(cpg.closureBinding.l) { case List(len) =>
+        len.closureBindingId shouldBe Some("Test0.cpp:<global>.foo.<lambda>0:void():len")
+        len.evaluationStrategy shouldBe EvaluationStrategies.BY_REFERENCE
+        len._localViaRefOut.get.name shouldBe "len"
+        len._captureIn.collectFirst { case x: MethodRef => x.methodFullName }.head shouldBe
+          "Test0.cpp:<global>.foo.<lambda>0:void()"
+      }
+      cpg.method.name(".*lambda.*").local.nameExact("len").closureBindingId.l shouldBe
+        List("Test0.cpp:<global>.foo.<lambda>0:void():len")
+    }
+  }
+
+  "a lambda with an init-capture by value" should {
+    val cpg = code("""
+        |int source();
+        |void foo() {
+        |  int len = source();
+        |  auto f = [n = len + 1]() { return n; };
+        |}
+        |""".stripMargin)
+
+    "capture the variable the initializer reads by value" in {
+      inside(cpg.closureBinding.l) { case List(len) =>
+        len.closureBindingId shouldBe Some("Test0.cpp:<global>.foo.<lambda>0:int():len")
+        len.evaluationStrategy shouldBe EvaluationStrategies.BY_VALUE
+        len._localViaRefOut.get.name shouldBe "len"
+      }
+    }
+  }
+
+  "a lambda whose init-capture name collides with an enclosing variable" should {
+    val cpg = code("""
+        |void sink(int);
+        |int a();
+        |int b();
+        |void foo() {
+        |  int n   = a();
+        |  int len = b();
+        |  auto f = [&n = len]() { sink(n); };
+        |  f();
+        |}
+        |""".stripMargin)
+
+    "bind the new name to the lambda's own local, not to the enclosing variable" in {
+      val List(lambda)      = cpg.method.name(".*lambda.*").l
+      val List(lambdaN)     = cpg.method.name(".*lambda.*").local.nameExact("n").l
+      val List(target, use) = lambda.ast.isIdentifier.nameExact("n").l
+      target._refOut.l shouldBe List(lambdaN)
+      use._refOut.l shouldBe List(lambdaN)
+      inside(cpg.closureBinding.l) { case List(len) =>
+        len.closureBindingId shouldBe Some("Test0.cpp:<global>.foo.<lambda>0:void():len")
+        len._localViaRefOut.get.name shouldBe "len"
+      }
+    }
+  }
+
+  "lambdas capturing this by pointer and by value" should {
+    val cpg = code("""
+        |struct Box {
+        |  int n;
+        |  auto byPtr()   { return [this]()  { return this->n; }; }
+        |  auto byValue() { return [*this]() { return this->n; }; }
+        |};
+        |""".stripMargin)
+
+    "distinguish [this] from [*this]" in {
+      inside(cpg.closureBinding.l.sortBy(_.closureBindingId)) { case List(byPtr, byValue) =>
+        byPtr.closureBindingId shouldBe Some("Test0.cpp:<global>.Box.byPtr.<lambda>0:int():this")
+        byPtr.evaluationStrategy shouldBe EvaluationStrategies.BY_REFERENCE
+
+        byValue.closureBindingId shouldBe Some("Test0.cpp:<global>.Box.byValue.<lambda>1:int():this")
+        byValue.evaluationStrategy shouldBe EvaluationStrategies.BY_VALUE
+      }
+    }
+  }
+}

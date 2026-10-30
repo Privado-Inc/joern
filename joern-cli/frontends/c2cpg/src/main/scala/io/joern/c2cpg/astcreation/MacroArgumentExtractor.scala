@@ -1,17 +1,10 @@
 package io.joern.c2cpg.astcreation
 
-import org.eclipse.cdt.core.dom.ast.{
-  IASTFileLocation,
-  IASTName,
-  IASTPreprocessorElifStatement,
-  IASTPreprocessorIfStatement,
-  IASTPreprocessorMacroExpansion,
-  IASTTranslationUnit
-}
+import org.eclipse.cdt.core.dom.ast.*
 import org.eclipse.cdt.core.parser.IToken
 import org.eclipse.cdt.core.parser.util.CharArrayMap
-import org.eclipse.cdt.internal.core.parser.scanner.Lexer.LexerOptions
 import org.eclipse.cdt.internal.core.parser.scanner.*
+import org.eclipse.cdt.internal.core.parser.scanner.Lexer.LexerOptions
 
 import scala.annotation.nowarn
 import scala.collection.mutable
@@ -26,8 +19,6 @@ import scala.collection.mutable
   * `setExpandedMacroArgument`, we can intercept arguments and store them in a list for later retrieval. We wrap this
   * rather complicated way of accessing the macro arguments in the single public method `getArguments` of the
   * `MacroArgumentExtractor`.
-  *
-  * This class must be in this package in order to have access to `PreprocessorMacro`.
   */
 class MacroArgumentExtractor(tu: IASTTranslationUnit, loc: IASTFileLocation) {
 
@@ -43,7 +34,7 @@ class MacroArgumentExtractor(tu: IASTTranslationUnit, loc: IASTFileLocation) {
       val refLoc         = exp.getFileLocation
       val input          = source.slice(0, refLoc.getNodeLength)
       val enclosing      = tu.getNodeSelector(null).findEnclosingNode(-1, 2)
-      val isPPCondition = enclosing.isInstanceOf[IASTPreprocessorIfStatement] || enclosing
+      val isPPCondition  = enclosing.isInstanceOf[IASTPreprocessorIfStatement] || enclosing
         .isInstanceOf[IASTPreprocessorElifStatement]
       expander.expand(input, tracker, tu.getFilePath, refLoc.getStartingLineNumber, isPPCondition)
       tracker.arguments.toList
@@ -80,13 +71,14 @@ class C2CpgMacroExpansionTracker(stepToTrack: Int) extends MacroExpansionTracker
   }
 
   private def tokenListToString(tokenList: TokenList): String = {
+    val sb          = new java.lang.StringBuilder
     var tok: IToken = tokenList.first()
-    var arg         = ""
     while (tok != null) {
-      arg += s"${tok.toString} "
+      sb.append(tok.toString).append(' ')
       tok = tok.getNext
     }
-    arg.trim
+    if (sb.length > 0) sb.setLength(sb.length - 1)
+    sb.toString
   }
 
 }

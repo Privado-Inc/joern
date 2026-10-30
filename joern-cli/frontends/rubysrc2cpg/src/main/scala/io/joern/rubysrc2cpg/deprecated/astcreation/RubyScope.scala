@@ -39,15 +39,16 @@ class RubyScope extends Scope[String, NewIdentifier, NewNode] {
     *   the names of parameters.
     */
   def createAndLinkLocalNodes(diffGraph: DiffGraphBuilder, paramNames: Set[String] = Set.empty): List[DeclarationNew] =
-    stack.headOption match
+    stack.headOption match {
       case Some(top) => scopeToVarMap.buildVariableGroupings(top.scopeNode, paramNames ++ Set("this"), diffGraph)
       case None      => List.empty[DeclarationNew]
+    }
 
-      /** @param identifier
-        *   the identifier to count
-        * @return
-        *   the number of times the given identifier occurs in the immediate scope.
-        */
+    /** @param identifier
+      *   the identifier to count
+      * @return
+      *   the number of times the given identifier occurs in the immediate scope.
+      */
   def numVariableReferences(identifier: String): Int = {
     stack.map(_.scopeNode).flatMap(scopeToVarMap.get).flatMap(_.get(identifier)).map(_.ids.size).headOption.getOrElse(0)
   }
@@ -92,7 +93,7 @@ class RubyScope extends Scope[String, NewIdentifier, NewNode] {
       paramNames: Set[String],
       diffGraph: DiffGraphBuilder
     ): List[DeclarationNew] =
-      scopeMap.get(key) match
+      scopeMap.get(key) match {
         case Some(varMap) =>
           varMap.values
             .filterNot { case VarGroup(local, _) => paramNames.contains(local.name) }
@@ -102,6 +103,7 @@ class RubyScope extends Scope[String, NewIdentifier, NewNode] {
             }
             .toList
         case None => List.empty[DeclarationNew]
+      }
   }
 
 }

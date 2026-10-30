@@ -7,18 +7,21 @@ import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{ModifierTypes, Operators}
 import io.shiftleft.semanticcpg.language.*
 
+@scala.annotation.nowarn("cat=deprecation")
 class TypeDeclTests extends PhpCode2CpgFixture {
 
   "typedecl nodes for empty classes" should {
     val cpg = code("""<?php
-        |class A extends B implements C, D {}
-        |""".stripMargin).withConfig(Config().withDisableFileContent(false))
+      |class A extends B implements C, D {}
+      |""".stripMargin).withConfig(Config().withDisableFileContent(false))
 
     "have the correct basic properties set" in {
       inside(cpg.typeDecl.nameExact("A").l) { case List(typeDecl) =>
         typeDecl.fullName shouldBe "A"
         typeDecl.lineNumber shouldBe Some(2)
         typeDecl.code shouldBe "class A extends B implements C, D"
+        typeDecl.astParentFullName shouldBe "Test0.php:<global>"
+        typeDecl.astParentType shouldBe "METHOD"
       }
     }
 
@@ -31,20 +34,83 @@ class TypeDeclTests extends PhpCode2CpgFixture {
     }
   }
 
+  "anonymous class methods" should {
+    val cpg = code("""<?php
+      |$x = new class {
+      |  final public function foo(int $x): int {
+      |    return 0;
+      |  }
+      |}""".stripMargin).withConfig(Config().withDisableFileContent(false))
+
+    "have the correct bindings" in {
+      inside(cpg.typeDecl.name("foo").bindsOut.sortBy(_.refOut.head.name).l) { case List(invokeBinding) =>
+        invokeBinding.name shouldBe "__invoke"
+        invokeBinding.methodFullName shouldBe "<empty>"
+        invokeBinding.signature shouldBe ""
+
+        inside(invokeBinding.refOut.l) { case List(fooMethod) =>
+          fooMethod.name shouldBe "foo"
+          fooMethod.fullName shouldBe "Test0.php:<global>.anon-class-0.foo"
+        }
+      }
+    }
+
+    "not inherit from the enclosing type for the synthetic method type decl" in {
+      inside(cpg.typeDecl.name("foo").l) { case List(fooMethodTypeDecl) =>
+        fooMethodTypeDecl.inheritsFromTypeFullName shouldBe empty
+      }
+    }
+  }
+
   "class methods" should {
     val cpg = code("""<?php
-        |class Foo {
-        |  final public function foo(int $x): int {
-        |    return 0;
-        |  }
-        |}
-        |""".stripMargin).withConfig(Config().withDisableFileContent(false))
+      |class Foo {
+      |  final public function foo(int $x): int {
+      |    return 0;
+      |  }
+      |}""".stripMargin).withConfig(Config().withDisableFileContent(false))
+
+    "have the correct bindings for the explicit Foo class" in {
+      inside(cpg.typeDecl("Foo").bindsOut.sortBy(_.name).l) { case List(fooBinding) =>
+        fooBinding.name shouldBe "foo"
+        fooBinding.methodFullName shouldBe "<empty>"
+        fooBinding.signature shouldBe ""
+
+        inside(fooBinding.refOut.l) { case List(fooMethod) =>
+          fooMethod.name shouldBe "foo"
+          fooMethod.fullName shouldBe "Foo.foo"
+        }
+      }
+    }
+
+    "have the correct bindings for the synthetic foo method class" in {
+      inside(cpg.typeDecl("foo").bindsOut.sortBy(_.name).l) { case List(invokeBinding) =>
+        invokeBinding.name shouldBe "__invoke"
+        invokeBinding.methodFullName shouldBe "<empty>"
+        invokeBinding.signature shouldBe ""
+
+        inside(invokeBinding.refOut.l) { case List(fooMethod) =>
+          fooMethod.name shouldBe "foo"
+          fooMethod.fullName shouldBe "Foo.foo"
+        }
+      }
+    }
+
+    "not inherit from the enclosing type for the synthetic method type decl" in {
+      inside(cpg.typeDecl.name("foo").l) { case List(fooMethodTypeDecl) =>
+        fooMethodTypeDecl.inheritsFromTypeFullName shouldBe empty
+      }
+    }
 
     "be created correctly" in {
       inside(cpg.method.name("foo").l) { case List(fooMethod) =>
-        fooMethod.fullName shouldBe s"Foo->foo"
-        fooMethod.signature shouldBe s"${Defines.UnresolvedSignature}(1)"
-        fooMethod.modifier.map(_.modifierType).toSet shouldBe Set(ModifierTypes.FINAL, ModifierTypes.PUBLIC)
+        fooMethod.fullName shouldBe s"Foo.foo"
+        fooMethod.signature shouldBe ""
+        fooMethod.modifier.map(_.modifierType).toSet shouldBe Set(
+          ModifierTypes.FINAL,
+          ModifierTypes.PUBLIC,
+          ModifierTypes.VIRTUAL
+        )
         fooMethod.methodReturn.typeFullName shouldBe "int"
         inside(fooMethod.parameter.l) { case List(thisParam, xParam) =>
           thisParam.name shouldBe "this"
@@ -76,52 +142,51 @@ class TypeDeclTests extends PhpCode2CpgFixture {
 
   "constructors using the class name should be represented with the correct init method" in {
     val cpg = code("""<?php
-        |function foo() {
-        |  new Foo(42);
-        |}
-        |""".stripMargin)
+      |function foo() {
+      |  new Foo(42);
+      |}""".stripMargin)
 
-    inside(cpg.method.name("foo").body.astChildren.l) { case List(tmpLocal: Local, constructorBlock: Block) =>
-      tmpLocal.name shouldBe "tmp0"
-      tmpLocal.code shouldBe "$tmp0"
-
+    inside(cpg.method.name("foo").body.astChildren.l) { case List(constructorBlock: Block) =>
       constructorBlock.lineNumber shouldBe Some(3)
 
-      inside(constructorBlock.astChildren.l) { case List(allocAssign: Call, initCall: Call, tmpVar: Identifier) =>
-        allocAssign.methodFullName shouldBe Operators.assignment
-        inside(allocAssign.astChildren.l) { case List(tmpIdentifier: Identifier, allocCall: Call) =>
-          tmpIdentifier.name shouldBe "tmp0"
-          tmpIdentifier.code shouldBe "$tmp0"
-          tmpIdentifier._localViaRefOut should contain(tmpLocal)
+      inside(constructorBlock.astChildren.l) {
+        case List(tmpLocal: Local, allocAssign: Call, initCall: Call, tmpVar: Identifier) =>
+          tmpLocal.name shouldBe "foo@tmp-0"
+          tmpLocal.code shouldBe "$foo@tmp-0"
 
-          allocCall.name shouldBe Operators.alloc
-          allocCall.methodFullName shouldBe Operators.alloc
-          allocCall.lineNumber shouldBe Some(3)
-          allocCall.code shouldBe "Foo.<alloc>()"
-        }
+          allocAssign.methodFullName shouldBe Operators.assignment
+          inside(allocAssign.astChildren.l) { case List(tmpIdentifier: Identifier, allocCall: Call) =>
+            tmpIdentifier.name shouldBe "foo@tmp-0"
+            tmpIdentifier.code shouldBe "$foo@tmp-0"
+            tmpIdentifier._localViaRefOut should contain(tmpLocal)
 
-        initCall.name shouldBe "__construct"
-        initCall.methodFullName shouldBe s"Foo->__construct"
-        initCall.signature shouldBe s"${Defines.UnresolvedSignature}(1)"
-        initCall.code shouldBe "Foo->__construct(42)"
-        inside(initCall.argument.l) { case List(tmpIdentifier: Identifier, literal: Literal) =>
-          tmpIdentifier.name shouldBe "tmp0"
-          tmpIdentifier.code shouldBe "$tmp0"
-          tmpIdentifier.argumentIndex shouldBe 0
-          tmpIdentifier._localViaRefOut should contain(tmpLocal)
-          literal.code shouldBe "42"
-          literal.argumentIndex shouldBe 1
-        }
+            allocCall.name shouldBe Operators.alloc
+            allocCall.methodFullName shouldBe Operators.alloc
+            allocCall.lineNumber shouldBe Some(3)
+            allocCall.code shouldBe "Foo.<alloc>()"
+          }
+
+          initCall.name shouldBe "__construct"
+          initCall.methodFullName shouldBe s"Foo.__construct"
+          initCall.signature shouldBe ""
+          initCall.code shouldBe "new Foo(42)"
+          inside(initCall.argument.l) { case List(tmpIdentifier: Identifier, literal: Literal) =>
+            tmpIdentifier.name shouldBe "foo@tmp-0"
+            tmpIdentifier.code shouldBe "$foo@tmp-0"
+            tmpIdentifier.argumentIndex shouldBe 0
+            tmpIdentifier._localViaRefOut should contain(tmpLocal)
+            literal.code shouldBe "42"
+            literal.argumentIndex shouldBe 1
+          }
       }
     }
   }
 
   "constructors using expressions for the class name should have the correct alloc receiver" in {
     val cpg = code("""<?php
-        |function foo() {
-        |  new $x();
-        |}
-        |""".stripMargin)
+      |function foo() {
+      |  new $x();
+      |}""".stripMargin)
 
     inside(cpg.call.nameExact(Operators.alloc).l) { case List(alloc: Call) =>
       alloc.name shouldBe Operators.alloc
@@ -136,70 +201,84 @@ class TypeDeclTests extends PhpCode2CpgFixture {
 
   "interfaces not extending other interfaces should be created correctly" in {
     val cpg = code("""<?php
-        |interface Foo {
-        |  public function foo();
-        |}
-        |""".stripMargin)
+      |interface Foo {
+      |  public function foo();
+      |}""".stripMargin)
 
     inside(cpg.typeDecl.name("Foo").l) { case List(fooDecl) =>
       fooDecl.fullName shouldBe "Foo"
       fooDecl.code shouldBe "interface Foo"
       fooDecl.inheritsFromTypeFullName.isEmpty shouldBe true
+      fooDecl.astParentFullName shouldBe "Test0.php:<global>"
+      fooDecl.astParentType shouldBe "METHOD"
 
-      inside(fooDecl.astChildren.l) { case List(fooMethod: Method) =>
+      inside(fooDecl.astChildren.l) { case List(fooMethodDecl: TypeDecl, fooMethod: Method) =>
+        fooMethodDecl.fullName shouldBe "Foo.foo"
+        fooMethodDecl.astParentFullName shouldBe "Foo"
+        fooMethodDecl.astParentType shouldBe "TYPE_DECL"
+
         fooMethod.name shouldBe "foo"
-        fooMethod.fullName shouldBe s"Foo->foo"
-        fooMethod.signature shouldBe s"${Defines.UnresolvedSignature}(0)"
+        fooMethod.fullName shouldBe s"Foo.foo"
+        fooMethod.signature shouldBe ""
       }
     }
+
+    // Check that no methodRefs exist since there is no capturing
+    cpg.all.collectAll[MethodRef].l.size shouldBe 0
   }
 
   "interfaces should be able to extend multiple other interfaces" in {
     val cpg = code("""<?php
-        |interface Foo extends Bar, Baz {
-        |}
-        |""".stripMargin)
+      |interface Foo extends Bar, Baz {
+      |}""".stripMargin)
 
     inside(cpg.typeDecl.name("Foo").l) { case List(fooDecl) =>
       fooDecl.fullName shouldBe "Foo"
       fooDecl.code shouldBe "interface Foo extends Bar, Baz"
       fooDecl.inheritsFromTypeFullName should contain theSameElementsAs List("Bar", "Baz")
+      fooDecl.astParentFullName shouldBe "Test0.php:<global>"
+      fooDecl.astParentType shouldBe "METHOD"
     }
   }
 
   "traits should have the correct code fields" in {
     val cpg = code("""<?php
-        |trait Foo {
-        |  public function foo() {
-        |    echo "foo";
-        |  }
-        |}
-        |""".stripMargin)
+      |trait Foo {
+      |  public function foo() {
+      |    echo "foo";
+      |  }
+      |}""".stripMargin)
 
     inside(cpg.typeDecl.name("Foo").l) { case List(fooDecl) =>
       fooDecl.fullName shouldBe "Foo"
       fooDecl.code shouldBe "trait Foo"
       fooDecl.inheritsFromTypeFullName.isEmpty shouldBe true
 
-      inside(fooDecl.astChildren.l) { case List(fooMethod: Method) =>
+      inside(fooDecl.astChildren.l) { case List(fooMethodDecl: TypeDecl, fooMethod: Method) =>
+        fooMethodDecl.fullName shouldBe "Foo.foo"
+
         fooMethod.name shouldBe "foo"
-        fooMethod.fullName shouldBe s"Foo->foo"
-        fooMethod.signature shouldBe s"${Defines.UnresolvedSignature}(0)"
+        fooMethod.fullName shouldBe s"Foo.foo"
+        fooMethod.signature shouldBe ""
       }
     }
+
+    // Check that no methodRefs exist since there is no capturing
+    cpg.all.collectAll[MethodRef].l.size shouldBe 0
   }
 
   "enums with cases without values should have the correct fields" in {
     val cpg = code("""<?php
-        |enum Foo {
-        |  case A;
-        |  case B;
-        |}
-        |""".stripMargin)
+      |enum Foo {
+      |  case A;
+      |  case B;
+      |}""".stripMargin)
 
     inside(cpg.typeDecl.name("Foo").l) { case List(fooDecl) =>
       fooDecl.fullName shouldBe "Foo"
       fooDecl.code shouldBe "enum Foo"
+      fooDecl.astParentFullName shouldBe "Test0.php:<global>"
+      fooDecl.astParentType shouldBe "METHOD"
 
       inside(fooDecl.astChildren.l) { case List(aMember: Member, bMember: Member) =>
         aMember.name shouldBe "A"
@@ -219,16 +298,15 @@ class TypeDeclTests extends PhpCode2CpgFixture {
         |enum Foo {
         |  case A = "A";
         |  case B = "B";
-        |}
-        |""".stripMargin,
+        |}""".stripMargin,
       fileName = "foo.php"
     )
 
-    inside(cpg.typeDecl.name("Foo").l) { case List(fooDecl) =>
-      fooDecl.fullName shouldBe "Foo"
-      fooDecl.code shouldBe "enum Foo"
+    inside(cpg.typeDecl.name(s"Foo").l) { case fooTypeDecl :: Nil =>
+      fooTypeDecl.fullName shouldBe "Foo"
+      fooTypeDecl.code shouldBe "enum Foo"
 
-      inside(fooDecl.member.l) { case List(aMember: Member, bMember: Member) =>
+      inside(fooTypeDecl.member.l) { case List(aMember: Member, bMember: Member) =>
         aMember.name shouldBe "A"
         aMember.code shouldBe "case A"
         aMember.lineNumber shouldBe Some(3)
@@ -238,12 +316,14 @@ class TypeDeclTests extends PhpCode2CpgFixture {
         bMember.lineNumber shouldBe Some(4)
       }
 
-      inside(fooDecl.method.l) { case List(clinitMethod: Method) =>
+      inside(fooTypeDecl.method.l) { case List(clinitMethod: Method) =>
         clinitMethod.name shouldBe Defines.StaticInitMethodName
-        clinitMethod.fullName shouldBe s"Foo::${Defines.StaticInitMethodName}"
-        clinitMethod.signature shouldBe "void()"
+        clinitMethod.fullName shouldBe s"Foo.${Defines.StaticInitMethodName}"
+        clinitMethod.signature shouldBe ""
         clinitMethod.filename shouldBe "foo.php"
         clinitMethod.file.name.l shouldBe List("foo.php")
+        clinitMethod.lineNumber shouldBe Some(2)
+        clinitMethod.lineNumberEnd shouldBe Some(5)
 
         inside(clinitMethod.body.astChildren.l) { case List(self: Local, aAssign: Call, bAssign: Call) =>
           aAssign.code shouldBe "self::A = \"A\""
@@ -274,6 +354,21 @@ class TypeDeclTests extends PhpCode2CpgFixture {
     }
   }
 
+  "Enums with static methods" in {
+    val cpg = code("""<?php
+      |enum Foo {
+      |  case A;
+      |  case B;
+      |
+      |  public static function foo() {}
+      |}""".stripMargin)
+
+    inside(cpg.typeDecl.name(s"Foo").method.name("foo").l) { case fooMethod :: Nil =>
+      fooMethod.name shouldBe "foo"
+      fooMethod.fullName shouldBe s"Foo.foo"
+    }
+  }
+
   "the global type decl should have the correct name" in {
     val cpg = code("<?php echo 0;", fileName = "foo.php")
 
@@ -288,8 +383,7 @@ class TypeDeclTests extends PhpCode2CpgFixture {
         |
         |function test() {
         |  Foo::class;
-        |}
-        |""")
+        |}""")
 
       inside(cpg.method.name("test").body.astChildren.l) { case List(fooRef: TypeRef) =>
         fooRef.typeFullName shouldBe "foo\\Foo"
@@ -304,8 +398,7 @@ class TypeDeclTests extends PhpCode2CpgFixture {
         |
         |function test(Foo $f) {
         |  $f::class;
-        |}
-        |""")
+        |}""")
 
       inside(cpg.method.name("test").body.astChildren.l) { case List(fooRef: TypeRef) =>
         // TODO The typeFullName here is missing, even though we should get it. Fix with types in general.
@@ -317,11 +410,10 @@ class TypeDeclTests extends PhpCode2CpgFixture {
 
   "static/const member of class should be put in <clinit> method" in {
     val cpg = code("""<?php
-        |class Foo {
-        |  static $A = "A";
-        |  const B = "B";
-        |}
-        |""")
+      |class Foo {
+      |  static $A = "A";
+      |  const B = "B";
+      |}""")
 
     inside(cpg.method.nameExact(Defines.StaticInitMethodName).l) { case List(clinitMethod) =>
       inside(clinitMethod.body.astChildren.l) { case List(self: Local, bAssign: Call, aAssign: Call) =>
@@ -347,6 +439,328 @@ class TypeDeclTests extends PhpCode2CpgFixture {
 
           bLiteral.code shouldBe "\"B\""
         }
+      }
+    }
+  }
+
+  "anonymous classes" should {
+    val cpg = code("""<?php
+      |new class(10) {
+      |  private int $x;
+      |  function __construct($x) {
+      |    $this->x = $x;
+      |  }
+      |}
+      |
+      |new class(30) {
+      |  private int $y;
+      |  function __construct($y) {
+      |    $this->y = $y;
+      |  }
+      |}""".stripMargin)
+
+    "parse methods in classes correctly" in {
+      inside(cpg.typeDecl.name("Test0.php:<global>.anon-class-\\d+").l) { case anonClass0 :: anonClass1 :: Nil =>
+        val List(memberX) = anonClass0.member.l
+        memberX.code shouldBe "$x"
+
+        val List(anonConstructor0) = anonClass0.method.name("__construct").l
+        anonConstructor0.fullName shouldBe "Test0.php:<global>.anon-class-0.__construct"
+
+        val List(anonClass0ThisParam, paramX) = anonConstructor0.parameter.l
+        anonClass0ThisParam.code shouldBe "this"
+        paramX.code shouldBe "$x"
+
+        inside(anonConstructor0.body.astChildren.isCall.name(Operators.assignment).l) { case assignmentCall :: Nil =>
+          val List(lhs, rhs) = assignmentCall.argument.l
+          lhs.code shouldBe "$this->x"
+          rhs.code shouldBe "$x"
+        }
+
+        val List(memberY) = anonClass1.member.l
+        memberY.code shouldBe "$y"
+
+        val List(anonConstructor1) = anonClass1.method.name("__construct").l
+        anonConstructor1.fullName shouldBe "Test0.php:<global>.anon-class-1.__construct"
+
+        val List(anonClass1ThisParam, paramY) = anonConstructor1.parameter.l
+        anonClass1ThisParam.code shouldBe "this"
+        paramY.code shouldBe "$y"
+
+        inside(anonConstructor1.body.astChildren.isCall.name(Operators.assignment).l) { case assignmentCall :: Nil =>
+          val List(lhs, rhs) = assignmentCall.argument.l
+          lhs.code shouldBe "$this->y"
+          rhs.code shouldBe "$y"
+        }
+
+      }
+    }
+
+    "generate identifiers with correct types" in {
+      inside(cpg.method.name("<global>").body.ast.isIdentifier.name(".*tmp.*").dedupBy(_.name).l) {
+        case tmp0Local :: tmp1Local :: Nil =>
+          tmp0Local.typeFullName shouldBe "Test0.php:<global>.anon-class-0"
+          tmp0Local.name shouldBe "Test0.php:<global>@tmp-0"
+          tmp1Local.typeFullName shouldBe "Test0.php:<global>.anon-class-1"
+          tmp1Local.name shouldBe "Test0.php:<global>@tmp-1"
+      }
+    }
+
+    "generate __construct calls" in {
+      inside(cpg.call.name("__construct").l) { case constructAnonClass0 :: constructAnonClass1 :: Nil =>
+        constructAnonClass0.code shouldBe "new Test0.php:<global>.anon-class-0(10)"
+        val List(anonClass0Param1: Identifier, anonClass0Param2: Literal) = constructAnonClass0.argument.l: @unchecked
+        anonClass0Param1.code shouldBe "$Test0.php:<global>@tmp-0"
+        anonClass0Param2.code shouldBe "10"
+
+        constructAnonClass1.code shouldBe "new Test0.php:<global>.anon-class-1(30)"
+        val List(anonClass1Param1: Identifier, anonClass1Param2: Literal) = constructAnonClass1.argument.l: @unchecked
+        anonClass1Param1.code shouldBe "$Test0.php:<global>@tmp-1"
+        anonClass1Param2.code shouldBe "30"
+      }
+    }
+
+    "generate `alloc` calls and assignments" in {
+      inside(cpg.method.name("<global>").body.astChildren.isBlock.l) { case constructBlock1 :: constructBlock2 :: Nil =>
+        inside(constructBlock1.astChildren.assignment.l) { case allocAssignment :: Nil =>
+          val Seq(allocTarget: Identifier, allocSource: Call) =
+            List(allocAssignment.target, allocAssignment.source): @unchecked
+          allocTarget.code shouldBe "$Test0.php:<global>@tmp-0"
+          allocSource.code shouldBe "Test0.php:<global>.anon-class-0.<alloc>()"
+          allocSource.methodFullName shouldBe Operators.alloc
+          allocTarget.typeFullName shouldBe "Test0.php:<global>.anon-class-0"
+        }
+
+        inside(constructBlock2.astChildren.assignment.l) { case allocAssignment :: Nil =>
+          val Seq(allocTarget: Identifier, allocSource: Call) =
+            List(allocAssignment.target, allocAssignment.source): @unchecked
+          allocTarget.code shouldBe "$Test0.php:<global>@tmp-1"
+          allocSource.code shouldBe "Test0.php:<global>.anon-class-1.<alloc>()"
+          allocSource.methodFullName shouldBe Operators.alloc
+          allocTarget.typeFullName shouldBe "Test0.php:<global>.anon-class-1"
+        }
+
+      }
+    }
+  }
+
+  "Anonymous class in field initializer lowered into the default constructor" in {
+    val cpg = code("""<?php
+      |class Foo {
+      |  public $foo = new class(10) {
+      |   private int $x;
+      |  };
+      |}""".stripMargin)
+    cpg.typeDecl.name("Foo").member.name.l shouldBe List("foo")
+    cpg.typeDecl.fullNameExact("Foo.__construct.anon-class-0").nonEmpty shouldBe true
+    inside(cpg.local.l) { case List(fooLocal) =>
+      fooLocal.name shouldBe "Foo.__construct@tmp-0"
+      fooLocal.method.name.l shouldBe List("__construct")
+      fooLocal.astIn.isBlock.loneElement.astChildren.code.l shouldBe List(
+        "$Foo.__construct@tmp-0",
+        "$Foo.__construct@tmp-0 = Foo.__construct.anon-class-0.<alloc>()",
+        "new Foo.__construct.anon-class-0(10)",
+        "$Foo.__construct@tmp-0"
+      )
+    }
+  }
+
+  "Anonymous class nested in class" in {
+    val cpg = code("""<?php
+      |class C {
+      |  function D() {
+      |     new class("foo") {
+      |       private int $x;
+      |     }
+      |  }
+      |}""".stripMargin)
+    inside(cpg.typeDecl.name("C.D.anon-class-\\d+").l) { case anonClass :: Nil =>
+      anonClass.fullName shouldBe s"C.D.anon-class-0"
+      anonClass.member.code.l shouldBe List("$x")
+    }
+
+    inside(cpg.method.name("D").body.astChildren.l) { case (bodyBlock: Block) :: Nil =>
+      inside(bodyBlock.astChildren.l) {
+        case (localNode: Local) :: (assignmentCall: Call) :: (constructCall: Call) :: (tmpIdentifier: Identifier) :: Nil =>
+          localNode.code shouldBe "$C.D@tmp-0"
+          localNode.name shouldBe "C.D@tmp-0"
+          localNode.refIn.cast[Identifier].head.typeFullName shouldBe "C.D.anon-class-0"
+
+          assignmentCall.methodFullName shouldBe Operators.assignment
+          val List(lhs: Identifier, rhs: Call) = assignmentCall.argument.l: @unchecked
+          lhs.typeFullName shouldBe "C.D.anon-class-0"
+          rhs.methodFullName shouldBe Operators.alloc
+
+          constructCall.methodFullName shouldBe "C.D.anon-class-0.__construct"
+
+          tmpIdentifier.code shouldBe "$C.D@tmp-0"
+      }
+    }
+  }
+
+  "Singleton type decl for a normal class" should {
+    val cpg = code("""<?php
+      |class Foo {
+      |  public static $foo = 'foo';
+      |  public $baz = 'baz';
+      |  const BAZZ = 'bazz';
+      |  public static function bar() {}
+      |}""".stripMargin)
+
+    "create a singleton type decl" in {
+      inside(cpg.typeDecl.name(s"Foo").l) { case fooTypeDecl :: Nil =>
+        fooTypeDecl.fullName shouldBe s"Foo"
+      }
+    }
+
+    "contain static methods" in {
+      inside(cpg.typeDecl.name(s"Foo").method.name("bar").l) { case barMethod :: Nil =>
+        barMethod.modifier.modifierType.sorted.l shouldBe List(ModifierTypes.PUBLIC, ModifierTypes.STATIC)
+      }
+    }
+
+    "contain members for static variables and consts" in {
+      inside(cpg.typeDecl.name(s"Foo").member.l) { case bazzMember :: fooMember :: bazMember :: Nil =>
+        bazzMember.name shouldBe "BAZZ"
+        fooMember.name shouldBe "foo"
+        bazMember.name shouldBe "baz"
+      }
+    }
+
+    "contain the <clinit> static constructor" in {
+      inside(cpg.typeDecl.name(s"Foo").method.name(Defines.StaticInitMethodName).l) { case staticConstructor :: Nil =>
+        inside(staticConstructor.body.astChildren.l) {
+          case (self: Local) :: (assignmentBazz: Call) :: (assignmentFoo: Call) :: Nil =>
+            // TODO: Self in <clinit> is existing behavior
+            self.code shouldBe "self"
+
+            val List(bazzLhs) = assignmentBazz.argument.fieldAccess.l
+            val List(bazzRhs) = assignmentBazz.argument.isLiteral.l
+            bazzLhs.code shouldBe "self::BAZZ"
+            bazzRhs.code shouldBe "\"bazz\""
+            assignmentBazz.argument.l shouldBe List(bazzLhs, bazzRhs)
+
+            val List(fooLhs, fooRhs) = assignmentFoo.argument.l
+            fooLhs.code shouldBe "self::$foo"
+            fooRhs.code shouldBe "\"foo\""
+
+        }
+      }
+    }
+
+  }
+
+  "Singleton type decl for an anonymous class" should {
+    val cpg = code("""<?php
+      |new class(10) {
+      |  public static $foo = 'foo';
+      |  public $baz = 'baz';
+      |  const BAZZ = 'bazz';
+      |  public static function bar() {}
+      |};""".stripMargin)
+
+    "Contains required consts and static vars" in {
+      inside(cpg.typeDecl.name(s"Test0.php:<global>.anon-class-0").member.l) {
+        case bazMember :: bazzMember :: fooMember :: Nil =>
+          bazzMember.code shouldBe "const BAZZ"
+          bazzMember.modifier.modifierType.l.contains(ModifierTypes.FINAL) shouldBe true
+
+          bazMember.code shouldBe "$baz"
+          bazzMember.modifier.modifierType.l shouldBe List(ModifierTypes.FINAL)
+
+          fooMember.code shouldBe "static $foo"
+          fooMember.modifier.modifierType.l.contains(ModifierTypes.STATIC) shouldBe true
+      }
+    }
+
+    "Contains the required static method" in {
+      inside(cpg.typeDecl.name(s"Test0.php:<global>.anon-class-0").method.name("bar").l) { case barMethod :: Nil =>
+        barMethod.name shouldBe "bar"
+        barMethod.modifier.modifierType.l.contains(ModifierTypes.STATIC) shouldBe true
+
+      }
+    }
+
+    "Contains static constructor" in {
+      inside(
+        cpg.typeDecl
+          .name(s"Test0.php:<global>.anon-class-0")
+          .method
+          .name(Defines.StaticInitMethodName)
+          .l
+      ) { case staticConstructor :: Nil =>
+        staticConstructor.name shouldBe Defines.StaticInitMethodName
+        staticConstructor.fullName shouldBe s"Test0.php:<global>.anon-class-0.<clinit>"
+
+        inside(staticConstructor.body.astChildren.l) {
+          case (self: Local) :: (bazzAssignment: Call) :: (fooAssignment: Call) :: Nil =>
+            self.code shouldBe "self"
+
+            val List(bazzLhs) = bazzAssignment.argument.fieldAccess.l
+            val List(bazzRhs) = bazzAssignment.argument.isLiteral.l
+            bazzLhs.code shouldBe "self::BAZZ"
+            bazzRhs.code shouldBe "\"bazz\""
+            bazzAssignment.argument.l shouldBe List(bazzLhs, bazzRhs)
+
+            val List(fooLhs, fooRhs) = fooAssignment.argument.l
+            fooLhs.code shouldBe "self::$foo"
+            fooRhs.code shouldBe "\"foo\""
+        }
+      }
+    }
+  }
+
+  "Duplicate class names" should {
+    val cpg = code("""<?php
+      |if (true) {
+      | class Foo {
+      |   function foo() {}
+      | }
+      |} else {
+      | class Foo {
+      |   function foo() {}
+      | }
+      |}""".stripMargin)
+
+    "contain deduplicated fullNames" in {
+      inside(cpg.typeDecl.fullName("Foo.*").sortBy(_.fullName).l) {
+        case foo :: fooMethod :: fooDup :: fooDupMethod :: Nil =>
+          foo.name shouldBe "Foo"
+          foo.fullName shouldBe "Foo"
+          foo.astParentFullName shouldBe "Test0.php:<global>"
+          foo.astParentType shouldBe "METHOD"
+
+          fooDup.name shouldBe "Foo"
+          fooDup.fullName shouldBe "Foo<duplicate>0"
+          fooDup.astParentFullName shouldBe "Test0.php:<global>"
+          fooDup.astParentType shouldBe "METHOD"
+      }
+    }
+
+    "contain methods with unqiue full names" in {
+      inside(cpg.method.name(".*foo.*").l) { case foo :: fooDedup :: Nil =>
+        foo.name shouldBe "foo"
+        foo.fullName shouldBe "Foo.foo"
+
+        fooDedup.name shouldBe "foo"
+        fooDedup.fullName shouldBe "Foo<duplicate>0.foo"
+      }
+    }
+  }
+
+  "Same class and function name" should {
+    val cpg = code("""<?php
+        |class Foo {
+        |  function Foo() {}
+        |}""".stripMargin)
+
+    "contain deduplicated fullNames" in {
+      inside(cpg.typeDecl.fullName("Foo.*").sortBy(_.fullName).l) { case classTypeDecl :: funcTypeDecl :: Nil =>
+        classTypeDecl.name shouldBe "Foo"
+        classTypeDecl.fullName shouldBe "Foo"
+
+        funcTypeDecl.name shouldBe "Foo"
+        funcTypeDecl.fullName shouldBe "Foo.Foo"
       }
     }
   }

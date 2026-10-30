@@ -21,7 +21,7 @@ class ComposerAutoloadPass(cpg: Cpg) extends ForkJoinParallelCpgPass[Method](cpg
     cpg.typeDecl.filter(x => x.name != x.fullName && x.isExternal).foreach { t =>
       typeMap.put(t.name, t.fullName)
       t.method.foreach { m =>
-        methodMap.put(s"${t.name}->${m.name}", m.fullName)
+        methodMap.put(s"${t.name}.${m.name}", m.fullName)
       }
     }
   }
@@ -35,9 +35,9 @@ class ComposerAutoloadPass(cpg: Cpg) extends ForkJoinParallelCpgPass[Method](cpg
   /** Collects methods within a module.
     */
   private def findMethods(module: Method): Iterator[Method] = {
-    Iterator(module) ++ module.containsOut.flatMap {
+    Iterator(module) ++ module._containsOut.flatMap {
       case x: TypeDecl => x.method.flatMap(findMethods)
-      case x: Method   => Iterator(x) ++ x.containsOut.collectAll[Method].flatMap(findMethods)
+      case x: Method   => Iterator(x) ++ x._containsOut.collectAll[Method].flatMap(findMethods)
       case _           => Iterator.empty
     }
   }
@@ -55,14 +55,14 @@ class ComposerAutoloadPass(cpg: Cpg) extends ForkJoinParallelCpgPass[Method](cpg
 
   private def fullyQualifyCall(call: Call, builder: DiffGraphBuilder): Unit = {
     if (call.typeFullName != Defines.Any) {
-      typeMap.get(call.typeFullName).foreach(builder.setNodeProperty(call, PropertyNames.TYPE_FULL_NAME, _))
+      typeMap.get(call.typeFullName).foreach(builder.setNodeProperty(call, PropertyNames.TypeFullName, _))
     }
-    methodMap.get(call.methodFullName).foreach(builder.setNodeProperty(call, PropertyNames.METHOD_FULL_NAME, _))
+    methodMap.get(call.methodFullName).foreach(builder.setNodeProperty(call, PropertyNames.MethodFullName, _))
   }
 
   private def fullyQualifyIdentifier(identifier: Identifier, builder: DiffGraphBuilder): Unit = {
     if (identifier.typeFullName != Defines.Any) {
-      typeMap.get(identifier.typeFullName).foreach(builder.setNodeProperty(identifier, PropertyNames.TYPE_FULL_NAME, _))
+      typeMap.get(identifier.typeFullName).foreach(builder.setNodeProperty(identifier, PropertyNames.TypeFullName, _))
     }
   }
 

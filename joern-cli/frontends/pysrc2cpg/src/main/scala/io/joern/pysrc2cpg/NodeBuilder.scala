@@ -5,7 +5,6 @@ import io.joern.x2cpg.frontendspecific.pysrc2cpg.Constants.builtinPrefix
 import io.joern.pythonparser.ast
 import io.joern.x2cpg.Defines
 import io.joern.x2cpg.frontendspecific.pysrc2cpg.Constants
-import io.joern.x2cpg.utils.NodeBuilders
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EvaluationStrategies, nodes}
 import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 
@@ -26,6 +25,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .typeFullName(Constants.ANY)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
     addNodeToDiff(callNode)
   }
 
@@ -67,6 +68,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .typeFullName(typeFullName)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
     addNodeToDiff(typeRefNode)
   }
 
@@ -83,6 +86,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
     memberNode(name)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
   }
 
   def memberNode(name: String, dynamicTypeHintFullName: String): nodes.NewMember =
@@ -123,6 +128,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .typeFullName(fullName)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
     addNodeToDiff(methodRefNode)
   }
 
@@ -131,7 +138,6 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .NewClosureBinding()
       .closureBindingId(Some(closureBindingId))
       .evaluationStrategy(EvaluationStrategies.BY_REFERENCE)
-      .closureOriginalName(None)
     addNodeToDiff(closureBindingNode)
   }
 
@@ -139,7 +145,7 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
     name: String,
     isVariadic: Boolean,
     lineAndColumn: LineAndColumn,
-    index: Option[Int] = None,
+    index: Int,
     typeHint: Option[ast.iexpr] = None
   ): nodes.NewMethodParameterIn = {
     val methodParameterNode = nodes
@@ -148,10 +154,12 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .code(name)
       .evaluationStrategy(EvaluationStrategies.BY_SHARING)
       .typeFullName(extractTypesFromHint(typeHint).getOrElse(Constants.ANY))
+      .index(index)
       .isVariadic(isVariadic)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
-    index.foreach(idx => methodParameterNode.index(idx))
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
     addNodeToDiff(methodParameterNode)
   }
 
@@ -164,7 +172,7 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
           //  without type args. To see the type arguments, see ast.Subscript.slice
           case attr: ast.Attribute =>
             extractTypesFromHint(Some(attr.value)).map { x => x + "." + attr.attr }
-          case n: ast.Subscript if n.value.isInstanceOf[ast.Name] => Option(n.value.asInstanceOf[ast.Name].id)
+          case n: ast.Subscript if n.value.isInstanceOf[ast.Name]          => Option(n.value.asInstanceOf[ast.Name].id)
           case n: ast.Constant if n.value.isInstanceOf[ast.StringConstant] =>
             Option(n.value.asInstanceOf[ast.StringConstant].value)
           case _ => None
@@ -183,14 +191,16 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
     dynamicTypeHintFullName: Option[String],
     lineAndColumn: LineAndColumn
   ): nodes.NewMethodReturn = {
-    val methodReturnNode = NodeBuilders
-      .newMethodReturnNode(
-        staticTypeHint.getOrElse(Constants.ANY),
-        dynamicTypeHintFullName,
-        Some(lineAndColumn.line),
-        Some(lineAndColumn.column)
-      )
+    val methodReturnNode = nodes
+      .NewMethodReturn()
+      .typeFullName(staticTypeHint.getOrElse(Constants.ANY))
+      .dynamicTypeHintFullName(dynamicTypeHintFullName)
+      .lineNumber(lineAndColumn.line)
+      .columnNumber(lineAndColumn.column)
+      .code("RET")
       .evaluationStrategy(EvaluationStrategies.BY_SHARING)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
 
     addNodeToDiff(methodReturnNode)
   }
@@ -201,6 +211,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .code(code)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
 
     addNodeToDiff(returnNode)
   }
@@ -213,6 +225,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .typeFullName(Constants.ANY)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
     addNodeToDiff(identifierNode)
   }
 
@@ -223,6 +237,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .canonicalName(name)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
     addNodeToDiff(fieldIdentifierNode)
   }
 
@@ -234,6 +250,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .dynamicTypeHintFullName(dynamicTypeHint.toList)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
     addNodeToDiff(literalNode)
   }
 
@@ -264,6 +282,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .typeFullName(Constants.ANY)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
     addNodeToDiff(blockNode)
   }
 
@@ -278,6 +298,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .controlStructureType(controlStructureName)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
     addNodeToDiff(controlStructureNode)
   }
 
@@ -324,6 +346,15 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
     addNodeToDiff(metaNode)
   }
 
+  def jumpNode(code: String): nodes.NewJumpTarget = {
+    val jumpNode = nodes
+      .NewJumpTarget()
+      .code(code)
+      .name(code)
+
+    addNodeToDiff(jumpNode)
+  }
+
   def unknownNode(code: String, parserTypeName: String, lineAndColumn: LineAndColumn): nodes.NewUnknown = {
     val unknownNode = nodes
       .NewUnknown()
@@ -332,6 +363,8 @@ class NodeBuilder(diffGraph: DiffGraphBuilder) {
       .typeFullName(Constants.ANY)
       .lineNumber(lineAndColumn.line)
       .columnNumber(lineAndColumn.column)
+      .offset(lineAndColumn.offset)
+      .offsetEnd(lineAndColumn.endOffset)
     addNodeToDiff(unknownNode)
   }
 }

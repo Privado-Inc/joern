@@ -1,6 +1,6 @@
 package io.joern.rubysrc2cpg.deprecated.parser
 
-import better.files.EOF
+import org.antlr.v4.runtime.IntStream.EOF
 
 trait HereDocHandling { this: DeprecatedRubyLexerBase =>
 
@@ -15,7 +15,7 @@ trait HereDocHandling { this: DeprecatedRubyLexerBase =>
       false
     } else {
       // Get the delimiter
-      HereDocHandling.getHereDocDelimiter(partialHeredoc) match
+      HereDocHandling.getHereDocDelimiter(partialHeredoc) match {
         case Some(delimiter) if !delimiter.zipWithIndex.exists { case (c, idx) => this._input.LA(idx + 1) != c } =>
           // If we get to this point, we know there is an end delimiter ahead in the char stream, make
           // sure it is followed by a white space (or the EOF). If we don't do this, then "FOOS" would also
@@ -23,6 +23,7 @@ trait HereDocHandling { this: DeprecatedRubyLexerBase =>
           val charAfterDelimiter = this._input.LA(delimiter.length + 1)
           charAfterDelimiter == EOF || Character.isWhitespace(charAfterDelimiter)
         case _ => false
+      }
     }
 
 }

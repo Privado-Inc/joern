@@ -1,4 +1,5 @@
 import sbt.*
+import sbt.Keys.*
 
 object Projects {
   val frontendsRoot = file("joern-cli/frontends")
@@ -23,5 +24,12 @@ object Projects {
   lazy val rubysrc2cpg   = project.in(frontendsRoot / "rubysrc2cpg")
   lazy val gosrc2cpg     = project.in(frontendsRoot / "gosrc2cpg")
   lazy val csharpsrc2cpg = project.in(frontendsRoot / "csharpsrc2cpg")
+  lazy val abap2cpg      = project.in(frontendsRoot / "abap2cpg")
+  lazy val rust2cpg      = project.in(frontendsRoot / "rust2cpg")
+
+  lazy val integrationTests = project.in(file("integration-tests"))
+
+  lazy val linterRules      = project.in(file("linter-rules"))
+  lazy val linterRulesInput = project.in(file("linter-rules/input"))
 
 }

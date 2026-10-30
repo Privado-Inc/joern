@@ -1,29 +1,126 @@
 package io.joern.php2cpg.utils
 
-import io.joern.php2cpg.parser.Domain.InstanceMethodDelimiter
-import io.shiftleft.codepropertygraph.generated.nodes.{NewMethod, NewNamespaceBlock, NewNode, NewTypeDecl}
+import io.joern.php2cpg.parser.Domain.MethodDelimiter
+import io.joern.x2cpg.Defines
+import io.joern.x2cpg.datastructures.TypedScopeElement
+import io.joern.x2cpg.utils.IntervalKeyPool
+import io.shiftleft.codepropertygraph.generated.nodes.*
 
-class PhpScopeElement private (val node: NewNode, scopeName: String)(implicit nextClosureName: () => String) {
+import scala.collection.mutable
+
+sealed trait AnonymousClassNameCreator {
+  private var tmpClassCounter = 0
+
+  def getNextClassTmp: String = {
+    val anonClassName = s"anon-class-$tmpClassCounter"
+    tmpClassCounter = tmpClassCounter + 1
+
+    anonClassName
+  }
+}
+
+sealed trait AnonymousVariableNameCreator {
+  private var tmpVarCounter = 0
+
+  def getNextVarTmp: String = {
+    val tmpVarName = s"tmp-$tmpVarCounter"
+    tmpVarCounter = tmpVarCounter + 1
+
+    tmpVarName
+  }
+}
+
+sealed trait ClosureNameCreator {
+  def fullName: String
+  private val closureKeyPool = new IntervalKeyPool(first = 0, last = Long.MaxValue)
 
   def getClosureMethodName: String = {
-    s"$scopeName$InstanceMethodDelimiter${nextClosureName()}"
+    s"$fullName$MethodDelimiter${Defines.ClosurePrefix}${closureKeyPool.next}"
   }
 }
 
-object PhpScopeElement {
-  def apply(method: NewMethod)(implicit nextClosureName: () => String): PhpScopeElement = {
-    new PhpScopeElement(method, method.fullName)
+sealed trait DeDuplicateNameCreator {
+  private val duplicateMethodMap     = mutable.HashMap[String, Int]()
+  private val duplicateClassNamesMap = mutable.HashMap[String, Int]()
+
+  def getNextDeduplicateClassName(className: String): String = {
+    if (duplicateClassNamesMap.contains(className)) {
+      val nextCounter = duplicateClassNamesMap(className)
+      duplicateClassNamesMap.update(className, nextCounter + 1)
+
+      s"$className<duplicate>$nextCounter"
+    } else {
+      duplicateClassNamesMap.put(className, 0)
+      className
+    }
   }
 
-  def apply(typeDecl: NewTypeDecl)(implicit nextClosureName: () => String): PhpScopeElement = {
-    new PhpScopeElement(typeDecl, typeDecl.fullName)
-  }
+  def getNextDeduplicateMethodName(methodName: String): String = {
+    if (duplicateMethodMap.contains(methodName)) {
+      val nextCounter    = duplicateMethodMap(methodName)
+      val updatedCounter = nextCounter + 1
+      duplicateMethodMap.update(methodName, updatedCounter)
 
-  def apply(namespace: NewNamespaceBlock)(implicit nextClosureName: () => String): PhpScopeElement = {
-    new PhpScopeElement(namespace, namespace.fullName)
-  }
-
-  def unapply(scopeElement: PhpScopeElement): Option[NewNode] = {
-    Some(scopeElement.node)
+      s"$methodName<duplicate>$nextCounter"
+    } else {
+      duplicateMethodMap.put(methodName, 0)
+      methodName
+    }
   }
 }
+
+trait NamedScope extends TypedScopeElement {
+
+  /** @return
+    *   the full name of the type-like.
+    */
+  def fullName: String
+}
+
+/** The namespace.
+  * @param fullName
+  *   the namespace path.
+  */
+case class NamespaceScope(namespaceBlock: NewNamespaceBlock, fullName: String)
+    extends NamedScope
+    with AnonymousClassNameCreator
+    with AnonymousVariableNameCreator
+    with ClosureNameCreator
+    with DeDuplicateNameCreator
+
+/** A type-like scope with a full name.
+  */
+trait TypeLikeScope
+    extends NamedScope
+    with AnonymousClassNameCreator
+    with AnonymousVariableNameCreator
+    with ClosureNameCreator
+    with DeDuplicateNameCreator
+
+/** A class or interface.
+  *
+  * @param fullName
+  *   the type full name.
+  */
+case class TypeScope(typeDecl: NewTypeDecl, fullName: String) extends TypeLikeScope
+
+/** Represents scope objects that map to a method node.
+  */
+trait MethodLikeScope
+    extends NamedScope
+    with AnonymousClassNameCreator
+    with AnonymousVariableNameCreator
+    with ClosureNameCreator
+    with DeDuplicateNameCreator
+
+case class MethodScope(
+  methodNode: NewMethod,
+  bodyNode: NewBlock,
+  fullName: String,
+  parameterNames: Seq[String] = Seq.empty,
+  methodRefNode: Option[NewMethodRef] = None,
+  isArrowFunc: Boolean = false,
+  additionalBodyChildren: mutable.ArrayBuffer[NewNode] = mutable.ArrayBuffer.empty
+) extends MethodLikeScope
+
+case class BlockScope(block: NewBlock, fullName: String) extends NamedScope

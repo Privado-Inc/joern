@@ -64,8 +64,10 @@ object Utils {
   def createReturnNode(): NewMethodReturn = {
     NewMethodReturn().order(1)
   }
-  def createMethodNode(decompiler: Decompiler, function: Function, fileName: String, isExternal: Boolean): NewMethod = {
-    val code = decompiler.toDecompiledFunction(function).map(_.getC).getOrElse("")
+  def createMethodNode(decompiler: Decompiler, function: Function, fileName: String): NewMethod = {
+    val code          = decompiler.toDecompiledFunction(function).map(_.getC).getOrElse("")
+    val signature     = decompiler.toDecompiledFunction(function).map(_.getSignature).getOrElse("")
+    val isExternal    = Option(function.getThunkedFunction(true)).map(_.isExternal).getOrElse(function.isExternal)
     val lineNumberEnd = Option(function.getReturn)
       .flatMap(x => Option(x.getMinAddress))
       .flatMap(x => Option(x.getOffsetAsBigInteger))
@@ -77,7 +79,7 @@ object Utils {
       .name(function.getName)
       .fullName(function.getName)
       .isExternal(isExternal)
-      .signature(function.getSignature(true).toString)
+      .signature(signature)
       .lineNumber(function.getEntryPoint.getOffsetAsBigInteger.intValue())
       .columnNumber(-1)
       .lineNumberEnd(lineNumberEnd)
@@ -85,13 +87,6 @@ object Utils {
       .filename(fileName)
       .astParentType(NodeTypes.NAMESPACE_BLOCK)
       .astParentFullName(s"$fileName:<global>")
-  }
-  def checkIfExternal(currentProgram: Program, functionName: String): Boolean = {
-    currentProgram.getFunctionManager.getExternalFunctions
-      .iterator()
-      .asScala
-      .map(_.getName)
-      .contains(functionName)
   }
   def getInstructions(program: Program, function: Function): Seq[Instruction] =
     program.getListing.getInstructions(function.getBody, true).iterator().asScala.toList

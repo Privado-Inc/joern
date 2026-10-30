@@ -1,0 +1,527 @@
+package io.joern.c2cpg.astcreation
+
+import org.apache.commons.lang3.StringUtils
+import org.eclipse.cdt.core.dom.ast.*
+import org.eclipse.cdt.core.dom.ast.cpp.*
+import org.eclipse.cdt.core.dom.ast.gnu.c.ICASTKnRFunctionDeclarator
+import org.eclipse.cdt.internal.core.dom.parser.cpp.*
+import org.eclipse.cdt.internal.core.dom.parser.cpp.semantics.*
+import org.eclipse.cdt.internal.core.model.ASTStringUtil
+
+import scala.annotation.nowarn
+import scala.util.Try
+
+object TypeNameProvider {
+
+  private type TypeLike = IASTEnumerationSpecifier | ICPPASTNamespaceDefinition | IASTCompositeTypeSpecifier |
+    IASTElaboratedTypeSpecifier
+
+}
+
+trait TypeNameProvider { this: AstCreator =>
+
+  import FullNameProvider.*
+  import TypeNameProvider.TypeLike
+
+  // Sadly, there is no predefined List / Enum of this within Eclipse CDT:
+  private val ReservedKeywordsAtTypes: List[String] =
+    List(
+      "auto",
+      "class",
+      "const",
+      "constexpr",
+      "enum",
+      "extern",
+      "inline",
+      "interface",
+      "restrict",
+      "static",
+      "struct",
+      "typedef",
+      "virtual"
+    )
+
+  private val ReservedKeywordsAtTypesPatterns: List[(String, String)] =
+    ReservedKeywordsAtTypes.map(keyword => (s"$keyword ", s" $keyword "))
+
+  private val ReservedKeywordsAtTypesSet: Set[String] = ReservedKeywordsAtTypes.toSet
+
+  /** The declarator at `index` of `declaration`, if there is one.
+    *
+    * `ICPPASTStructuredBindingDeclaration` extends `IASTSimpleDeclaration` but carries no declarators at all; the bound
+    * names live in `getNames`. Being an `IASTSimpleDeclaration` therefore does not guarantee a declarator at `index`.
+    */
+  private def declaratorAt(declaration: IASTSimpleDeclaration, index: Int): Option[IASTDeclarator] =
+    declaration.getDeclarators.lift(index)
+
+  /** The declarator at `index` of the declaration `node` is part of, if there is one. */
+  private def parentDeclaratorAt(node: IASTNode, index: Int): Option[IASTDeclarator] =
+    node.getParent match {
+      case declaration: IASTSimpleDeclaration => declaratorAt(declaration, index)
+      case _                                  => None
+    }
+
+  protected def typeForDeclSpecifier(spec: IASTNode, index: Int = 0): String = {
+    val tpeString = spec match {
+      case s: IASTSimpleDeclSpecifier if s.getParent.isInstanceOf[IASTParameterDeclaration] =>
+        val parentDecl = s.getParent.asInstanceOf[IASTParameterDeclaration].getDeclarator
+        pointersAsString(s, parentDecl)
+      case s: IASTSimpleDeclSpecifier if s.getParent.isInstanceOf[IASTFunctionDefinition] =>
+        val parentDecl = s.getParent.asInstanceOf[IASTFunctionDefinition].getDeclarator
+        BasicTypeNames
+          .forSimpleDeclSpecifier(s)
+          .map(name => name + pointerAndArraySuffix(parentDecl))
+          .getOrElse(ASTStringUtil.getReturnTypeString(s, parentDecl))
+      case s: IASTSimpleDeclaration if s.getParent.isInstanceOf[ICASTKnRFunctionDeclarator] =>
+        declaratorAt(s, index) match {
+          case Some(decl) => pointersAsString(s.getDeclSpecifier, decl)
+          case None       => Defines.Any
+        }
+      case s: IASTSimpleDeclSpecifier =>
+        parentDeclaratorAt(s, index) match {
+          case Some(parentDecl) => pointersAsString(s, parentDecl)
+          case None             => ASTStringUtil.getReturnTypeString(s, null)
+        }
+      case s: IASTNamedTypeSpecifier if s.getParent.isInstanceOf[IASTParameterDeclaration] =>
+        val parentDecl = s.getParent.asInstanceOf[IASTParameterDeclaration].getDeclarator
+        pointersAsString(s, parentDecl)
+      case s: IASTNamedTypeSpecifier =>
+        parentDeclaratorAt(s, index) match {
+          case Some(parentDecl) => pointersAsString(s, parentDecl)
+          case None             => ASTStringUtil.getSimpleName(s.getName)
+        }
+      case s: IASTCompositeTypeSpecifier =>
+        parentDeclaratorAt(s, index) match {
+          case Some(parentDecl) => pointersAsString(s, parentDecl)
+          case None             => ASTStringUtil.getSimpleName(s.getName)
+        }
+      case s: IASTEnumerationSpecifier =>
+        parentDeclaratorAt(s, index) match {
+          case Some(parentDecl) => pointersAsString(s, parentDecl)
+          case None             => ASTStringUtil.getSimpleName(s.getName)
+        }
+      case s: IASTElaboratedTypeSpecifier if s.getParent.isInstanceOf[IASTParameterDeclaration] =>
+        val parentDecl = s.getParent.asInstanceOf[IASTParameterDeclaration].getDeclarator
+        pointersAsString(s, parentDecl)
+      case s: IASTElaboratedTypeSpecifier =>
+        parentDeclaratorAt(s, index) match {
+          case Some(parentDecl) => pointersAsString(s, parentDecl)
+          case None             => ASTStringUtil.getSignatureString(s, null)
+        }
+      // TODO: handle other types of IASTDeclSpecifier
+      case _ => Defines.Any
+    }
+    if (tpeString.isEmpty) Defines.Any else cleanType(tpeString)
+  }
+
+  protected def cleanType(rawType: String): String = {
+    if (rawType == Defines.Any) return rawType
+    val normalizedTpe = BasicTypeNames.normalize(StringUtils.normalizeSpace(rawType.stripSuffix(" ()")))
+    val tpe           =
+      if (!ReservedKeywordsAtTypesSet.exists(normalizedTpe.contains)) normalizedTpe
+      else
+        ReservedKeywordsAtTypesPatterns.foldLeft(normalizedTpe) { case (cur, (prefix, infix)) =>
+          if (cur.startsWith(prefix) || cur.contains(infix)) cur.replace(infix, " ").stripPrefix(prefix)
+          else cur
+        }
+    stripTemplateTags(replaceWhitespaceAfterKeyword(tpe)) match {
+      // Empty or problematic types
+      case ""                                                                           => Defines.Any
+      case tpe if tpe.contains("?")                                                     => Defines.Any
+      case tpe if tpe.contains("#")                                                     => Defines.Any
+      case tpe if tpe.contains("::{") || tpe.contains("}::")                            => Defines.Any
+      case tpe if (tpe.contains("{") || tpe.contains("}")) && !isThisLambdaCapture(tpe) => Defines.Any
+      case tpe if tpe.contains("org.eclipse.cdt")                                       => Defines.Any
+      // A C++ type name cannot begin with a digit; a leading digit means this is CDT's
+      // serialised evaluation signature, not a type.
+      case tpe if tpe.headOption.exists(_.isDigit) => Defines.Any
+      // Special patterns with specific handling
+      case tpe if tpe.startsWith("[") && tpe.endsWith("]")       => Defines.Array
+      case tpe if isThisLambdaCapture(tpe) || tpe.contains("->") => Defines.Function
+      case tpe if tpe.contains("( ") => applyQualifiedNameSeparator(tpe.substring(0, tpe.indexOf("( ")))
+      // Default case
+      case typeStr => applyQualifiedNameSeparator(typeStr)
+    }
+  }
+
+  protected def safeGetType(tpe: IType): String = {
+    // In case of unresolved includes etc. this may fail throwing an unrecoverable exception
+    safeCdtCall(safeGetTypeInternal(tpe)).getOrElse(Defines.Any)
+  }
+
+  protected def safeGetExpressionType(expr: IASTExpression): String = {
+    // In case of unresolved includes etc. this may fail throwing an unrecoverable exception
+    safeCdtCall(safeGetType(expr.getExpressionType)).getOrElse(Defines.Any)
+  }
+
+  private def safeGetTypeInternal(tpe: IType): String = {
+    val tpeString = tpe match {
+      case _: CPPClosureType                       => Defines.Function
+      case templateType: ICPPTemplateTypeParameter => templateType.getName
+      case cppPackType: ICPPParameterPackType      =>
+        cppPackType.getType match {
+          case templateType: ICPPTemplateTypeParameter                 => templateType.getName
+          case refType: ICPPReferenceType if refType.isRValueReference => safeGetType(refType.getType) + "&&"
+          case refType: ICPPReferenceType                              => safeGetType(refType.getType)
+          case other => Try(ASTTypeUtil.getType(other)).getOrElse(Defines.Any)
+        }
+      case _ =>
+        // In case of unresolved includes etc. this may fail throwing an unrecoverable exception
+        Try(renderedTypeName(tpe)).getOrElse(Defines.Any)
+    }
+    cleanType(tpeString)
+  }
+
+  /** The name of `tpe` from its kind and modifiers where possible, else the string CDT renders for it. */
+  private def renderedTypeName(tpe: IType): String = {
+    BasicTypeNames.renderBasic(tpe).getOrElse {
+      ASTTypeUtil.getType(tpe)
+    }
+  }
+
+  protected def variadicStringForFunction(
+    func: IFunctionType | IASTNode,
+    parameter: Seq[IASTNode] = Seq.empty
+  ): String = {
+    val takesVarArgs = func match {
+      case tpe: IFunctionType => tpe.takesVarArgs()
+      case func: IASTNode     => isVariadic(func) || parameter.lastOption.exists(paramIsVariadic)
+    }
+    // See: https://en.cppreference.com/w/cpp/language/variadic_arguments
+    // `...` and `,...` are the same but `...` is deprecated since C++26 so we settle for the newer one
+    if (takesVarArgs) { ",..." }
+    else { "" }
+
+  }
+
+  protected def functionInstanceToSignature(function: ICPPFunctionInstance, tpe: IFunctionType): String = {
+    safeCdtCall(function.getSpecializedBinding) match {
+      case Some(binding: ICPPFunctionTemplate) =>
+        val returnType     = cleanType(safeGetType(tpe.getReturnType))
+        val parameterTypes = binding.getParameters.map(t => cleanType(safeGetType(t.getType)))
+        val variadicString = variadicStringForFunction(tpe)
+        StringUtils.normalizeSpace(s"$returnType(${parameterTypes.mkString(",")}$variadicString)")
+      case _ => functionTypeToSignature(tpe)
+    }
+  }
+
+  protected def functionTypeToSignature(tpe: IFunctionType): String = {
+    val returnType     = cleanType(safeGetType(tpe.getReturnType))
+    val parameterTypes = tpe.getParameterTypes.map(t => cleanType(safeGetType(t)))
+    val variadicString = variadicStringForFunction(tpe)
+    StringUtils.normalizeSpace(s"$returnType(${parameterTypes.mkString(",")}$variadicString)")
+  }
+
+  protected def typeFullNameInfo(typeLike: TypeLike): TypeFullNameInfo = {
+    typeLike match {
+      case _: IASTElaboratedTypeSpecifier =>
+        val name_     = shortName(typeLike)
+        val fullName_ = registerType(cleanType(fullName(typeLike)))
+        TypeFullNameInfo(name_, fullName_)
+      case e: IASTEnumerationSpecifier =>
+        val name_                            = shortName(e)
+        val fullName_                        = fullName(e)
+        val (uniqueName, uniqueNameFullName) = scopeLocalUniqueName(name_, fullName_, "enum")
+        TypeFullNameInfo(uniqueName, uniqueNameFullName)
+      case n: ICPPASTNamespaceDefinition =>
+        val name = shortName(n) match {
+          case ""    => "<anonymous>"
+          case other => other
+        }
+        val fullName_ = fullName(n)
+        TypeFullNameInfo(name, scopeLocalUniqueNamespaceFullName(fullName_))
+      case s: IASTCompositeTypeSpecifier =>
+        val fullName_ = registerType(cleanType(fullName(s)))
+        val name_     = shortName(s) match {
+          case name if name.isEmpty && fullName_.contains(".") => fullName_.substring(fullName_.lastIndexOf("."))
+          case name if name.isEmpty                            => fullName_
+          case other                                           => other
+        }
+        TypeFullNameInfo(name_, fullName_)
+    }
+  }
+
+  private val FundamentalTypeKeywords = List(
+    "void",
+    "bool",
+    "char",
+    "char8_t",
+    "char16_t",
+    "char32_t",
+    "wchar_t",
+    "int",
+    "short",
+    "long",
+    "signed",
+    "unsigned",
+    "float",
+    "double"
+  )
+
+  /** https://en.cppreference.com/w/cpp/language/types */
+  protected def isFundamentalTypeKeywords(tpe: String): Boolean =
+    FundamentalTypeKeywords.contains(tpe.replace("*", "").replace("&", ""))
+
+  /** https://www.w3schools.com/cpp/cpp_variables_identifiers.asp */
+  protected def isValidFullNameChar(char: Char): Boolean = char match {
+    case c if c.isLetterOrDigit => true
+    case c if c == '_'          => true
+    case c if c == '.'          => true
+    case _                      => false
+  }
+
+  @nowarn
+  protected def typeFor(node: IASTNode): String = {
+    // CDT's type resolution may run into unbounded mutual recursion for certain inputs (see
+    // https://github.com/joernio/joern/issues/6261); degrade to ANY instead of losing the whole file.
+    try { typeForInternal(node) }
+    catch { case _: StackOverflowError => Defines.Any }
+  }
+
+  @nowarn
+  private def typeForInternal(node: IASTNode): String = {
+    import org.eclipse.cdt.core.dom.ast.ASTSignatureUtil.getNodeSignature
+    val tpeString = node match {
+      case f: CPPASTFoldExpression          => typeForCPPASTFoldExpression(f)
+      case f: CPPASTFieldReference          => typeForCPPASTFieldReference(f)
+      case s: CPPASTIdExpression            => typeForCPPASTIdExpression(s)
+      case s: ICPPASTNamedTypeSpecifier     => typeForCPPAstNamedTypeSpecifier(s)
+      case a: IASTArrayDeclarator           => typeForIASTArrayDeclarator(a)
+      case c: ICPPASTConstructorInitializer => typeForICPPASTConstructorInitializer(c)
+      case c: CPPASTEqualsInitializer       => typeForCPPASTEqualsInitializer(c)
+      case n: IASTName                      => typeForIASTName(n)
+      case id: IASTIdExpression             => typeForIASTName(id.getName)
+      case d: IASTDeclarator                => typeForIASTName(d.getName)
+      case f: IASTFieldReference            => safeGetType(f.getFieldOwner.getExpressionType)
+      case s: IASTNamedTypeSpecifier        => ASTStringUtil.getReturnTypeString(s, null)
+      case s: IASTCompositeTypeSpecifier    => ASTStringUtil.getReturnTypeString(s, null)
+      case s: IASTEnumerationSpecifier      => ASTStringUtil.getReturnTypeString(s, null)
+      case s: IASTElaboratedTypeSpecifier   => ASTStringUtil.getReturnTypeString(s, null)
+      case l: IASTLiteralExpression         => safeGetType(l.getExpressionType)
+      case e: IASTExpression                => safeGetNodeType(e)
+      case d: IASTSimpleDeclaration         => typeForDeclSpecifier(d.getDeclSpecifier)
+      case _                                => getNodeSignature(node)
+    }
+    cleanType(tpeString)
+  }
+
+  private def typeForIASTName(name: IASTName): String = {
+    safeGetBinding(name) match {
+      case Some(v: IVariable) =>
+        v.getType match {
+          case f: IFunctionType =>
+            safeGetType(f.getReturnType)
+          case c: ICPPBinding =>
+            c.getQualifiedName.mkString(".")
+          case other => safeGetType(other)
+        }
+      case _ => safeGetNodeType(name)
+    }
+  }
+
+  protected def returnType(methodLike: FullNameProvider.MethodLike): String = {
+    methodLike match {
+      case declarator: IASTFunctionDeclarator => returnTypeForIASTFunctionDeclarator(declarator)
+      case definition: IASTFunctionDefinition => returnTypeForIASTFunctionDefinition(definition)
+      case lambda: ICPPASTLambdaExpression    => returnTypeForICPPASTLambdaExpression(lambda)
+    }
+  }
+
+  private def returnTypeForIASTFunctionDeclarator(declarator: IASTFunctionDeclarator): String = {
+    safeGetBinding(declarator.getName) match {
+      case Some(_: ICPPConstructor)                                                                   => Defines.Void
+      case Some(_: ICPPFunctionTemplate) if declarator.getParent.isInstanceOf[IASTFunctionDefinition] =>
+        cleanType(typeForDeclSpecifier(declarator.getParent.asInstanceOf[IASTFunctionDefinition].getDeclSpecifier))
+      case Some(value: ICPPMethod) if !value.getType.toString.startsWith("?") =>
+        cleanType(safeGetType(value.getType.getReturnType))
+      case Some(value: ICPPFunction) if !value.getType.toString.startsWith("?") =>
+        cleanType(safeGetType(value.getType.getReturnType))
+      case _ if declarator.getParent.isInstanceOf[IASTSimpleDeclaration] =>
+        cleanType(typeForDeclSpecifier(declarator.getParent.asInstanceOf[IASTSimpleDeclaration].getDeclSpecifier))
+      case _ if declarator.getParent.isInstanceOf[IASTFunctionDefinition] =>
+        cleanType(typeForDeclSpecifier(declarator.getParent.asInstanceOf[IASTFunctionDefinition].getDeclSpecifier))
+      case Some(_: IProblemBinding) if bindsToConstructor(declarator.getName) => Defines.Void
+      case _                                                                  => Defines.Any
+    }
+  }
+
+  private def returnTypeForIASTFunctionDefinition(definition: IASTFunctionDefinition): String = {
+    returnTypeForIASTFunctionDeclarator(definition.getDeclarator)
+  }
+
+  private def returnTypeForICPPASTLambdaExpression(lambda: ICPPASTLambdaExpression): String = {
+    lambda.getDeclarator match {
+      case declarator: IASTDeclarator if declarator.getTrailingReturnType != null =>
+        typeForDeclSpecifier(declarator.getTrailingReturnType.getDeclSpecifier)
+      case _ =>
+        safeGetEvaluation(lambda) match {
+          case Some(value) if !value.toString.endsWith(": <unknown>")    => cleanType(value.getType.toString)
+          case Some(value) if value.getType.isInstanceOf[CPPClosureType] =>
+            val closureType = value.getType.asInstanceOf[CPPClosureType]
+            closureType.getMethods
+              .find(_.toString.startsWith("operator ()"))
+              .map(_.getType)
+              .collect {
+                case t: ICPPFunctionType if t.getReturnType.isInstanceOf[CPPClosureType] => Defines.Function
+                case t: ICPPFunctionType => cleanType(safeGetType(t.getReturnType))
+              }
+              .getOrElse(Defines.Any)
+          case _ => Defines.Any
+        }
+    }
+  }
+
+  /** Removes the whitespace of a type name, except where it is part of a valid C type name: `unsigned int`,
+    * `long long`, `volatile long`.
+    */
+  private def replaceWhitespaceAfterKeyword(tpe: String): String = {
+    val tokens = tpe.split(' ').filter(_.nonEmpty)
+    tokens.indices
+      .foldLeft(new StringBuilder) { (name, i) =>
+        if (i > 0 && BasicTypeNames.keepsWhitespaceBetween(tokens(i - 1), tokens(i))) name.append(' ')
+        name.append(tokens(i))
+      }
+      .toString
+  }
+
+  private def isThisLambdaCapture(tpe: String): Boolean = {
+    tpe.startsWith("[*this]") || tpe.startsWith("[this]") || (tpe.startsWith("[") && tpe.contains("this]"))
+  }
+
+  private def pointersAsString(spec: IASTDeclSpecifier, parentDecl: IASTDeclarator): String = {
+    val tpe = (spec match {
+      case simple: IASTSimpleDeclSpecifier => BasicTypeNames.forSimpleDeclSpecifier(simple)
+      case _                               => None
+    }).getOrElse(typeFor(spec)) match {
+      case Defines.Auto => typeFor(parentDecl)
+      case other        => other
+    }
+    if (parentDecl.getPointerOperators.isEmpty) {
+      s"$tpe${pointerAndArraySuffix(parentDecl)}"
+    } else {
+      s"$tpe${pointerAndArraySuffix(parentDecl)}".strip()
+    }
+  }
+
+  private def pointerAndArraySuffix(declarator: IASTDeclarator): String = {
+    val arr = declarator match {
+      case p: IASTArrayDeclarator => p.getArrayModifiers.iterator.map(_.getRawSignature).mkString
+      case _                      => ""
+    }
+    val refs = declarator.getPointerOperators
+      .map {
+        case r: ICPPASTReferenceOperator if r.isRValueReference => "&&"
+        case _: ICPPASTReferenceOperator                        => "&"
+        case _: IASTPointer                                     => "*"
+      }
+      .mkString("")
+    s"$arr$refs"
+  }
+
+  private def safeGetNodeType(node: IASTNode): String = {
+    // In case of unresolved includes etc. this may fail throwing an unrecoverable exception
+    safeCdtCall(ASTTypeUtil.getNodeType(node)).getOrElse(Defines.Any)
+  }
+
+  private def typeForCPPASTFieldReference(f: CPPASTFieldReference): String = {
+    safeGetEvaluation(f.getFieldOwner) match {
+      case Some(evaluation: EvalBinding) => evaluation.getType.toString
+      case _                             => safeGetType(f.getFieldOwner.getExpressionType)
+    }
+  }
+
+  private def typeForCPPASTFoldExpression(f: CPPASTFoldExpression): String = {
+    safeGetEvaluation(f) match {
+      case Some(evaluation: EvalFoldExpression) =>
+        Try(evaluation.getValue.getEvaluation).toOption match {
+          case Some(value: EvalBinary) =>
+            // EvalBinary.toString only contains ": " if a nested evaluation (e.g. EvalFixed) contributes
+            // one; for folds over non-constant expressions (e.g. function calls) the separator is absent.
+            val evalString = value.toString
+            val sepIdx     = evalString.indexOf(": ")
+            if (sepIdx > 0) evalString.substring(0, sepIdx) else Defines.Any
+          case Some(value: EvalBinding) if value.getType.isInstanceOf[ICPPParameterPackType] =>
+            value.getType.asInstanceOf[ICPPParameterPackType].getType.toString
+          case _ => Defines.Any
+        }
+      case _ => Defines.Any
+    }
+  }
+
+  @nowarn
+  private def typeForIASTArrayDeclarator(a: IASTArrayDeclarator): String = {
+    import org.eclipse.cdt.core.dom.ast.ASTSignatureUtil.getNodeSignature
+    val nodeType = safeGetNodeType(a)
+    if (nodeType.startsWith("? ")) {
+      val tpe = getNodeSignature(a).replace("[]", "").strip()
+      val arr = nodeType.replace("? ", "")
+      s"$tpe$arr"
+    } else if (nodeType.contains("} ") || nodeType.contains(" [")) {
+      val tpe = getNodeSignature(a).replace("[]", "").strip()
+      val arr = a.getArrayModifiers.map {
+        case m if m.getConstantExpression != null => s"[${nodeSignature(m.getConstantExpression)}]"
+        case _ if a.getInitializer != null        =>
+          a.getInitializer match {
+            case l: IASTInitializerList => s"[${l.getSize}]"
+            case _                      => "[]"
+          }
+        case _ => "[]"
+      }.mkString
+      s"$tpe$arr"
+    } else {
+      nodeType
+    }
+  }
+
+  private def typeForCPPASTIdExpression(s: CPPASTIdExpression): String = {
+    safeGetEvaluation(s) match {
+      case Some(evaluation: EvalMemberAccess) =>
+        val deref = if (evaluation.isPointerDeref) "*" else ""
+        evaluation.getOwnerType.toString + deref
+      case Some(evalBinding: EvalBinding) =>
+        evalBinding.getBinding match {
+          case m: CPPMethod   => safeGetNodeType(m.getPrimaryDeclaration)
+          case f: CPPFunction => safeGetNodeType(f.getDefinition)
+          case v: CPPVariable => safeGetNodeType(v.getDefinition)
+          case _              => safeGetNodeType(s)
+        }
+      case _ => safeGetNodeType(s)
+    }
+  }
+
+  @nowarn
+  private def typeForICPPASTConstructorInitializer(c: ICPPASTConstructorInitializer): String = {
+    import org.eclipse.cdt.core.dom.ast.ASTSignatureUtil.getNodeSignature
+    c.getParent match {
+      case initializer: ICPPASTConstructorChainInitializer => fullName(initializer.getMemberInitializerId)
+      case _                                               => getNodeSignature(c)
+    }
+  }
+
+  @nowarn
+  private def typeForCPPASTEqualsInitializer(c: CPPASTEqualsInitializer): String = {
+    import org.eclipse.cdt.core.dom.ast.ASTSignatureUtil.getNodeSignature
+    c.getInitializerClause match {
+      case initializer: ICPPASTFunctionCallExpression
+          if initializer.getFunctionNameExpression.isInstanceOf[CPPASTIdExpression] =>
+        val name = initializer.getFunctionNameExpression.asInstanceOf[CPPASTIdExpression]
+        typeForCPPASTIdExpression(name)
+      case _ =>
+        getNodeSignature(c)
+    }
+  }
+
+  private def typeForCPPAstNamedTypeSpecifier(s: ICPPASTNamedTypeSpecifier): String = {
+    safeGetBinding(s) match {
+      // An alias template instance is an ICPPSpecialization, but unlike the other specializations
+      // its toString is the debug rendering `Alias -> aliasedType` rather than a type name.
+      case Some(alias: ICPPAliasTemplateInstance) => safeGetType(alias.getType)
+      case Some(spec: ICPPSpecialization)         => spec.toString
+      case Some(n: ICPPBinding)                   => n.getQualifiedName.mkString(".")
+      case Some(other: IBinding)                  => other.toString
+      case _ if s.getName != null                 => ASTStringUtil.getQualifiedName(s.getName)
+      case _                                      => s.getRawSignature
+    }
+  }
+
+}

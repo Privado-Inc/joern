@@ -1,6 +1,5 @@
 package io.joern.rubysrc2cpg.deprecated.astcreation
 
-import better.files.File
 import io.joern.rubysrc2cpg.deprecated.parser.DeprecatedRubyParser.*
 import io.joern.rubysrc2cpg.deprecated.passes.Defines
 import io.joern.x2cpg.Defines.DynamicCallUnknownFullName
@@ -12,12 +11,13 @@ import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, Dispatch
 import org.antlr.v4.runtime.ParserRuleContext
 import org.slf4j.LoggerFactory
 
+import java.nio.file.{Files, Paths}
 import scala.jdk.CollectionConverters.CollectionHasAsScala
 
 trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: ValidationMode) {
   this: AstCreator =>
 
-  private val logger = LoggerFactory.getLogger(this.getClass)
+  private val logger        = LoggerFactory.getLogger(this.getClass)
   private val prefixMethods = Set(
     "attr_reader",
     "attr_writer",
@@ -67,13 +67,14 @@ trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: V
     val lhs    = astForStatement(ctx.statement(0))
     val rhs    = astForStatement(ctx.statement(1)).headOption
     val ifNode = controlStructureNode(ctx, ControlStructureTypes.IF, code(ctx))
-    lhs.headOption.flatMap(_.root) match
+    lhs.headOption.flatMap(_.root) match {
       // If the LHS is a `next` command with a return value, then this if statement is its condition and it becomes a
       // `return`
       case Some(x: NewControlStructure) if x.code == Defines.ModifierNext && lhs.head.nodes.size > 1 =>
         val retNode = NewReturn().code(Defines.ModifierNext).lineNumber(x.lineNumber).columnNumber(x.columnNumber)
         controlStructureAst(ifNode, rhs, Seq(lhs.head.subTreeCopy(x, replacementNode = Option(retNode))))
       case _ => controlStructureAst(ifNode, rhs, lhs)
+    }
   }
 
   private def astForUnlessModifierStatement(ctx: ModifierStatementContext): Ast = {
@@ -86,13 +87,13 @@ trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: V
   private def astForWhileModifierStatement(ctx: ModifierStatementContext): Ast = {
     val lhs = astForStatement(ctx.statement(0))
     val rhs = astForStatement(ctx.statement(1))
-    whileAst(rhs.headOption, lhs, Some(text(ctx)))
+    legacyWhileAst(rhs.headOption, lhs, Some(text(ctx)))
   }
 
   private def astForUntilModifierStatement(ctx: ModifierStatementContext): Ast = {
     val lhs = astForStatement(ctx.statement(0))
     val rhs = astForStatement(ctx.statement(1))
-    whileAst(rhs.headOption, lhs, Some(text(ctx)))
+    legacyWhileAst(rhs.headOption, lhs, Some(text(ctx)))
   }
 
   private def astForRescueModifierStatement(ctx: ModifierStatementContext): Ast = {
@@ -105,14 +106,16 @@ trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: V
   /** If the last statement is a return, this is returned. If not, then a return node is created.
     */
   protected def lastStmtAsReturnAst(ctx: ParserRuleContext, lastStmtAst: Ast, maybeCode: Option[String] = None): Ast =
-    lastStmtAst.root.collectFirst { case x: NewReturn => x } match
+    lastStmtAst.root.collectFirst { case x: NewReturn => x } match {
       case Some(_) => lastStmtAst
-      case None =>
+      case None    =>
         val code    = maybeCode.getOrElse(text(ctx))
         val retNode = returnNode(ctx, code)
-        lastStmtAst.root match
+        lastStmtAst.root match {
           case Some(method: NewMethod) => returnAst(retNode, Seq(Ast(methodToMethodRef(ctx, method))))
           case _                       => returnAst(retNode, Seq(lastStmtAst))
+        }
+    }
 
   protected def astForBodyStatementContext(ctx: BodyStatementContext, isMethodBody: Boolean = false): Seq[Ast] = {
     if (ctx.rescueClause.size > 0) Seq(astForRescueClause(ctx))
@@ -211,7 +214,7 @@ trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: V
     case ctx: NotExpressionOrCommandContext        => Seq(astForNotKeywordExpressionOrCommand(ctx))
     case ctx: OrAndExpressionOrCommandContext      => Seq(astForOrAndExpressionOrCommand(ctx))
     case ctx: ExpressionExpressionOrCommandContext => astForExpressionContext(ctx.expression())
-    case _ =>
+    case _                                         =>
       logger.error(s"astForExpressionOrCommand() $relativeFilename, ${text(ctx)} All contexts mismatched.")
       Seq(Ast())
   }
@@ -254,7 +257,7 @@ trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: V
     val argAstsWithoutMethods = argsAsts.filterNot(_.root.exists(_.isInstanceOf[NewMethod]))
 
     /* isolate methods from the original args and create identifier ASTs from it */
-    val methodDefAsts = argsAsts.filter(_.root.exists(_.isInstanceOf[NewMethod]))
+    val methodDefAsts          = argsAsts.filter(_.root.exists(_.isInstanceOf[NewMethod]))
     val methodToIdentifierAsts = methodDefAsts.flatMap {
       _.nodes.collectFirst { case methodNode: NewMethod =>
         Ast(
@@ -306,7 +309,7 @@ trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: V
           None,
           Option(Defines.Any)
         )
-      ) match
+      ) match {
       case Some(newCall) =>
         val primaryAst = astForPrimaryContext(ctx.primary())
         val argsAst    = astForArguments(ctx.argumentsWithoutParentheses().arguments)
@@ -320,6 +323,7 @@ trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: V
           }
           .getOrElse(Seq(callAst(newCall, argsAst, primaryAst.headOption)))
       case None => Seq.empty
+    }
   }
 
   private def methodToMethodRef(ctx: ParserRuleContext, methodNode: NewMethod): NewMethodRef =
@@ -337,10 +341,10 @@ trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: V
     if (importedNode.size == 1) {
       val node      = importedNode.head
       val pathValue = stripQuotes(node.code)
-      val result = pathValue match {
-        case path if File(path).exists =>
+      val result    = pathValue match {
+        case path if Files.exists(Paths.get(path)) =>
           path
-        case path if File(s"$path.rb").exists =>
+        case path if Files.exists(Paths.get(s"$path.rb")) =>
           s"$path.rb"
         case _ =>
           pathValue
@@ -360,9 +364,9 @@ trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: V
       val pathValue   = stripQuotes(node.code)
       val updatedPath = if (pathValue.endsWith(".rb")) pathValue else s"$pathValue.rb"
 
-      val currentDirectory = File(currentFile).parent
-      val file             = File(currentDirectory, updatedPath)
-      packageStack.append(file.pathAsString)
+      val currentDirectory = Paths.get(currentFile).toAbsolutePath.normalize().getParent
+      val file             = currentDirectory.resolve(updatedPath).toAbsolutePath.normalize()
+      packageStack.append(file.toString)
       val importNode = createImportNodeAndLink(updatedPath, pathValue, Some(callNode), diffGraph)
       Seq(callAst(callNode, argsAst), Ast(importNode))
     } else {
@@ -370,9 +374,10 @@ trait AstForStatementsCreator(filename: String)(implicit withSchemaValidation: V
     }
   }
 
-  protected def astForBlock(ctx: BlockContext, blockMethodName: Option[String] = None): Ast = ctx match
+  protected def astForBlock(ctx: BlockContext, blockMethodName: Option[String] = None): Ast = ctx match {
     case ctx: DoBlockBlockContext    => astForDoBlock(ctx.doBlock(), blockMethodName)
     case ctx: BraceBlockBlockContext => astForBraceBlock(ctx.braceBlock(), blockMethodName)
+  }
 
   private def astForBlockHelper(
     ctx: ParserRuleContext,

@@ -1,58 +1,56 @@
 package io.joern.swiftsrc2cpg.astcreation
 
-import io.joern.swiftsrc2cpg.datastructures.BlockScope
-import io.joern.swiftsrc2cpg.datastructures.MethodScope
 import io.joern.swiftsrc2cpg.parser.SwiftNodeSyntax.*
-import io.joern.x2cpg.Ast
-import io.joern.x2cpg.ValidationMode
+import io.joern.x2cpg.datastructures.VariableScopeManager
 import io.joern.x2cpg.frontendspecific.swiftsrc2cpg.Defines
-import io.shiftleft.codepropertygraph.generated.DispatchTypes
-import io.shiftleft.codepropertygraph.generated.EdgeTypes
-import io.shiftleft.codepropertygraph.generated.Operators
+import io.joern.x2cpg.{Ast, ValidationMode}
+import io.shiftleft.codepropertygraph.generated.{EdgeTypes, Operators}
 
-import scala.annotation.tailrec
+import scala.annotation.{tailrec, unused}
 
 trait AstForPatternSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   this: AstCreator =>
 
   private def astForExpressionPatternSyntax(node: ExpressionPatternSyntax): Ast = {
-    astForNodeWithFunctionReference(node.expression)
+    astForNode(node.expression)
   }
 
   private def astForIdentifierPatternSyntax(node: IdentifierPatternSyntax): Ast = {
-    val name      = code(node.identifier)
-    val identNode = identifierNode(node, name)
-    scope.addVariableReference(name, identNode)
-    Ast(identNode)
+    astForIdentifier(node)
   }
 
   private def astForIsTypePatternSyntax(node: IsTypePatternSyntax): Ast = {
-    val op      = Operators.instanceOf
-    val lhsNode = node.`type`
-    val typ     = code(lhsNode)
-    registerType(typ)
-    val lhsAst    = Ast(literalNode(lhsNode, code(lhsNode), None).dynamicTypeHintFullName(Seq(typ)))
-    val callNode_ = callNode(node, code(node), op, DispatchTypes.STATIC_DISPATCH).dynamicTypeHintFullName(Seq(typ))
-    callAst(callNode_, Seq(lhsAst))
+    val op = Operators.instanceOf
+
+    val tpeNode = node.`type`
+    val tpe     = simpleTypeNameForTypeSyntax(tpeNode)
+    registerType(tpe)
+
+    val callNode_    = createStaticCallNode(node, code(node), op, op, Defines.Bool)
+    val typeRefNode_ = typeRefNode(node, code(tpeNode), tpe)
+
+    val argAsts = List(Ast(typeRefNode_))
+    callAst(callNode_, argAsts)
   }
 
-  private def astForMissingPatternSyntax(node: MissingPatternSyntax): Ast = notHandledYet(node)
-  private def astForTuplePatternSyntax(node: TuplePatternSyntax): Ast     = notHandledYet(node)
+  private def astForMissingPatternSyntax(@unused node: MissingPatternSyntax): Ast = Ast()
+
+  // Tuple patterns in switch-case and if-case/guard-case conditions are handled via
+  // astsForBindingTuplePattern / astForExpressionTuplePattern in AstForExprSyntaxCreator.
+  // This handler covers remaining contexts (e.g. bare pattern matching) which are not yet implemented.
+  private def astForTuplePatternSyntax(node: TuplePatternSyntax): Ast = notHandledYet(node)
 
   private def localForValueBindingPatternSyntax(
     node: ValueBindingPatternSyntax,
     name: String,
     typeFullName: String
   ): Ast = {
-    val kind = code(node.bindingSpecifier)
-    val scopeType = if (kind == "let") {
-      BlockScope
-    } else {
-      MethodScope
-    }
+    val kind      = code(node.bindingSpecifier)
+    val scopeType = if (kind == "let") { VariableScopeManager.ScopeType.BlockScope }
+    else { VariableScopeManager.ScopeType.MethodScope }
     val nLocalNode = localNode(node, name, name, typeFullName).order(0)
     registerType(typeFullName)
-    scope.addVariable(name, nLocalNode, scopeType)
+    scope.addVariable(name, nLocalNode, typeFullName, scopeType)
     diffGraph.addEdge(localAstParentStack.head, nLocalNode, EdgeTypes.AST)
     Ast()
   }
@@ -61,15 +59,21 @@ trait AstForPatternSyntaxCreator(implicit withSchemaValidation: ValidationMode) 
   private def astForValueBindingPatternSyntax(node: ValueBindingPatternSyntax): Ast = {
     node.pattern match {
       case expr: ExpressionPatternSyntax if expr.expression.isInstanceOf[AsExprSyntax] =>
-        val asExpr = expr.expression.asInstanceOf[AsExprSyntax]
-        localForValueBindingPatternSyntax(node, code(asExpr.expression), code(asExpr.`type`))
+        val asExpr         = expr.expression.asInstanceOf[AsExprSyntax]
+        val tpeFromTypeMap = fullnameProvider.typeFullname(expr.expression)
+        localForValueBindingPatternSyntax(
+          node,
+          code(asExpr.expression),
+          tpeFromTypeMap.getOrElse(AstCreatorHelper.cleanType(code(asExpr.`type`)))
+        )
       case expr: ExpressionPatternSyntax =>
         astForNode(expr)
       case ident: IdentifierPatternSyntax =>
-        localForValueBindingPatternSyntax(node, code(ident.identifier), Defines.Any)
+        val tpeFromTypeMap = fullnameProvider.typeFullname(ident.identifier)
+        localForValueBindingPatternSyntax(node, code(ident.identifier), tpeFromTypeMap.getOrElse(Defines.Any))
       case isType: IsTypePatternSyntax =>
         astForNode(isType)
-      case _: MissingPatternSyntax => Ast()
+      case _: MissingPatternSyntax   => Ast()
       case tuple: TuplePatternSyntax =>
         astForNode(tuple)
       case valueBinding: ValueBindingPatternSyntax =>

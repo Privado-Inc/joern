@@ -17,7 +17,7 @@ trait AstForHereDocsCreator(implicit withSchemaValidation: ValidationMode) { thi
     val delimiter  = HereDocHandling.getHereDocDelimiter(ctx.HERE_DOC().getText).getOrElse("")
     val hereDoc    = ctx.HERE_DOC().getText.replaceFirst("<<[~-]", "")
     val hereDocTxt = hereDoc.stripPrefix(delimiter).stripSuffix(delimiter).strip()
-    val literal = NewLiteral()
+    val literal    = NewLiteral()
       .code(hereDocTxt)
       .typeFullName(Defines.String)
       .lineNumber(line(ctx))
@@ -26,7 +26,7 @@ trait AstForHereDocsCreator(implicit withSchemaValidation: ValidationMode) { thi
   }
 
   protected def astForHereDocArgument(ctx: HereDocArgumentContext): Seq[Ast] =
-    HereDocHandling.getHereDocDelimiter(ctx.HERE_DOC_IDENTIFIER().getText) match
+    HereDocHandling.getHereDocDelimiter(ctx.HERE_DOC_IDENTIFIER().getText) match {
       case Some(delimiter) =>
         val literal = NewLiteral()
           .code("") // build code from the upcoming statements
@@ -36,6 +36,7 @@ trait AstForHereDocsCreator(implicit withSchemaValidation: ValidationMode) { thi
         hereDocTokens.push((delimiter, literal))
         Seq(Ast(literal))
       case None => Seq.empty
+    }
 
   /** Will determine, if we have recently met a here doc initializer, if this statement should be converted to a here
     * doc literal or returned as-is.
@@ -48,7 +49,7 @@ trait AstForHereDocsCreator(implicit withSchemaValidation: ValidationMode) { thi
     if (stmt.nonEmpty && hereDocTokens.nonEmpty) {
       val (delimiter, literalNode) = hereDocTokens.head
       val stmtAst                  = stmt.head
-      val atHereDocInitializer = stmt.flatMap(_.nodes).exists {
+      val atHereDocInitializer     = stmt.flatMap(_.nodes).exists {
         case x: NewLiteral => hereDocTokens.exists(_._2 == x)
         case _             => false
       }
@@ -57,10 +58,11 @@ trait AstForHereDocsCreator(implicit withSchemaValidation: ValidationMode) { thi
         stmt
       } else {
         // We are in the middle of the here doc, convert statements to here doc body + look out for delimiter
-        val txt = stmtAst.root match
+        val txt = stmtAst.root match {
           case Some(x: NewCall)       => x.code
           case Some(x: NewIdentifier) => x.code
           case _                      => ""
+        }
 
         if (txt == delimiter) hereDocTokens.pop()
         else literalNode.code(s"${literalNode.code}\n$txt".trim)
