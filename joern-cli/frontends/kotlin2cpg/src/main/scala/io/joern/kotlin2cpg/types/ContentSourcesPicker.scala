@@ -1,9 +1,11 @@
 package io.joern.kotlin2cpg.types
 
-import better.files.File
 import io.joern.kotlin2cpg.Config
-import io.joern.kotlin2cpg.DefaultContentRootJarPath
 import io.joern.x2cpg.SourceFiles.toRelativePath
+
+import java.nio.file.{Files, Paths}
+import io.shiftleft.semanticcpg.utils.FileUtil.*
+import io.shiftleft.semanticcpg.utils.FileUtil
 
 object ContentSourcesPicker {
 
@@ -21,26 +23,36 @@ object ContentSourcesPicker {
   //  `Seq("dir1/dir2/dir3")` and nothing else.
 
   def dirsForRoot(rootDir: String, config: Config): Seq[String] = {
-    val dir        = File(rootDir)
-    val hasSubDirs = dir.list.exists(_.isDirectory)
-    if (!hasSubDirs || !config.resolveTypes) {
+    val dir = Paths.get(rootDir)
+    if (!dir.listFiles().exists(Files.isDirectory(_)) || !config.resolveTypes) {
       return Seq(rootDir)
     }
-    val dirPaths = dir.listRecursively
-      .filter(_.isDirectory)
-      .flatMap { f =>
-        val hasKtsFile = f.listRecursively.exists { f => f.hasExtension && f.pathAsString.endsWith(".kts") }
-        val dirsPicked = f.list.filter(_.isDirectory).filterNot { d =>
-          d.listRecursively.filter(_.hasExtension).exists(_.pathAsString.endsWith(".kts"))
-        }
-        if (hasKtsFile) Some(dirsPicked.map(_.pathAsString))
-        else Some(Seq(f.pathAsString))
+
+    // Single traversal of the entire tree
+    val allPaths     = dir.walk().filterNot(_ == dir).toSeq
+    val allDirs      = allPaths.filter(Files.isDirectory(_))
+    val dirsByParent = allDirs.groupBy(_.getParent)
+
+    // For each .kts file, mark all ancestor dirs (within rootDir) as containing .kts
+    val ktsFiles = allPaths
+      .filter(path => path.hasExtension && path.toString.endsWith(".kts"))
+    val dirsWithKts: Set[java.nio.file.Path] = ktsFiles.flatMap { kts =>
+      val dirs =
+        Iterator
+          .iterate(kts.getParent)(_.getParent)
+          .takeWhile(parent => parent != null && parent.startsWith(dir))
+          .toSeq
+
+      dirs
+    }.toSet
+
+    allDirs
+      .flatMap { dir =>
+        val subDirs    = dirsByParent.getOrElse(dir, Seq.empty)
+        val dirsPicked = subDirs.filterNot(dirsWithKts.contains)
+        if (dirsWithKts.contains(dir)) dirsPicked.map(_.toString)
+        else Seq(dir.toString)
       }
-      .flatten
-      .toSeq
-    dirPaths.filterNot(path =>
-      val t = toRelativePath(path, config.inputPath)
-      config.ignoredFilesRegex.matches(toRelativePath(path, config.inputPath))
-    )
+      .filterNot(path => config.ignoredFilesRegex.matches(toRelativePath(path, config.inputPath)))
   }
 }

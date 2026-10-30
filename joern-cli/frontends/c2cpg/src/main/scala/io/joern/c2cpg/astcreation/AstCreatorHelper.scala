@@ -1,287 +1,165 @@
 package io.joern.c2cpg.astcreation
 
+import io.joern.c2cpg.passes.FunctionDeclNodePass
+import io.joern.x2cpg.AstNodeBuilder.dependencyNode
 import io.joern.x2cpg.Ast
-import io.joern.x2cpg.SourceFiles
-import io.joern.x2cpg.ValidationMode
-import io.joern.x2cpg.Defines as X2CpgDefines
-import io.joern.x2cpg.utils.NodeBuilders.newDependencyNode
-import io.shiftleft.codepropertygraph.generated.DispatchTypes
-import io.shiftleft.codepropertygraph.generated.Operators
-import io.shiftleft.codepropertygraph.generated.nodes.ExpressionNew
-import io.shiftleft.codepropertygraph.generated.nodes.NewCall
-import io.shiftleft.codepropertygraph.generated.nodes.NewNode
 import io.shiftleft.codepropertygraph.generated.EdgeTypes
-import io.shiftleft.utils.IOUtils
-import org.apache.commons.lang3.StringUtils
+import io.shiftleft.codepropertygraph.generated.nodes.{ExpressionNew, NewCall}
 import org.eclipse.cdt.core.dom.ast.*
-import org.eclipse.cdt.core.dom.ast.c.ICASTArrayDesignator
-import org.eclipse.cdt.core.dom.ast.c.ICASTDesignatedInitializer
-import org.eclipse.cdt.core.dom.ast.c.ICASTFieldDesignator
+import org.eclipse.cdt.core.dom.ast.c.{ICASTArrayDesignator, ICASTDesignatedInitializer, ICASTFieldDesignator}
 import org.eclipse.cdt.core.dom.ast.cpp.*
-import org.eclipse.cdt.core.dom.ast.gnu.c.ICASTKnRFunctionDeclarator
 import org.eclipse.cdt.internal.core.dom.parser.c.CASTArrayRangeDesignator
-import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPASTArrayRangeDesignator
-import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPASTFieldReference
-import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPASTIdExpression
-import org.eclipse.cdt.internal.core.dom.parser.cpp.CPPMethod
-import org.eclipse.cdt.internal.core.dom.parser.cpp.ICPPEvaluation
-import org.eclipse.cdt.internal.core.dom.parser.cpp.semantics.EvalBinding
-import org.eclipse.cdt.internal.core.dom.parser.cpp.semantics.EvalMemberAccess
-import org.eclipse.cdt.internal.core.model.ASTStringUtil
+import org.eclipse.cdt.internal.core.dom.parser.cpp.{CPPASTArrayRangeDesignator, ICPPEvaluation}
 
-import java.nio.file.Path
-import java.nio.file.Paths
-import scala.annotation.nowarn
+import java.nio.file.{Path, Paths}
 import scala.collection.mutable
-import scala.util.Try
+import scala.util.control.NonFatal
+import scala.util.{Success, Try}
 
-object AstCreatorHelper {
+trait AstCreatorHelper { this: AstCreator =>
 
-  implicit class OptionSafeAst(val ast: Ast) extends AnyVal {
-    def withArgEdge(src: NewNode, dst: Option[NewNode]): Ast = dst match {
-      case Some(value) => ast.withArgEdge(src, value)
-      case None        => ast
+  private val resolvedInputPath: Path = Paths.get(config.inputPath).toAbsolutePath.normalize()
+
+  private val scopeLocalUniqueNames: mutable.Map[String, Int] = mutable.HashMap.empty
+  private val file2OffsetTable: Array[Int]                    = genFileOffsetTable()
+  private val relativePathCache: mutable.Map[String, String]  = mutable.HashMap.empty
+
+  // We use our own call ast creation function since the version in x2cpg treats
+  // base as receiver if no receiver is given which does not fit the needs of this
+  // frontend.
+  protected def createCallAst(
+    callNode: NewCall,
+    arguments: Seq[Ast] = List(),
+    base: Option[Ast] = None,
+    receiver: Option[Ast] = None
+  ): Ast = {
+    setArgumentIndices(arguments)
+
+    val baseRoot = base.flatMap(_.root).toList
+    baseRoot match {
+      case List(x: ExpressionNew) => x.argumentIndex = 0
+      case _                      => // do nothing
+    }
+
+    val bse = base.getOrElse(Ast())
+    var ast = Ast(callNode).withChild(bse)
+
+    val receiverRoot = receiver.flatMap(_.root)
+    if (receiver.isDefined && receiver != base) {
+      receiverRoot.get.asInstanceOf[ExpressionNew].argumentIndex = -1
+      ast = ast.withChild(receiver.get)
+    }
+
+    ast = ast
+      .withChildren(arguments)
+      .withArgEdges(callNode, baseRoot)
+      .withArgEdges(callNode, arguments.flatMap(_.root))
+
+    receiverRoot.foreach { root =>
+      ast = ast.withReceiverEdge(callNode, root)
+    }
+    ast
+  }
+
+  protected def scopeLocalUniqueName(targetName: String, fullName: String = ""): String = {
+    val name      = if (targetName.isEmpty) "<anonymous>" else s"<$targetName>"
+    val scopePath = if (fullName.isEmpty) scope.computeScopePath else fullName.stripSuffix(".")
+    val key       = s"$scopePath:$name"
+    val idx       = scopeLocalUniqueNames.getOrElseUpdate(key, 0)
+    scopeLocalUniqueNames.update(key, idx + 1)
+    s"$name$idx"
+  }
+
+  protected def scopeLocalUniqueNamespaceFullName(fullName: String): String = {
+    val newFullName = fullName match {
+      case ""     => "<anonymous>"
+      case s"$p." => s"$p.<anonymous>"
+      case other  => other
+    }
+    scopeLocalUniqueNames.get(newFullName) match {
+      case None =>
+        scopeLocalUniqueNames.update(newFullName, 0)
+        newFullName
+      case Some(index) =>
+        val suffix = s"${Defines.NamespaceExtension}$index"
+        s"$newFullName$suffix"
     }
   }
-}
 
-trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
-
-  import io.joern.c2cpg.astcreation.AstCreatorHelper.*
-
-  private var usedVariablePostfix: Int = 0
-
-  protected def isIncludedNode(node: IASTNode): Boolean = fileName(node) != filename
-
-  protected def uniqueName(target: String, name: String, fullName: String): (String, String) = {
+  protected def scopeLocalUniqueName(name: String, fullName: String, targetName: String): (String, String) = {
     if (name.isEmpty && (fullName.isEmpty || fullName.endsWith("."))) {
-      val name              = s"anonymous_${target}_$usedVariablePostfix"
-      val resultingFullName = s"$fullName$name"
-      usedVariablePostfix = usedVariablePostfix + 1
-      (name, resultingFullName)
+      val newName           = scopeLocalUniqueName(targetName, fullName)
+      val resultingFullName = s"$fullName$newName"
+      (newName, resultingFullName)
     } else {
       (name, fullName)
     }
   }
 
-  private def fileOffsetTable(node: IASTNode): Array[Int] = {
-    val path = SourceFiles.toAbsolutePath(fileName(node), config.inputPath)
-    file2OffsetTable.computeIfAbsent(path, _ => genFileOffsetTable(Paths.get(path)))
-  }
-
-  private def genFileOffsetTable(absolutePath: Path): Array[Int] = {
-    val asCharArray = IOUtils.readLinesInFile(absolutePath).mkString("\n").toCharArray
-    val offsets     = mutable.ArrayBuffer.empty[Int]
-
-    for (i <- Range(0, asCharArray.length)) {
-      if (asCharArray(i) == '\n') {
-        offsets.append(i + 1)
-      }
-    }
-    offsets.toArray
-  }
-
   protected def nullSafeFileLocation(node: IASTNode): Option[IASTFileLocation] =
     Option(cdtAst.flattenLocationsToFile(node.getNodeLocations)).map(_.asFileLocation())
+
   protected def nullSafeFileLocationLast(node: IASTNode): Option[IASTFileLocation] =
     Option(cdtAst.flattenLocationsToFile(node.getNodeLocations.lastOption.toArray)).map(_.asFileLocation())
 
-  protected def fileName(node: IASTNode): String = {
-    val path = Try(node.getContainingFilename).getOrElse(filename)
-    SourceFiles.toRelativePath(path, config.inputPath)
-  }
-
-  protected def offsetToColumn(node: IASTNode, offset: Int): Int = {
-    val table      = fileOffsetTable(node)
-    val index      = java.util.Arrays.binarySearch(table, offset)
-    val tableIndex = if (index < 0) -(index + 1) else index + 1
-    val lineStartOffset = if (tableIndex == 0) {
-      0
-    } else {
-      table(tableIndex - 1)
-    }
-    val column = offset - lineStartOffset + 1
-    column
+  protected def offsetToColumn(offset: Int): Int = {
+    val index           = java.util.Arrays.binarySearch(file2OffsetTable, offset)
+    val tableIndex      = if (index < 0) -(index + 1) else index + 1
+    val lineStartOffset = if (tableIndex == 0) 0 else file2OffsetTable(tableIndex - 1)
+    offset - lineStartOffset + 1
   }
 
   protected def registerType(typeName: String): String = {
-    val fixedTypeName = fixQualifiedName(StringUtils.normalizeSpace(typeName))
-    global.usedTypes.putIfAbsent(fixedTypeName, true)
+    val fixedTypeName = replaceQualifiedNameSeparator(typeName)
+    accumulator.registerType(fixedTypeName)
     fixedTypeName
   }
 
-  protected def registerMethodDeclaration(fullName: String, methodInfo: CGlobal.MethodInfo): Unit = {
-    global.methodDeclarations.putIfAbsent(fullName, methodInfo)
+  protected def registerMethodDeclaration(fullName: String, methodInfo: FunctionDeclNodePass.MethodInfo): Unit = {
+    accumulator.registerMethodDeclaration(fullName, methodInfo)
   }
 
   protected def registerMethodDefinition(fullName: String): Unit = {
-    global.methodDefinitions.putIfAbsent(fullName, true)
+    accumulator.registerMethodDefinition(fullName)
   }
 
-  // Sadly, there is no predefined List / Enum of this within Eclipse CDT:
-  private val ReservedTypeKeywords: List[String] =
-    List(
-      "const",
-      "static",
-      "restrict",
-      "extern",
-      "typedef",
-      "inline",
-      "constexpr",
-      "auto",
-      "virtual",
-      "enum",
-      "struct",
-      "interface",
-      "class"
-    )
-
-  private val KeepTypeKeywords: List[String] = List("unsigned", "volatile")
-
-  protected def cleanType(rawType: String, stripKeywords: Boolean = true): String = {
-    if (rawType == Defines.Any) return rawType
-    val tpe =
-      if (stripKeywords) {
-        ReservedTypeKeywords.foldLeft(rawType) { (cur, repl) =>
-          if (cur.contains(s"$repl ")) cur.replace(s"$repl ", "") else cur
-        }
-      } else {
-        rawType
-      }
-    StringUtils.normalizeSpace(tpe) match {
-      case ""                                                                      => Defines.Any
-      case t if t.startsWith("[") && t.endsWith("]")                               => Defines.Array
-      case t if t.contains("->")                                                   => Defines.Function
-      case t if t.contains("?")                                                    => Defines.Any
-      case t if t.contains("#")                                                    => Defines.Any
-      case t if t.contains("::{") || t.contains("}::")                             => Defines.Any
-      case t if t.contains("{") || t.contains("}")                                 => Defines.Any
-      case t if t.contains("org.eclipse.cdt.internal.core.dom.parser.ProblemType") => Defines.Any
-      case t if t.contains("( ") => replaceWhitespaceAfterTypeKeyword(fixQualifiedName(t.substring(0, t.indexOf("( "))))
-      case t if t.contains(Defines.QualifiedNameSeparator) => replaceWhitespaceAfterTypeKeyword(fixQualifiedName(t))
-      case t if KeepTypeKeywords.exists(k => t.startsWith(s"$k ")) => replaceWhitespaceAfterTypeKeyword(t)
-      case t if t.contains("[") && t.contains("]")                 => replaceWhitespaceAfterTypeKeyword(t)
-      case t if t.contains("*")                                    => replaceWhitespaceAfterTypeKeyword(t)
-      case someType                                                => someType
-    }
-  }
-
-  private def replaceWhitespaceAfterTypeKeyword(tpe: String): String = {
-    if (KeepTypeKeywords.exists(k => tpe.startsWith(s"$k "))) {
-      KeepTypeKeywords.foldLeft(tpe) { (cur, repl) =>
-        val prefix = s"$repl "
-        if (cur.startsWith(prefix)) {
-          prefix + cur.substring(prefix.length).replace(" ", "")
-        } else {
-          cur
-        }
-      }
-    } else {
-      tpe.replace(" ", "")
+  /** Wraps a call into Eclipse CDT's type/binding/evaluation resolution.
+    *
+    * In case of unresolved includes etc. this may fail throwing an unrecoverable exception. Additionally, CDT's heavily
+    * recursive analysis can run into unbounded mutual recursion for certain inputs (see
+    * https://github.com/joernio/joern/issues/6261), throwing a `StackOverflowError`. That is a `VirtualMachineError`
+    * which `scala.util.Try`/`NonFatal` do not catch, so we catch it explicitly here and degrade to `None` instead of
+    * losing the whole file.
+    */
+  protected def safeCdtCall[T](call: => T): Option[T] = {
+    try { Option(call) }
+    catch {
+      case _: StackOverflowError => None
+      case NonFatal(_)           => None
     }
   }
 
   protected def safeGetEvaluation(expr: ICPPASTExpression): Option[ICPPEvaluation] = {
+    safeCdtCall(expr.getEvaluation)
+  }
+
+  protected def safeGetBinding(idExpression: IASTIdExpression): Option[IBinding] = {
     // In case of unresolved includes etc. this may fail throwing an unrecoverable exception
-    Try(expr.getEvaluation).toOption
+    safeGetBinding(idExpression.getName).collect {
+      case binding: IBinding if !binding.isInstanceOf[IProblemBinding] => binding
+    }
   }
 
-  protected def safeGetType(tpe: IType): String = {
+  protected def safeGetBinding(spec: IASTNamedTypeSpecifier): Option[IBinding] = {
     // In case of unresolved includes etc. this may fail throwing an unrecoverable exception
-    Try(ASTTypeUtil.getType(tpe)).getOrElse(Defines.Any)
-  }
-
-  private def safeGetNodeType(node: IASTNode): String = {
-    // In case of unresolved includes etc. this may fail throwing an unrecoverable exception
-    Try(ASTTypeUtil.getNodeType(node)).getOrElse(Defines.Any)
-  }
-
-  private def typeForCPPASTFieldReference(f: CPPASTFieldReference, stripKeywords: Boolean = true): String = {
-    safeGetEvaluation(f.getFieldOwner) match {
-      case Some(evaluation: EvalBinding) => cleanType(evaluation.getType.toString, stripKeywords)
-      case _                             => cleanType(safeGetType(f.getFieldOwner.getExpressionType), stripKeywords)
+    safeGetBinding(spec.getName).collect {
+      case binding: IBinding if !binding.isInstanceOf[IProblemBinding] => binding
     }
   }
 
-  @nowarn
-  private def typeForIASTArrayDeclarator(a: IASTArrayDeclarator, stripKeywords: Boolean = true): String = {
-    import org.eclipse.cdt.core.dom.ast.ASTSignatureUtil.getNodeSignature
-    if (safeGetNodeType(a).startsWith("? ")) {
-      val tpe = getNodeSignature(a).replace("[]", "").strip()
-      val arr = safeGetNodeType(a).replace("? ", "")
-      s"$tpe$arr"
-    } else if (safeGetNodeType(a).contains("} ") || safeGetNodeType(a).contains(" [")) {
-      val tpe = getNodeSignature(a).replace("[]", "").strip()
-      val arr = a.getArrayModifiers.map {
-        case m if m.getConstantExpression != null => s"[${nodeSignature(m.getConstantExpression)}]"
-        case _ if a.getInitializer != null =>
-          a.getInitializer match {
-            case l: IASTInitializerList => s"[${l.getSize}]"
-            case _                      => "[]"
-          }
-        case _ => "[]"
-      }.mkString
-      s"$tpe$arr"
-    } else {
-      cleanType(safeGetNodeType(a), stripKeywords)
-    }
+  protected def safeGetBinding(name: IASTName): Option[IBinding] = {
+    safeCdtCall(name.resolveBinding())
   }
-
-  private def typeForCPPASTIdExpression(s: CPPASTIdExpression, stripKeywords: Boolean = true): String = {
-    safeGetEvaluation(s) match {
-      case Some(evaluation: EvalMemberAccess) =>
-        val deref = if (evaluation.isPointerDeref) "*" else ""
-        cleanType(evaluation.getOwnerType.toString + deref, stripKeywords)
-      case Some(evalBinding: EvalBinding) =>
-        evalBinding.getBinding match {
-          case m: CPPMethod => cleanType(fullName(m.getDefinition))
-          case _            => cleanType(safeGetNodeType(s), stripKeywords)
-        }
-      case _ => cleanType(safeGetNodeType(s), stripKeywords)
-    }
-  }
-
-  @nowarn
-  private def typeForICPPASTConstructorInitializer(
-    c: ICPPASTConstructorInitializer,
-    stripKeywords: Boolean = true
-  ): String = {
-    import org.eclipse.cdt.core.dom.ast.ASTSignatureUtil.getNodeSignature
-    c.getParent match {
-      case initializer: ICPPASTConstructorChainInitializer =>
-        val fullName_ = fullName(initializer.getMemberInitializerId)
-        cleanType(fullName_, stripKeywords)
-      case _ =>
-        cleanType(getNodeSignature(c), stripKeywords)
-    }
-  }
-
-  @nowarn
-  protected def typeFor(node: IASTNode, stripKeywords: Boolean = true): String = {
-    import org.eclipse.cdt.core.dom.ast.ASTSignatureUtil.getNodeSignature
-    node match {
-      case f: CPPASTFieldReference => typeForCPPASTFieldReference(f)
-      case f: IASTFieldReference   => cleanType(safeGetType(f.getFieldOwner.getExpressionType), stripKeywords)
-      case a: IASTArrayDeclarator  => typeForIASTArrayDeclarator(a)
-      case s: CPPASTIdExpression   => typeForCPPASTIdExpression(s)
-      case _: IASTIdExpression | _: IASTName | _: IASTDeclarator => cleanType(safeGetNodeType(node), stripKeywords)
-      case s: IASTNamedTypeSpecifier        => cleanType(ASTStringUtil.getReturnTypeString(s, null), stripKeywords)
-      case s: IASTCompositeTypeSpecifier    => cleanType(ASTStringUtil.getReturnTypeString(s, null), stripKeywords)
-      case s: IASTEnumerationSpecifier      => cleanType(ASTStringUtil.getReturnTypeString(s, null), stripKeywords)
-      case s: IASTElaboratedTypeSpecifier   => cleanType(ASTStringUtil.getReturnTypeString(s, null), stripKeywords)
-      case l: IASTLiteralExpression         => cleanType(safeGetType(l.getExpressionType))
-      case e: IASTExpression                => cleanType(safeGetNodeType(e), stripKeywords)
-      case c: ICPPASTConstructorInitializer => typeForICPPASTConstructorInitializer(c)
-      case _                                => cleanType(getNodeSignature(node), stripKeywords)
-    }
-  }
-
-  private def notHandledText(node: IASTNode): String =
-    s"""Node '${node.getClass.getSimpleName}' not handled yet!
-       |  Code: '${node.getRawSignature}'
-       |  File: '$filename'
-       |  Line: ${line(node).getOrElse(-1)}
-       |  """.stripMargin
 
   protected def notHandledYet(node: IASTNode): Ast = {
     if (!node.isInstanceOf[IASTProblem] && !node.isInstanceOf[IASTProblemHolder]) {
@@ -305,222 +183,112 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
     r
   }
 
+  protected def nullSafeAst(node: IASTInitializer): Ast =
+    Option(node).map(astForNode).getOrElse(Ast())
+
   protected def nullSafeAst(node: IASTExpression): Ast =
     Option(node).map(astForNode).getOrElse(Ast())
 
   protected def nullSafeAst(node: IASTDeclaration): Seq[Ast] =
-    Option(node).map(astsForDeclaration).getOrElse(Seq.empty)
+    Option(node).map(n => astsForDeclaration(n)).getOrElse(Seq.empty)
 
-  protected def nullSafeAst(node: IASTStatement, argIndex: Int = -1): Seq[Ast] = {
-    Option(node).map(astsForStatement(_, argIndex)).getOrElse(Seq.empty)
-  }
-
-  protected def functionTypeToSignature(typ: IFunctionType): String = {
-    val returnType     = cleanType(safeGetType(typ.getReturnType))
-    val parameterTypes = typ.getParameterTypes.map(t => cleanType(safeGetType(t)))
-    StringUtils.normalizeSpace(s"$returnType(${parameterTypes.mkString(",")})")
-  }
-
-  private def pointersAsString(spec: IASTDeclSpecifier, parentDecl: IASTDeclarator, stripKeywords: Boolean): String = {
-    val tpe      = typeFor(spec, stripKeywords)
-    val pointers = parentDecl.getPointerOperators
-    val arr = parentDecl match {
-      case p: IASTArrayDeclarator => p.getArrayModifiers.toList.map(_.getRawSignature).mkString
-      case _                      => ""
-    }
-    if (pointers.isEmpty) { s"$tpe$arr" }
-    else {
-      val refs = pointers.map(_.getRawSignature).mkString("")
-      s"$tpe$arr$refs".strip()
-    }
+  protected def nullSafeAst(node: IASTStatement): Seq[Ast] = {
+    Option(node).map(astsForStatement).getOrElse(Seq.empty)
   }
 
   protected def astsForDependenciesAndImports(iASTTranslationUnit: IASTTranslationUnit): Seq[Ast] = {
-    val allIncludes = iASTTranslationUnit.getIncludeDirectives.toList.filterNot(isIncludedNode)
+    val allIncludes = iASTTranslationUnit.getIncludeDirectives.iterator.filterNot(isIncludedNode).toSeq
     allIncludes.map { include =>
-      val name            = include.getName.toString
-      val _dependencyNode = newDependencyNode(name, name, "include")
-      val importNode      = newImportNode(code(include), name, name, include)
-      diffGraph.addNode(_dependencyNode)
-      diffGraph.addEdge(importNode, _dependencyNode, EdgeTypes.IMPORTS)
+      val name       = include.getName.toString
+      val dependency = dependencyNode(name, name, "include")
+      val importNode = newImportNode(code(include), name, name, include)
+      diffGraph.addNode(dependency)
+      diffGraph.addEdge(importNode, dependency, EdgeTypes.IMPORTS)
       Ast(importNode)
     }
   }
 
   protected def astsForComments(iASTTranslationUnit: IASTTranslationUnit): Seq[Ast] = {
-    if (config.includeComments) {
-      iASTTranslationUnit.getComments.toList.filterNot(isIncludedNode).map(comment => astForComment(comment))
-    } else {
-      Seq.empty
+    if (config.includeComments)
+      iASTTranslationUnit.getComments.iterator.filterNot(isIncludedNode).map(comment => astForComment(comment)).toSeq
+    else Seq.empty
+  }
+
+  protected def isIncludedNode(node: IASTNode): Boolean = fileName(node) != filename
+
+  protected def fileName(node: IASTNode): String = {
+    val rawPath = Try(node.getContainingFilename) match {
+      case Success(value) if value.nonEmpty => value
+      case _                                => filename
     }
-  }
-
-  private def astForDecltypeSpecifier(decl: ICPPASTDecltypeSpecifier): Ast = {
-    val op       = Defines.OperatorTypeOf
-    val cpgUnary = callNode(decl, code(decl), op, op, DispatchTypes.STATIC_DISPATCH, None, Some(X2CpgDefines.Any))
-    val operand  = nullSafeAst(decl.getDecltypeExpression)
-    callAst(cpgUnary, List(operand))
-  }
-
-  private def astForCASTDesignatedInitializer(d: ICASTDesignatedInitializer): Ast = {
-    val node = blockNode(d, Defines.Empty, Defines.Void)
-    scope.pushNewScope(node)
-    val op = Operators.assignment
-    val calls = withIndex(d.getDesignators) { (des, o) =>
-      val callNode_ =
-        callNode(d, code(d), op, op, DispatchTypes.STATIC_DISPATCH, None, Some(X2CpgDefines.Any))
-          .argumentIndex(o)
-      val left  = astForNode(des)
-      val right = astForNode(d.getOperand)
-      callAst(callNode_, List(left, right))
-    }
-    scope.popScope()
-    blockAst(node, calls.toList)
-  }
-
-  private def astForCPPASTDesignatedInitializer(d: ICPPASTDesignatedInitializer): Ast = {
-    val node = blockNode(d, Defines.Empty, Defines.Void)
-    scope.pushNewScope(node)
-    val op = Operators.assignment
-    val calls = withIndex(d.getDesignators) { (des, o) =>
-      val callNode_ =
-        callNode(d, code(d), op, op, DispatchTypes.STATIC_DISPATCH, None, Some(X2CpgDefines.Any))
-          .argumentIndex(o)
-      val left  = astForNode(des)
-      val right = astForNode(d.getOperand)
-      callAst(callNode_, List(left, right))
-    }
-    scope.popScope()
-    blockAst(node, calls.toList)
-  }
-
-  private def astForCPPASTConstructorInitializer(c: ICPPASTConstructorInitializer): Ast = {
-    val name      = Defines.OperatorConstructorInitializer
-    val callNode_ = callNode(c, code(c), name, name, DispatchTypes.STATIC_DISPATCH, None, Some(X2CpgDefines.Any))
-    val args      = c.getArguments.toList.map(a => astForNode(a))
-    callAst(callNode_, args)
-  }
-
-  private def astForCASTArrayRangeDesignator(des: CASTArrayRangeDesignator): Ast = {
-    val op         = Operators.arrayInitializer
-    val callNode_  = callNode(des, code(des), op, op, DispatchTypes.STATIC_DISPATCH, None, Some(X2CpgDefines.Any))
-    val floorAst   = nullSafeAst(des.getRangeFloor)
-    val ceilingAst = nullSafeAst(des.getRangeCeiling)
-    callAst(callNode_, List(floorAst, ceilingAst))
-  }
-
-  private def astForCPPASTArrayRangeDesignator(des: CPPASTArrayRangeDesignator): Ast = {
-    val op         = Operators.arrayInitializer
-    val callNode_  = callNode(des, code(des), op, op, DispatchTypes.STATIC_DISPATCH, None, Some(X2CpgDefines.Any))
-    val floorAst   = nullSafeAst(des.getRangeFloor)
-    val ceilingAst = nullSafeAst(des.getRangeCeiling)
-    callAst(callNode_, List(floorAst, ceilingAst))
+    relativePathCache.getOrElseUpdate(
+      rawPath, {
+        val absPath = Paths.get(rawPath).normalize()
+        if (absPath.equals(resolvedInputPath)) {
+          absPath.getFileName.toString
+        } else if (absPath.startsWith(resolvedInputPath)) {
+          resolvedInputPath.relativize(absPath).toString
+        } else {
+          rawPath
+        }
+      }
+    )
   }
 
   protected def astForNode(node: IASTNode): Ast = {
+    if (isUnsupportedCoroutineKeyword(node)) {
+      return astForUnsupportedCoroutineNode(node)
+    }
+
     node match {
-      case expr: IASTExpression             => astForExpression(expr)
-      case name: IASTName                   => astForIdentifier(name)
-      case decl: IASTDeclSpecifier          => astForIdentifier(decl)
-      case l: IASTInitializerList           => astForInitializerList(l)
-      case c: ICPPASTConstructorInitializer => astForCPPASTConstructorInitializer(c)
-      case d: ICASTDesignatedInitializer    => astForCASTDesignatedInitializer(d)
-      case d: ICPPASTDesignatedInitializer  => astForCPPASTDesignatedInitializer(d)
-      case d: CASTArrayRangeDesignator      => astForCASTArrayRangeDesignator(d)
-      case d: CPPASTArrayRangeDesignator    => astForCPPASTArrayRangeDesignator(d)
-      case d: ICASTArrayDesignator          => nullSafeAst(d.getSubscriptExpression)
-      case d: ICPPASTArrayDesignator        => nullSafeAst(d.getSubscriptExpression)
-      case d: ICPPASTFieldDesignator        => astForNode(d.getName)
-      case d: ICASTFieldDesignator          => astForNode(d.getName)
-      case decl: ICPPASTDecltypeSpecifier   => astForDecltypeSpecifier(decl)
-      case arrMod: IASTArrayModifier        => astForArrayModifier(arrMod)
-      case _                                => notHandledYet(node)
+      case expr: IASTExpression                       => astForExpression(expr)
+      case name: IASTName                             => astForIdentifier(name)
+      case decl: IASTDeclSpecifier                    => astForIdentifier(decl)
+      case l: IASTInitializerList                     => astForInitializerList(l)
+      case c: ICPPASTConstructorInitializer           => astForCPPASTConstructorInitializer(c)
+      case d: ICASTDesignatedInitializer              => astForCASTDesignatedInitializer(d)
+      case d: IASTEqualsInitializer                   => astForNode(d.getInitializerClause)
+      case d: ICPPASTDesignatedInitializer            => astForCPPASTDesignatedInitializer(d)
+      case d: CASTArrayRangeDesignator                => astForCASTArrayRangeDesignator(d)
+      case d: CPPASTArrayRangeDesignator              => astForCPPASTArrayRangeDesignator(d)
+      case d: ICASTArrayDesignator                    => nullSafeAst(d.getSubscriptExpression)
+      case d: ICPPASTArrayDesignator                  => nullSafeAst(d.getSubscriptExpression)
+      case d: ICPPASTFieldDesignator                  => astForNode(d.getName)
+      case d: ICASTFieldDesignator                    => astForNode(d.getName)
+      case decl: ICPPASTDecltypeSpecifier             => astForDecltypeSpecifier(decl)
+      case arrMod: IASTArrayModifier                  => astForArrayModifier(arrMod)
+      case e: IASTEnumerationSpecifier.IASTEnumerator => astForEnumeratorWithInit(e)
+      case _                                          => notHandledYet(node)
     }
   }
 
-  protected def typeForDeclSpecifier(spec: IASTNode, stripKeywords: Boolean = true, index: Int = 0): String = {
-    val tpe = spec match {
-      case s: IASTSimpleDeclSpecifier if s.getParent.isInstanceOf[IASTParameterDeclaration] =>
-        val parentDecl = s.getParent.asInstanceOf[IASTParameterDeclaration].getDeclarator
-        pointersAsString(s, parentDecl, stripKeywords)
-      case s: IASTSimpleDeclSpecifier if s.getParent.isInstanceOf[IASTFunctionDefinition] =>
-        val parentDecl = s.getParent.asInstanceOf[IASTFunctionDefinition].getDeclarator
-        ASTStringUtil.getReturnTypeString(s, parentDecl)
-      case s: IASTSimpleDeclaration if s.getParent.isInstanceOf[ICASTKnRFunctionDeclarator] =>
-        val decl = s.getDeclarators.toList(index)
-        pointersAsString(s.getDeclSpecifier, decl, stripKeywords)
-      case s: IASTSimpleDeclSpecifier if s.getParent.isInstanceOf[IASTSimpleDeclaration] =>
-        val parentDecl = s.getParent.asInstanceOf[IASTSimpleDeclaration].getDeclarators.toList(index)
-        pointersAsString(s, parentDecl, stripKeywords)
-      case s: IASTSimpleDeclSpecifier =>
-        ASTStringUtil.getReturnTypeString(s, null)
-      case s: IASTNamedTypeSpecifier if s.getParent.isInstanceOf[IASTParameterDeclaration] =>
-        val parentDecl = s.getParent.asInstanceOf[IASTParameterDeclaration].getDeclarator
-        pointersAsString(s, parentDecl, stripKeywords)
-      case s: IASTNamedTypeSpecifier if s.getParent.isInstanceOf[IASTSimpleDeclaration] =>
-        val parentDecl = s.getParent.asInstanceOf[IASTSimpleDeclaration].getDeclarators.toList(index)
-        pointersAsString(s, parentDecl, stripKeywords)
-      case s: IASTNamedTypeSpecifier =>
-        ASTStringUtil.getSimpleName(s.getName)
-      case s: IASTCompositeTypeSpecifier if s.getParent.isInstanceOf[IASTSimpleDeclaration] =>
-        val parentDecl = s.getParent.asInstanceOf[IASTSimpleDeclaration].getDeclarators.toList(index)
-        pointersAsString(s, parentDecl, stripKeywords)
-      case s: IASTCompositeTypeSpecifier => ASTStringUtil.getSimpleName(s.getName)
-      case s: IASTEnumerationSpecifier if s.getParent.isInstanceOf[IASTSimpleDeclaration] =>
-        val parentDecl = s.getParent.asInstanceOf[IASTSimpleDeclaration].getDeclarators.toList(index)
-        pointersAsString(s, parentDecl, stripKeywords)
-      case s: IASTEnumerationSpecifier => ASTStringUtil.getSimpleName(s.getName)
-      case s: IASTElaboratedTypeSpecifier if s.getParent.isInstanceOf[IASTParameterDeclaration] =>
-        val parentDecl = s.getParent.asInstanceOf[IASTParameterDeclaration].getDeclarator
-        pointersAsString(s, parentDecl, stripKeywords)
-      case s: IASTElaboratedTypeSpecifier if s.getParent.isInstanceOf[IASTSimpleDeclaration] =>
-        val parentDecl = s.getParent.asInstanceOf[IASTSimpleDeclaration].getDeclarators.toList(index)
-        pointersAsString(s, parentDecl, stripKeywords)
-      case s: IASTElaboratedTypeSpecifier => ASTStringUtil.getSignatureString(s, null)
-      // TODO: handle other types of IASTDeclSpecifier
-      case _ => Defines.Any
+  private def genFileOffsetTable(): Array[Int] = {
+    val chars   = cdtAst.getRawSignature.toCharArray
+    val buf     = new scala.collection.mutable.ArrayBuffer[Int](256)
+    var charIdx = 0
+    while (charIdx < chars.length) {
+      if (chars(charIdx) == '\n') buf += charIdx + 1
+      charIdx += 1
     }
-    if (tpe.isEmpty) Defines.Any else tpe
+    buf.toArray
   }
 
-  // We use our own call ast creation function since the version in x2cpg treats
-  // base as receiver if no receiver is given which does not fit the needs of this
-  // frontend.
-  def createCallAst(
-    callNode: NewCall,
-    arguments: Seq[Ast] = List(),
-    base: Option[Ast] = None,
-    receiver: Option[Ast] = None
-  ): Ast = {
-
-    setArgumentIndices(arguments)
-
-    val baseRoot = base.flatMap(_.root).toList
-    val bse      = base.getOrElse(Ast())
-    baseRoot match {
-      case List(x: ExpressionNew) =>
-        x.argumentIndex = 0
-      case _ =>
-    }
-
-    var ast =
-      Ast(callNode)
-        .withChild(bse)
-
-    if (receiver.isDefined && receiver != base) {
-      receiver.get.root.get.asInstanceOf[ExpressionNew].argumentIndex = -1
-      ast = ast.withChild(receiver.get)
-    }
-
-    ast = ast
-      .withChildren(arguments)
-      .withArgEdges(callNode, baseRoot)
-      .withArgEdges(callNode, arguments.flatMap(_.root))
-
-    if (receiver.isDefined) {
-      ast = ast.withReceiverEdge(callNode, receiver.get.root.get)
-    }
-
-    ast
+  private def notHandledText(node: IASTNode): String = {
+    s"""Node '${node.getClass.getSimpleName}' not handled yet!
+       |  Code: '${shortenCode(node.getRawSignature)}'
+       |  File: '$filename'
+       |  Line: ${line(node).getOrElse(-1)}
+       |  """.stripMargin
   }
+
+  /** Asks the declaration specifier for its storage class. CDT may hand out no decl specifier at all (e.g. for
+    * ambiguous or problem nodes where parsing failed); only in that case the (less precise) `fallback` on the
+    * declaration's source text is used. Currently used for `typedef` and `static`.
+    */
+  protected def hasStorageClass(declSpecifier: IASTDeclSpecifier, storageClass: Int, fallback: => Boolean): Boolean =
+    Option(declSpecifier) match {
+      case Some(spec) => spec.getStorageClass == storageClass
+      case None       => fallback
+    }
+
 }

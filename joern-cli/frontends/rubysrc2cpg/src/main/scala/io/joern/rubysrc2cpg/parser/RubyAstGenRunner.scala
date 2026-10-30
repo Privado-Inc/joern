@@ -1,30 +1,47 @@
 package io.joern.rubysrc2cpg.parser
 
-import better.files.File
 import io.joern.rubysrc2cpg.Config
+import io.joern.rubysrc2cpg.parser.RubyAstGenRunner.{ExecutionEnvironment, JRubyEnvironment, astGenMetaData}
 import io.joern.x2cpg.SourceFiles
 import io.joern.x2cpg.astgen.AstGenRunner.{AstGenProgramMetaData, AstGenRunnerResult, DefaultAstGenRunnerResult}
-import io.joern.x2cpg.astgen.AstGenRunnerBase
-import io.joern.x2cpg.utils.{Environment, ExternalCommand}
+import io.joern.x2cpg.astgen.AstGenRunner
+import io.joern.x2cpg.utils.{Environment, JoernRunfilesLocator}
 import org.jruby.RubyInstanceConfig
 import org.jruby.embed.{LocalContextScope, LocalVariableBehavior, PathType, ScriptingContainer}
 import org.slf4j.LoggerFactory
 
 import java.io.File.separator
 import java.io.{ByteArrayOutputStream, InputStream, PrintStream}
-import java.nio.file.{Files, Path, Paths, StandardCopyOption}
+import java.nio.file.*
 import java.util
 import java.util.jar.JarFile
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try, Using}
 
-class RubyAstGenRunner(config: Config) extends AstGenRunnerBase(config) {
+/** Creates a JRuby scripting environment using `ruby_ast_gen` within a temporary directory allowing for re-usable
+  * execution.
+  */
+class RubyAstGenRunner(config: Config, sharedJRubyEnv: Option[JRubyEnvironment] = None)
+    extends AstGenRunner(RubyAstGenRunner.astGenMetaData, config)
+    with AutoCloseable {
 
   private val logger = LoggerFactory.getLogger(getClass)
 
-  override def fileFilter(file: String, out: File): Boolean = {
-    file.stripSuffix(".json").replace(out.pathAsString, config.inputPath) match {
+  private val ownsEnvironment            = sharedJRubyEnv.isEmpty
+  private val jrubyEnv: JRubyEnvironment = sharedJRubyEnv.getOrElse(JRubyEnvironment())
+  private val env                        = jrubyEnv.env
+  private val container                  = jrubyEnv.container
+
+  override def close(): Unit = {
+    if (ownsEnvironment) {
+      jrubyEnv.close()
+    }
+  }
+
+  override def fileFilter(file: String, out: Path): Boolean = {
+    file.stripSuffix(".json").replace(out.toString, config.inputPath) match {
       case filePath if isIgnoredByUserConfig(filePath)   => false
       case filePath if isIgnoredByDefaultRegex(filePath) => false
       case filePath if filePath.endsWith(".csproj")      => false
@@ -36,7 +53,7 @@ class RubyAstGenRunner(config: Config) extends AstGenRunnerBase(config) {
     config.defaultIgnoredFilesRegex.exists(_.matches(filePath))
   }
 
-  override def skippedFiles(in: File, astGenOut: List[String]): List[String] = {
+  override def skippedFiles(in: Path, astGenOut: List[String]): List[String] = {
     val diagnosticMap = mutable.LinkedHashMap.empty[String, Seq[String]]
 
     def addReason(reason: String, lastFile: Option[String] = None) = {
@@ -48,8 +65,8 @@ class RubyAstGenRunner(config: Config) extends AstGenRunnerBase(config) {
     }
 
     astGenOut.map(_.strip()).foreach {
-      case s"[WARN] $reason - $fileName"  => addReason(reason, Option(fileName))
-      case s"[ERR] '$fileName' - $reason" => addReason(reason, Option(fileName))
+      case s"[WARN] $reason - $fileName"               => addReason(reason, Option(fileName))
+      case s"[ERR] '$fileName' - $reason"              => addReason(reason, Option(fileName))
       case s"[ERR] Failed to parse $fileName: $reason" =>
         addReason(s"Failed to parse: $reason", Option(fileName))
       case s"[INFO] Processed: $fileName -> $_" => diagnosticMap.put(fileName, Nil)
@@ -72,50 +89,202 @@ class RubyAstGenRunner(config: Config) extends AstGenRunnerBase(config) {
     }.toList
   }
 
-  override def runAstGenNative(in: String, out: File, exclude: String, include: String)(implicit
-    metaData: AstGenProgramMetaData
-  ): Try[Seq[String]] = {
+  override def runAstGenNative(in: String, out: Path, exclude: String, include: String): Try[Seq[String]] = {
+    val scriptTarget = Files.createTempFile("ruby_driver", ".rb")
     try {
-      Using.resource(prepareExecutionEnvironment("ruby_ast_gen")) { env =>
-        val cwd            = env.path.toAbsolutePath.toString
-        val excludeCommand = if (exclude.isEmpty) Array.empty[String] else Array("-e", s"$exclude")
-        val gemPath        = Seq(cwd, "vendor", "bundle", "jruby", "3.1.0").mkString(separator)
-        val rubyArgs       = Array("-o", out.toString(), "-i", in).appendedAll(excludeCommand).filterNot(_.isBlank)
-        val mainScript     = Seq(cwd, "exe", "ruby_ast_gen").mkString(separator)
-        executeWithJRuby(mainScript, cwd, rubyArgs, gemPath)
-      }
+      // We use the URI format as this is the best in terms of language agnostic importing
+      val requireFile = env.path.resolve("lib").resolve("ruby_ast_gen.rb").toUri.toString
+      val mainScript  =
+        s"""
+          |options = {
+          |  input: nil,
+          |  output: '.ast',
+          |  exclude: '^(tests?|vendor|spec)',
+          |  debug: false
+          |}
+          |
+          |options[:input] = "${in.replace("\\", "\\\\")}"
+          |options[:output] = "${out.toString.replace("\\", "\\\\")}"
+          |${
+            if (exclude.isEmpty) { "" }
+            else { s"options[:exclude] = /${exclude.replace("/", "\\/")}/" }
+          }
+          |
+          |if (defined?(RubyAstGen) != 'constant' || defined?(RubyAstGen::parse) != 'method')
+          |  require "$requireFile"
+          |end
+          |RubyAstGen::parse(options)
+          |""".stripMargin
+
+      // We write this file to disk as Windows fails to resolve imports (`require` calls) when we execute the string/
+      // as an argument to `container.runScriptlet` directly. Additionally, this is written to temporary files
+      // as we expect that this may be called by multiple threads.
+      Files.writeString(scriptTarget, mainScript, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.CREATE)
+      executeWithJRuby(scriptTarget)
     } catch {
-      case tempPathException: Exception => Failure(tempPathException)
+      case NonFatal(tempPathException) => Failure(tempPathException)
+    } finally {
+      scriptTarget.toFile.delete()
     }
   }
 
-  private def executeWithJRuby(
-    mainScript: String,
-    cwd: String,
-    rubyArgs: Array[String],
-    gemPath: String
-  ): Try[Seq[String]] = {
-    val outStream = new ByteArrayOutputStream()
-    val errStream = new ByteArrayOutputStream()
-    val container = new ScriptingContainer(LocalContextScope.SINGLETHREAD, LocalVariableBehavior.TRANSIENT)
-    val config    = container.getProvider.getRubyInstanceConfig
-    container.setCompileMode(RubyInstanceConfig.CompileMode.OFF)
-    container.setNativeEnabled(false)
-    container.setObjectSpaceEnabled(true)
-    container.setCurrentDirectory(cwd)
-    container.setOutput(new PrintStream(outStream))
-    container.setError(new PrintStream(errStream))
-    config.setLoadGemfile(true)
-    container.setArgv(rubyArgs)
-    container.setEnvironment(Map("GEM_PATH" -> gemPath, "GEM_FILE" -> gemPath).asJava)
-    config.setHasShebangLine(true)
-    config.setHardExit(false)
+  override def execute(out: Path): AstGenRunnerResult = {
+    execute(out, config)
+  }
 
-    Try {
-      container.runScriptlet(PathType.ABSOLUTE, mainScript)
-      outStream.toString.split("\n").toIndexedSeq ++ errStream.toString.split("\n")
+  /** Extends the interfaces' `execute` function to account for possibly varying configurations when running this runner
+    * for multiple executions.
+    */
+  def execute(out: Path, specifiedConfig: Config): AstGenRunnerResult = {
+    val in = Paths.get(config.inputPath)
+    logger.info(s"Running ${astGenMetaData.name} on '${specifiedConfig.inputPath}'")
+
+    val combineIgnoreRegex =
+      if (
+        specifiedConfig.ignoredFilesRegex
+          .toString()
+          .isEmpty && specifiedConfig.defaultIgnoredFilesRegex.toString.nonEmpty
+      ) {
+        specifiedConfig.defaultIgnoredFilesRegex.mkString("|")
+      } else if (
+        config.ignoredFilesRegex.toString().nonEmpty && specifiedConfig.defaultIgnoredFilesRegex.toString.isEmpty
+      ) {
+        specifiedConfig.ignoredFilesRegex.toString()
+      } else if (
+        specifiedConfig.ignoredFilesRegex.toString().nonEmpty && specifiedConfig.defaultIgnoredFilesRegex
+          .toString()
+          .nonEmpty
+      ) {
+        s"((${specifiedConfig.ignoredFilesRegex.toString()})|(${specifiedConfig.defaultIgnoredFilesRegex.mkString("|")}))"
+      } else {
+        ""
+      }
+
+    runAstGenNative(specifiedConfig.inputPath, out, combineIgnoreRegex, "") match {
+      case Success(result) =>
+        val srcFiles = SourceFiles.determine(
+          out.toString(),
+          Set(".json"),
+          ignoredDefaultRegex = Option(specifiedConfig.defaultIgnoredFilesRegex),
+          ignoredFilesRegex = Option(specifiedConfig.ignoredFilesRegex),
+          ignoredFilesPath = Option(specifiedConfig.ignoredFiles)
+        )
+        val parsed  = filterFiles(srcFiles, out)
+        val skipped = skippedFiles(in, result.toList)
+        DefaultAstGenRunnerResult(parsed, skipped)
+      case Failure(f) =>
+        logger.error(s"\t- running ${astGenMetaData.name} failed!", f)
+        DefaultAstGenRunnerResult()
     }
   }
+
+  // The scripting container (and its output/error streams) may be shared between runners, so executions on the same
+  // environment must not interleave.
+  private def executeWithJRuby(script: Path): Try[Seq[String]] = jrubyEnv.synchronized {
+    Using.resources(new ByteArrayOutputStream(), new ByteArrayOutputStream()) { (outStream, errStream) =>
+      container.setOutput(new PrintStream(outStream))
+      container.setError(new PrintStream(errStream))
+      Try {
+        container.runScriptlet(PathType.ABSOLUTE, script.toString)
+        (outStream.toString.split("\n").toIndexedSeq ++ errStream.toString.split("\n")).filterNot(_.isBlank)
+      }
+    }
+  }
+
+}
+
+object RubyAstGenRunner {
+
+  private object astGenMetaData
+      extends AstGenProgramMetaData(
+        name = "ruby_ast_gen",
+        configPrefix = "rubysrc2cpg",
+        multiArchitectureBuilds = false
+      )
+
+  /** Encapsulates the expensive JRuby runtime setup (execution environment and scripting container). Can be shared
+    * across multiple RubyAstGenRunner instances to avoid repeated JRuby initialization.
+    */
+  class JRubyEnvironment(val env: ExecutionEnvironment, val container: ScriptingContainer) extends AutoCloseable {
+    private val logger = LoggerFactory.getLogger(getClass)
+
+    override def close(): Unit = {
+      val closeContainer = Try(container.terminate())
+      if (closeContainer.isFailure) {
+        logger.error("Error terminating JRuby scripting container!", closeContainer.failed.get)
+      }
+      val closeEnv = Try(env.close())
+      if (closeEnv.isFailure) {
+        logger.error("Error cleaning up JRuby execution directory!", closeEnv.failed.get)
+      }
+    }
+  }
+
+  object JRubyEnvironment {
+    private val logger = LoggerFactory.getLogger(getClass)
+
+    private def platformSuffix: String = {
+      (Environment.operatingSystem, Environment.architecture) match {
+        case (Environment.OperatingSystemType.Linux, Environment.ArchitectureType.X86)     => "linux_x86"
+        case (Environment.OperatingSystemType.Linux, Environment.ArchitectureType.ARMv8)   => "linux_arm"
+        case (Environment.OperatingSystemType.Mac, Environment.ArchitectureType.X86)       => "macos_x86"
+        case (Environment.OperatingSystemType.Mac, Environment.ArchitectureType.ARMv8)     => "macos_arm"
+        case (Environment.OperatingSystemType.Windows, Environment.ArchitectureType.X86)   => "win_x86"
+        case (Environment.OperatingSystemType.Windows, Environment.ArchitectureType.ARMv8) => "win_arm"
+        case _                                                                             =>
+          logger.warn("Could not detect OS version! Defaulting to 'Linux'.")
+          "linux_x86"
+      }
+    }
+
+    def apply(): JRubyEnvironment = {
+      val env = JoernRunfilesLocator
+        .resolve(s"rubysrc2cpg_astgen_$platformSuffix/")
+        .map(path => LocalDir(Path.of(path)))
+        .getOrElse(prepareExecutionEnvironment("ruby_ast_gen"))
+      val cwd        = env.path.toAbsolutePath.toString
+      val bundleBase = env.path.resolve("vendor").resolve("bundle").resolve("jruby")
+      // Directory listing order is file system dependent, so pick deterministically
+      val rubyAbi = Using.resource(Files.list(bundleBase)) { stream =>
+        stream.iterator.asScala.filter(Files.isDirectory(_)).map(_.getFileName.toString).toList.sorted.head
+      }
+      val gemPath   = bundleBase.resolve(rubyAbi).toString
+      val container = new ScriptingContainer(LocalContextScope.THREADSAFE, LocalVariableBehavior.TRANSIENT)
+      val config    = container.getProvider.getRubyInstanceConfig
+      container.setCompileMode(RubyInstanceConfig.CompileMode.OFF)
+      container.setNativeEnabled(true)
+      container.setObjectSpaceEnabled(true)
+      container.setCurrentDirectory(cwd)
+      config.setLoadGemfile(false)
+      container.setEnvironment(Map("GEM_PATH" -> gemPath).asJava)
+      config.setHasShebangLine(true)
+      config.setHardExit(false)
+      new JRubyEnvironment(env, container)
+    }
+  }
+
+  sealed trait ExecutionEnvironment extends AutoCloseable {
+    def path: Path
+
+    def close(): Unit = {}
+  }
+
+  private case class TempDir(path: Path) extends ExecutionEnvironment {
+
+    override def close(): Unit = {
+      def cleanUpDir(f: Path): Unit = {
+        if (Files.isDirectory(f)) {
+          Files.list(f).iterator.asScala.foreach(cleanUpDir)
+        }
+        Files.deleteIfExists(f)
+      }
+
+      cleanUpDir(path)
+    }
+
+  }
+
+  private case class LocalDir(path: Path) extends ExecutionEnvironment
 
   private def prepareExecutionEnvironment(resourceDir: String): ExecutionEnvironment = {
     val resourceUrl = getClass.getClassLoader.getResource(resourceDir)
@@ -139,7 +308,7 @@ class RubyAstGenRunner(config: Config) extends AstGenRunnerBase(config) {
             val inputStream: InputStream = jarFile.getInputStream(entry)
             try {
               Files.copy(inputStream, entryPath, StandardCopyOption.REPLACE_EXISTING)
-              if entryPath.endsWith("ruby_ast_gen") then entryPath.toFile.setExecutable(true, true)
+              if (entryPath.endsWith("ruby_ast_gen")) { entryPath.toFile.setExecutable(true, true) }
             } finally {
               inputStream.close()
             }
@@ -155,62 +324,5 @@ class RubyAstGenRunner(config: Config) extends AstGenRunnerBase(config) {
         throw new IllegalArgumentException(s"Resources is within an unsupported environment '$x'.")
     }
   }
-
-  override def execute(out: File): AstGenRunnerResult = {
-    implicit val metaData: AstGenProgramMetaData = config.astGenMetaData
-    val in                                       = File(config.inputPath)
-    logger.info(s"Running ${metaData.name} on '${config.inputPath}'")
-
-    val combineIgnoreRegex =
-      if (config.ignoredFilesRegex.toString().isEmpty && config.defaultIgnoredFilesRegex.toString.nonEmpty) {
-        config.defaultIgnoredFilesRegex.mkString("|")
-      } else if (config.ignoredFilesRegex.toString().nonEmpty && config.defaultIgnoredFilesRegex.toString.isEmpty) {
-        config.ignoredFilesRegex.toString()
-      } else if (config.ignoredFilesRegex.toString().nonEmpty && config.defaultIgnoredFilesRegex.toString().nonEmpty) {
-        s"((${config.ignoredFilesRegex.toString()})|(${config.defaultIgnoredFilesRegex.mkString("|")}))"
-      } else {
-        ""
-      }
-
-    runAstGenNative(config.inputPath, out, combineIgnoreRegex, "") match {
-      case Success(result) =>
-        val srcFiles = SourceFiles.determine(
-          out.toString(),
-          Set(".json"),
-          ignoredDefaultRegex = Option(config.defaultIgnoredFilesRegex),
-          ignoredFilesRegex = Option(config.ignoredFilesRegex),
-          ignoredFilesPath = Option(config.ignoredFiles)
-        )
-        val parsed  = filterFiles(srcFiles, out)
-        val skipped = skippedFiles(in, result.toList)
-        DefaultAstGenRunnerResult(parsed, skipped)
-      case Failure(f) =>
-        logger.error(s"\t- running ${metaData.name} failed!", f)
-        DefaultAstGenRunnerResult()
-    }
-  }
-
-  private sealed trait ExecutionEnvironment extends AutoCloseable {
-    def path: Path
-
-    def close(): Unit = {}
-  }
-
-  private case class TempDir(path: Path) extends ExecutionEnvironment {
-
-    override def close(): Unit = {
-      def cleanUpDir(f: Path): Unit = {
-        if (Files.isDirectory(f)) {
-          Files.list(f).iterator.asScala.foreach(cleanUpDir)
-        }
-        Files.deleteIfExists(f)
-      }
-
-      cleanUpDir(path)
-    }
-
-  }
-
-  private case class LocalDir(path: Path) extends ExecutionEnvironment
 
 }

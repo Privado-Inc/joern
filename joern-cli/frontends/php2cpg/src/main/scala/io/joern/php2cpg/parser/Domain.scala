@@ -10,7 +10,7 @@ import io.joern.php2cpg.parser.Domain.PhpCast.CastTypeMap
 import io.joern.php2cpg.parser.Domain.PhpCast.isCastType
 import io.joern.php2cpg.parser.Domain.PhpUnaryOp.UnaryOpTypeMap
 import io.joern.php2cpg.parser.Domain.PhpUnaryOp.isUnaryOpType
-import io.joern.php2cpg.parser.Domain.PhpUseType.PhpUseType
+import io.joern.php2cpg.parser.Domain.PhpUseType
 import io.joern.php2cpg.parser.Domain.PhpUseType.getUseType
 import io.shiftleft.codepropertygraph.generated.ModifierTypes
 import io.shiftleft.codepropertygraph.generated.Operators
@@ -79,21 +79,31 @@ object Domain {
   val NamespaceDelimiter      = "\\"
   val StaticMethodDelimiter   = "::"
   val InstanceMethodDelimiter = "->"
+  val MethodDelimiter         = "."
   // Used for creating the default constructor.
   val ConstructorMethodName = "__construct"
+  val GlobalName            = "<global>"
+  val DuplicateSuffix       = "<duplicate>"
 
-  final case class PhpAttributes(lineNumber: Option[Int], kind: Option[Int], startFilePos: Int, endFilePos: Int)
+  final case class PhpAttributes(
+    lineNumber: Option[Int],
+    lineEndNumber: Option[Int],
+    kind: Option[Int],
+    startFilePos: Int,
+    endFilePos: Int
+  )
   object PhpAttributes {
-    val Empty: PhpAttributes = PhpAttributes(None, None, -1, -1)
+    val Empty: PhpAttributes = PhpAttributes(None, None, None, -1, -1)
 
     def apply(json: Value): PhpAttributes = {
       Try(json("attributes")) match {
         case Success(Obj(attributes)) =>
           val startLine    = attributes.get("startLine").map(_.num.toInt)
+          val endLine      = attributes.get("endLine").map(_.num.toInt)
           val kind         = attributes.get("kind").map(_.num.toInt)
           val startFilePos = attributes.get("startFilePos").map(_.num.toInt).getOrElse(-1)
           val endFilePos   = attributes.get("endFilePos").map(_.num.toInt + 1).getOrElse(-1)
-          PhpAttributes(startLine, kind, startFilePos, endFilePos)
+          PhpAttributes(startLine, endLine, kind, startFilePos, endFilePos)
 
         case Success(Arr(_)) =>
           logger.debug(s"Found array attributes in $json")
@@ -136,7 +146,13 @@ object Domain {
   }
 
   final case class PhpFile(children: List[PhpStmt]) extends PhpNode {
-    override val attributes: PhpAttributes = PhpAttributes.Empty
+    override val attributes: PhpAttributes = PhpAttributes(
+      children.headOption.flatMap(_.attributes.lineNumber),
+      children.lastOption.flatMap(_.attributes.lineEndNumber),
+      None,
+      children.headOption.map(_.attributes.startFilePos).getOrElse(0),
+      children.lastOption.map(_.attributes.endFilePos).getOrElse(0)
+    )
   }
 
   final case class PhpParam(
@@ -166,7 +182,7 @@ object Domain {
   }
   final case class PhpVariadicPlaceholder(attributes: Domain.PhpAttributes) extends PhpArgument
 
-  sealed trait PhpStmt extends PhpNode
+  sealed trait PhpStmt         extends PhpNode
   sealed trait PhpStmtWithBody extends PhpStmt {
     def stmts: List[PhpStmt]
   }
@@ -310,21 +326,18 @@ object Domain {
     attributes: PhpAttributes
   ) extends PhpStmt
 
-  case object PhpUseType {
-    sealed trait PhpUseType
-    case object Unknown  extends PhpUseType
-    case object Normal   extends PhpUseType
-    case object Function extends PhpUseType
-    case object Constant extends PhpUseType
+  enum PhpUseType {
+    case Unknown, Normal, Function, Constant
+  }
 
-    def getUseType(typeNum: Int): PhpUseType = {
+  object PhpUseType {
+    def getUseType(typeNum: Int): PhpUseType =
       typeNum match {
         case 1 => Normal
         case 2 => Function
         case 3 => Constant
         case _ => Unknown
       }
-    }
   }
 
   final case class PhpForeachStmt(
@@ -493,7 +506,7 @@ object Domain {
   final case class PhpIsset(vars: Seq[PhpExpr], attributes: PhpAttributes) extends PhpExpr
   final case class PhpPrint(expr: PhpExpr, attributes: PhpAttributes)      extends PhpExpr
 
-  sealed trait PhpScalar extends PhpExpr
+  sealed trait PhpScalar                                          extends PhpExpr
   sealed abstract class PhpSimpleScalar(val typeFullName: String) extends PhpScalar {
     def value: String
     def attributes: PhpAttributes
@@ -634,7 +647,7 @@ object Domain {
       case "Stmt_GroupUse"     => readGroupUse(json)
       case "Stmt_Foreach"      => readForeach(json)
       case "Stmt_TraitUse"     => readTraitUse(json)
-      case unhandled =>
+      case unhandled           =>
         logger.error(s"Found unhandled stmt type: $unhandled")
         ???
     }
@@ -732,12 +745,12 @@ object Domain {
   }
 
   private def readInclude(json: Value): PhpIncludeExpr = {
-    val expr = readExpr(json("expr"))
+    val expr        = readExpr(json("expr"))
     val includeType = json("type").num.toInt match {
-      case 1 => PhpIncludeType.Include
-      case 2 => PhpIncludeType.IncludeOnce
-      case 3 => PhpIncludeType.Require
-      case 4 => PhpIncludeType.RequireOnce
+      case 1     => PhpIncludeType.Include
+      case 2     => PhpIncludeType.IncludeOnce
+      case 3     => PhpIncludeType.Require
+      case 4     => PhpIncludeType.RequireOnce
       case other =>
         logger.warn(s"Unhandled include type: $other. Defaulting to regular include.")
         PhpIncludeType.Include
@@ -799,7 +812,7 @@ object Domain {
 
   private def readClassConstFetch(json: Value): PhpClassConstFetchExpr = {
     val classNameType = json("class")("nodeType").str
-    val className =
+    val className     =
       if (classNameType.startsWith("Name"))
         readName(json("class"))
       else
@@ -1096,7 +1109,7 @@ object Domain {
       logger.error(s"Variable did not contain name: $json")
     }
     val varAttrs = PhpAttributes(json)
-    val name = json("name") match {
+    val name     = json("name") match {
       case Str(value) => readName(value).copy(attributes = varAttrs)
       case Obj(_)     => readNameOrExpr(json, "name")
       case value      => readExpr(value)
@@ -1182,7 +1195,7 @@ object Domain {
     val name        = readName(json("name"))
     val params      = json("params").arr.map(readParam).toList
     val returnType  = Option.unless(json("returnType").isNull)(readType(json("returnType")))
-    val stmts =
+    val stmts       =
       if (json("stmts").isNull)
         Nil
       else
@@ -1258,7 +1271,7 @@ object Domain {
     val stmts = json("stmts") match {
       case ujson.Null => Nil
       case stmts: Arr => stmts.arr.map(readStmt).toList
-      case unhandled =>
+      case unhandled  =>
         logger.warn(s"Unhandled namespace stmts type $unhandled")
         ???
     }
@@ -1350,8 +1363,8 @@ object Domain {
   }
 
   private def readUseUse(json: Value, parentType: PhpUseType): PhpUseUse = {
-    val name  = readName(json("name"))
-    val alias = Option.unless(json("alias").isNull)(readName(json("alias")))
+    val name    = readName(json("name"))
+    val alias   = Option.unless(json("alias").isNull)(readName(json("alias")))
     val useType =
       if (parentType == PhpUseType.Unknown)
         getUseType(json("type").num.toInt)

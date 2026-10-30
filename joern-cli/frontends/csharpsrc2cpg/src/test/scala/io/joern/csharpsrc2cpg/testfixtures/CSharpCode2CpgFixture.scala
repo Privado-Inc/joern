@@ -8,8 +8,10 @@ import io.joern.dataflowengineoss.testfixtures.{SemanticCpgTestFixture, Semantic
 import io.joern.x2cpg.testfixtures.{Code2CpgFixture, DefaultTestCpg, LanguageFrontend}
 import io.joern.x2cpg.{ValidationMode, X2Cpg}
 import io.shiftleft.codepropertygraph.generated.Cpg
+import io.shiftleft.semanticcpg.utils.FileUtil
 import io.shiftleft.semanticcpg.language.{ICallResolver, NoResolve}
 import io.shiftleft.semanticcpg.layers.LayerCreatorContext
+import io.shiftleft.semanticcpg.validation.{PostFrontendValidator, ValidationLevel}
 import org.scalatest.Inside
 
 import java.io.File
@@ -73,6 +75,7 @@ class DefaultTestCpgWithCSharp extends DefaultTestCpg with CSharpFrontend with S
 }
 
 trait CSharpFrontend extends LanguageFrontend {
+  override type ConfigType = Config
 
   override val fileSuffix: String = ".cs"
 
@@ -82,7 +85,10 @@ trait CSharpFrontend extends LanguageFrontend {
       .getOrElse(Config().withSchemaValidation(ValidationMode.Enabled))
 
   override def execute(sourceCodeFile: File): Cpg = {
-    new CSharpSrc2Cpg().createCpg(sourceCodeFile.getAbsolutePath).get
+    val config = defaultConfig.withInputPath(sourceCodeFile.getAbsolutePath)
+    val tmp    = new CSharpSrc2Cpg().createCpg(config).get
+    new PostFrontendValidator(tmp, ValidationLevel.V0).createAndApply()
+    tmp
   }
 
 }

@@ -1,5 +1,6 @@
 package io.joern.c2cpg.passes.types
 
+import io.joern.c2cpg.astcreation.Defines
 import io.joern.c2cpg.testfixtures.C2CpgSuite
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.Operators
@@ -30,6 +31,19 @@ class TypeNodePassTests extends C2CpgSuite {
       val List(bar) = cpg.typeDecl.nameExact("TwoChars").l
       bar.fullName shouldBe "TwoChars"
       bar.aliasTypeFullName shouldBe Option("char(&)[2]")
+    }
+
+    "be correct for unknown type behind macro" in {
+      val cpg = code(
+        """
+          |#define DECLARE() unknown *val = NULL
+          |static void foo() {
+          |  DECLARE();
+          |}
+          |""".stripMargin,
+        "unknown.cpp"
+      )
+      cpg.local.nameExact("val").typeFullName.l shouldBe List("unknown*")
     }
 
     "be correct for static decl assignment" in {
@@ -106,7 +120,7 @@ class TypeNodePassTests extends C2CpgSuite {
         |int main() {
         |  int x;
         |}""".stripMargin)
-      cpg.typ.name.toSetMutable shouldBe Set("int", "void", "ANY")
+      cpg.typ.name.toSetMutable shouldBe Set("ANY", "int", "main", "void")
     }
 
     "create correct types for locals" in {
@@ -144,12 +158,21 @@ class TypeNodePassTests extends C2CpgSuite {
           tpe.fullName shouldBe "test*"
           tpe.name shouldBe "test*"
         }
-        inside(cpg.local.l) { case List(ptr) =>
+        inside(cpg.local.l) { case List(ptr, kernel) =>
           ptr.name shouldBe "ptr"
           ptr.typeFullName shouldBe "test*"
-          ptr.code shouldBe "struct test* ptr"
+          ptr.code shouldBe "struct test *ptr"
+
+          kernel.name shouldBe "GFP_KERNEL"
+          kernel.typeFullName shouldBe "ANY"
+          kernel.code shouldBe s"${Defines.UnknownTag} GFP_KERNEL"
         }
-        inside(cpg.local.typ.referencedTypeDecl.l) { case List(tpe) =>
+        inside(cpg.call.nameExact(Operators.sizeOf).l) { case List(sizeOfCall) =>
+          val List(typeRef) = sizeOfCall.argument(1).isTypeRef.l
+          typeRef.code shouldBe "struct test"
+          typeRef.typeFullName shouldBe "test"
+        }
+        inside(cpg.local.nameExact("ptr").typ.referencedTypeDecl.l) { case List(tpe) =>
           tpe.name shouldBe "test*"
           tpe.fullName shouldBe "test*"
         }
@@ -200,7 +223,7 @@ class TypeNodePassTests extends C2CpgSuite {
         inside(cpg.method("test_func").ast.isLocal.name(badChar.name).code(".*\\*.*").l) { case List(ptr) =>
           ptr.name shouldBe "badChar"
           ptr.typeFullName shouldBe "char*"
-          ptr.code shouldBe "char* badChar"
+          ptr.code shouldBe "char * badChar"
         }
       }
     }
@@ -239,6 +262,11 @@ class TypeNodePassTests extends C2CpgSuite {
       value.name shouldBe "value"
       value.typeFullName shouldBe "flex"
       value.code shouldBe "struct flex value"
+      inside(cpg.call.nameExact(Operators.sizeOf).l) { case List(sizeOfCall) =>
+        val List(typeRef) = sizeOfCall.argument(1).isTypeRef.l
+        typeRef.code shouldBe "struct flex"
+        typeRef.typeFullName shouldBe "flex"
+      }
     }
   }
 

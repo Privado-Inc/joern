@@ -8,6 +8,7 @@ import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.importresolver.*
 
 import java.io.File as JFile
+import java.nio.file.Paths
 import java.util.regex.{Matcher, Pattern}
 import scala.util.{Failure, Success, Try}
 
@@ -35,10 +36,13 @@ class JavaScriptImportResolverPass(cpg: Cpg) extends XImportResolverPass(cpg) {
     // TODO: At times there is an operation inside of a require, e.g. path.resolve(__dirname + "/../config/env/all.js")
     //  this tries to recover the string but does not perform string constant propagation
     val entity = if (matcher.find()) matcher.group(1) else rawEntity
+
     val resolvedPath = Try(
-      better.files
-        .File(currentFile.stripSuffix(currentFile.split(sep).last), entity.split(pathSep).head)
-        .pathAsString
+      Paths
+        .get(currentFile.stripSuffix(currentFile.split(sep).last), entity.split(pathSep).head)
+        .toAbsolutePath
+        .normalize()
+        .toString
         .stripPrefix(root)
     ).getOrElse(entity)
 
@@ -59,10 +63,7 @@ class JavaScriptImportResolverPass(cpg: Cpg) extends XImportResolverPass(cpg) {
       case Success(modules) => modules
     }
 
-    def targetAssignments = targetModule
-      .nameExact(Defines.Program)
-      .flatMap(_._callViaContainsOut)
-      .assignment
+    def targetAssignments = targetModule.nameExact(Defines.Program).flatMap(_._callViaContainsOut).isAssignment
 
     val matchingExports = if (isImportingModule) {
       // If we are importing the whole module, we need to load all entities
@@ -84,8 +85,8 @@ class JavaScriptImportResolverPass(cpg: Cpg) extends XImportResolverPass(cpg) {
          exp.argument.l match {
            case ::(expCall: Call, ::(b: Identifier, _))
                if expCall.code.matches("^(module.)?exports[.]?.*") && b.name == alias =>
-             val moduleMethods      = targetModule.repeat(_.astChildren.isMethod)(_.emit).l
-             lazy val methodMatches = moduleMethods.name(b.name).l
+             val moduleMethods           = targetModule.repeat(_.astChildren.isMethod)(_.emit).l
+             lazy val methodMatches      = moduleMethods.name(b.name).l
              lazy val constructorMatches =
                moduleMethods.fullName(s".*${b.name}$pathSep${XDefines.ConstructorMethodName}$$").l
              lazy val moduleExportsThisVariable = moduleMethods.body.local
@@ -104,7 +105,7 @@ class JavaScriptImportResolverPass(cpg: Cpg) extends XImportResolverPass(cpg) {
              }
            case ::(x: Call, ::(b: MethodRef, _)) =>
              // Exported function with a method ref of the function
-             val methodName = x.argumentOption(2).map(_.code).getOrElse(b.referencedMethod.name)
+             val methodName           = x.argumentOption(2).map(_.code).getOrElse(b.referencedMethod.name)
              val (callName, receiver) =
                if (methodName == "exports") (alias, Option("this")) else (methodName, Option(alias))
              b.referencedMethod.astParent.iterator

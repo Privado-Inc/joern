@@ -1,168 +1,254 @@
 package io.joern.c2cpg.parser
 
-import better.files.File
 import io.joern.c2cpg.Config
-import io.joern.c2cpg.parser.JSONCompilationDatabaseParser.CommandObject
+import io.joern.c2cpg.parser.JSONCompilationDatabaseParser.CompilationDatabase
+import io.joern.c2cpg.passes.AstCreationPass
+import io.joern.x2cpg.SourceFiles
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.utils.IOUtils
-import org.eclipse.cdt.core.dom.ast.IASTPreprocessorStatement
-import org.eclipse.cdt.core.dom.ast.IASTTranslationUnit
 import org.eclipse.cdt.core.dom.ast.gnu.c.GCCLanguage
 import org.eclipse.cdt.core.dom.ast.gnu.cpp.GPPLanguage
+import org.eclipse.cdt.core.dom.ast.{IASTPreprocessorStatement, IASTTranslationUnit}
 import org.eclipse.cdt.core.model.ILanguage
-import org.eclipse.cdt.core.parser.DefaultLogService
-import org.eclipse.cdt.core.parser.FileContent
-import org.eclipse.cdt.core.parser.ScannerInfo
-import org.eclipse.cdt.internal.core.dom.parser.cpp.semantics.CPPVisitor
+import org.eclipse.cdt.core.parser.{DefaultLogService, FileContent, IncludeFileContentProvider, ScannerInfo}
 import org.slf4j.LoggerFactory
 
-import java.nio.file.NoSuchFileException
-import java.nio.file.Path
+import java.nio.file.{Files, Path, Paths}
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
-import scala.util.Failure
-import scala.util.Success
-import scala.util.Try
+import scala.util.control.NonFatal
 
 object CdtParser {
 
   private val logger = LoggerFactory.getLogger(classOf[CdtParser])
 
+  enum HeaderFileParserLanguage {
+    case Unknown, C, Cpp, Both
+  }
+
+  /** CDT's preprocessor keeps its built-in macros (`__STDC_VERSION__`, `__STDC_HOSTED__`, `__cplusplus`,
+    * `__CDT_PARSER__`) as static `ObjectStyleMacro`s shared by every parser in the JVM. `ObjectStyleMacro.getTokens`
+    * stores a new, empty token list in the shared object and then lexes the value into whatever list the object holds.
+    * When parsers on several threads expand a macro for the first time together, one can be handed the empty list, two
+    * can lex into the same list and leave the value doubled for the rest of the run, or one can fail with a
+    * NullPointerException. An `#if` on the macro then evaluates differently from run to run, and the code it guards is
+    * in some graphs and not in others. Expanding each one here, when a parser is created and before any file is parsed
+    * in parallel, leaves them filled. Once filled, a later call does not change them; it costs two parses of a two-line
+    * snippet.
+    *
+    * @return
+    *   the names of the macros the two parses expanded
+    */
+  def expandBuiltinMacros(): Set[String] = {
+    val code = "#if __STDC_VERSION__ + __STDC_HOSTED__ + __CDT_PARSER__ + __cplusplus\n#endif\n".toCharArray
+    Seq(GCCLanguage.getDefault, GPPLanguage.getDefault).flatMap { lang =>
+      try {
+        val translationUnit = lang.getASTTranslationUnit(
+          FileContent.create("<builtin-macros>", true, code),
+          new ScannerInfo(),
+          IncludeFileContentProvider.getEmptyFilesProvider,
+          null,
+          0,
+          new DefaultLogService
+        )
+        translationUnit.getMacroExpansions.toSeq.map(_.getMacroReference.toString)
+      } catch {
+        case NonFatal(e) =>
+          logger.debug("Expanding CDT's built-in macros failed", e)
+          Seq.empty
+      }
+    }.toSet
+  }
+
+  private def readFileAsFileContent(file: Path, lines: Option[Array[Char]] = None): FileContent = {
+    val codeLines = lines.getOrElse(IOUtils.readLinesInFile(file).mkString("\n").toArray)
+    FileContent.create(file.toString, true, codeLines)
+  }
+
   private case class ParseResult(
     translationUnit: Option[IASTTranslationUnit],
-    preprocessorErrorCount: Int = 0,
-    problems: Int = 0,
+    relativeFilePath: Option[String] = None,
     failure: Option[Throwable] = None
   )
 
-  private def readFileAsFileContent(file: File, lines: Option[Array[Char]] = None): FileContent = {
-    val codeLines = lines.getOrElse(IOUtils.readLinesInFile(file.path).mkString("\n").toArray)
-    val isSource  = FileDefaults.hasSourceFileExtension(file.pathAsString)
-    FileContent.create(file.pathAsString, isSource, codeLines)
-  }
-
-}
-
-class CdtParser(config: Config, compilationDatabase: mutable.LinkedHashSet[CommandObject])
-    extends ParseProblemsLogger
-    with PreprocessorStatementsLogger {
-
-  import io.joern.c2cpg.parser.CdtParser.*
-
-  private val headerFileFinder = new HeaderFileFinder(config.inputPath)
-  private val parserConfig     = ParserConfig.fromConfig(config, compilationDatabase)
-  private val definedSymbols   = parserConfig.definedSymbols
-  private val includePaths     = parserConfig.userIncludePaths
-  private val log              = new DefaultLogService
-
-  // enables parsing of code behind disabled preprocessor defines:
-  private var opts: Int = ILanguage.OPTION_PARSE_INACTIVE_CODE
-  // instructs the parser to skip function and method bodies
-  if (config.skipFunctionBodies) opts |= ILanguage.OPTION_SKIP_FUNCTION_BODIES
-  // performance optimization, allows the parser not to create image-locations
-  if (config.noImageLocations) opts |= ILanguage.OPTION_NO_IMAGE_LOCATIONS
-
-  private def preprocessedFileIsFromCPPFile(file: Path, code: String): Boolean = {
-    if (config.withPreprocessedFiles && FileDefaults.hasPreprocessedFileExtension(file.toString)) {
-      val fileWithoutExt  = file.toString.substring(0, file.toString.lastIndexOf("."))
-      val filesWithCPPExt = FileDefaults.CppFileExtensions.map(ext => File(s"$fileWithoutExt$ext").name)
-      code.linesIterator.exists(line => filesWithCPPExt.exists(f => line.contains(s"\"$f\"")))
-    } else {
-      false
+  /** Determines the appropriate language parser(s) to use for a given source file.
+    *
+    * This method examines the file path, looks at its extension, and uses information from the global object to decide
+    * which CDT language parser(s) should be used.
+    *
+    * @param path
+    *   The path to the source file to be parsed
+    * @param headerIncludes
+    *   Info about how to parse each header file
+    * @param config
+    *   The configuration settings
+    * @return
+    *   A sequence of (Path, ILanguage) pairs. For some header files, this may return both C and C++ parsers. Returns
+    *   empty sequence for non-existent files.
+    */
+  def languageMappingForSourceFile(
+    path: Path,
+    headerIncludes: Map[String, HeaderFileParserLanguage],
+    config: Config
+  ): Seq[(Path, ILanguage)] = {
+    if (!Files.isRegularFile(path)) {
+      logger.warn(s"File '${path.toString}' does not exist. Check for broken symlinks!")
+      return Seq.empty
+    }
+    val filePath = path.toString
+    if (!FileDefaults.hasCHeaderFileExtension(filePath)) {
+      val code = IOUtils.readLinesInFile(path).mkString("\n")
+      return Seq((path, createParseLanguage(path, code, config)))
+    }
+    headerIncludes.get(filePath) match {
+      case None | Some(HeaderFileParserLanguage.C) => Seq((path, GCCLanguage.getDefault))
+      case Some(HeaderFileParserLanguage.Cpp)      => Seq((path, GPPLanguage.getDefault))
+      case _ => Seq((path, GCCLanguage.getDefault), (path, GPPLanguage.getDefault))
     }
   }
 
-  private def createParseLanguage(file: Path, code: String): ILanguage = {
-    if (FileDefaults.hasCppFileExtension(file.toString) || preprocessedFileIsFromCPPFile(file, code)) {
+  private def createParseLanguage(file: Path, code: String, config: Config): ILanguage = {
+    if (FileDefaults.hasCppFileExtension(file.toString) || preprocessedFileIsFromCPPFile(file, code, config)) {
       GPPLanguage.getDefault
     } else {
       GCCLanguage.getDefault
     }
   }
 
+  private def preprocessedFileIsFromCPPFile(file: Path, code: String, config: Config): Boolean = {
+    if (config.withPreprocessedFiles && FileDefaults.hasPreprocessedFileExtension(file.toString)) {
+      val fileWithoutExt  = file.toString.substring(0, file.toString.lastIndexOf("."))
+      val filesWithCPPExt = FileDefaults.CppFileExtensions.map(ext => Paths.get(s"$fileWithoutExt$ext").fileName)
+      code.linesIterator.exists(line => filesWithCPPExt.exists(f => line.contains(s"\"$f\"")))
+    } else {
+      false
+    }
+  }
+
+}
+
+class CdtParser(config: Config, headerFileFinder: HeaderFileFinder, compilationDatabase: Option[CompilationDatabase])
+    extends ParseProblemsLogger
+    with PreprocessorStatementsLogger {
+
+  import io.joern.c2cpg.parser.CdtParser.*
+
+  // Parsers are created before the parallel parse starts; see `expandBuiltinMacros`.
+  expandBuiltinMacros()
+
+  private val parserConfig = ParserConfig.fromConfig(config, compilationDatabase)
+  private val log          = new DefaultLogService
+
+  private val opts: Int = {
+    var flags =
+      ILanguage.OPTION_NO_IMAGE_LOCATIONS | // performance optimization, allows the parser not to create image-locations
+        ILanguage.OPTION_SKIP_TRIVIAL_EXPRESSIONS_IN_AGGREGATE_INITIALIZERS // performance optimization, skips trivial expressions in aggregate initializers
+    // instructs the parser to skip function and method bodies
+    if (config.skipFunctionBodies) flags |= ILanguage.OPTION_SKIP_FUNCTION_BODIES
+    // enables parsing of code behind disabled preprocessor defines
+    if (config.compilationDatabaseFilename.isEmpty && config.defines.isEmpty)
+      flags |= ILanguage.OPTION_PARSE_INACTIVE_CODE
+    flags
+  }
+
+  def preprocessorStatements(
+    file: Path,
+    language: ILanguage,
+    accumulator: AstCreationPass.Accumulator
+  ): Iterable[IASTPreprocessorStatement] = {
+    parse(file, language, accumulator).map(t => preprocessorStatements(t)).getOrElse(Iterable.empty)
+  }
+
   private def createScannerInfo(file: Path): ScannerInfo = {
-    val additionalIncludes =
-      if (FileDefaults.hasCppFileExtension(file.toString)) parserConfig.systemIncludePathsCPP
-      else parserConfig.systemIncludePathsC
+    val additionalIncludes = if (FileDefaults.hasCppFileExtension(file.toString)) {
+      parserConfig.systemIncludePathsCPP
+    } else {
+      parserConfig.systemIncludePathsC
+    }
     val fileSpecificDefines  = parserConfig.definedSymbolsPerFile.getOrElse(file.toString, Map.empty)
     val fileSpecificIncludes = parserConfig.includesPerFile.getOrElse(file.toString, mutable.LinkedHashSet.empty)
     new ScannerInfo(
-      (definedSymbols ++ fileSpecificDefines).asJava,
-      fileSpecificIncludes.toArray ++ (includePaths ++ additionalIncludes).map(_.toString).toArray
+      (parserConfig.definedSymbols ++ fileSpecificDefines).asJava,
+      fileSpecificIncludes.toArray ++ (parserConfig.userIncludePaths ++ additionalIncludes).map(_.toString).toArray
     )
   }
 
-  private def parseInternal(code: String, inFile: File): IASTTranslationUnit = {
-    val fileContent = FileContent.create(inFile.toString, true, code.toCharArray)
+  def parse(file: Path, language: ILanguage, accumulator: AstCreationPass.Accumulator): Option[IASTTranslationUnit] = {
+    handleParseResult(file, parseInternal(file, language, accumulator))
+  }
+
+  def parse(code: String, file: Path, accumulator: AstCreationPass.Accumulator): Option[IASTTranslationUnit] = {
+    handleParseResult(file, parseInternal(code, file, accumulator))
+  }
+
+  private def handleParseResult(file: Path, result: ParseResult): Option[IASTTranslationUnit] = {
+    result match {
+      case ParseResult(translationUnit @ Some(_), Some(relativeFilePath), _) =>
+        logger.info(s"Parsed '$relativeFilePath'")
+        translationUnit
+      case ParseResult(_, maybeRelativePath, maybeThrowable) =>
+        val relativePath  = maybeRelativePath.getOrElse(file.toString)
+        val throwableText = maybeThrowable.map(extractParseException).getOrElse("Unknown parse error!")
+        logger.warn(s"Failed to parse '$relativePath': $throwableText")
+        None
+    }
+  }
+
+  private def prepareAndParse(
+    file: Path,
+    lang: ILanguage,
+    fileContent: FileContent,
+    accumulator: AstCreationPass.Accumulator
+  ): ParseResult = {
+    val relativeFilePath    = SourceFiles.toRelativePath(file.toString, config.inputPath)
     val fileContentProvider =
-      if config.skipHeaderFileContext then null else new CustomFileContentProvider(headerFileFinder)
-    val lang            = createParseLanguage(inFile.path, code)
-    val scannerInfo     = createScannerInfo(inFile.path)
-    val translationUnit = lang.getASTTranslationUnit(fileContent, scannerInfo, fileContentProvider, null, opts, log)
-    val problems        = CPPVisitor.getProblems(translationUnit)
-    if (parserConfig.logProblems) logProblems(problems.toList)
-    if (parserConfig.logPreprocessor) logPreprocessorStatements(translationUnit)
-    translationUnit
+      if (config.skipHeaderFileContext) null
+      else new CustomFileContentProvider(headerFileFinder, file.toString, accumulator)
+    val scannerInfo = createScannerInfo(file)
+    safeParseInternal(fileContent, scannerInfo, fileContentProvider, lang, relativeFilePath)
   }
 
-  private def parseInternal(file: File): ParseResult = {
-    if (file.isRegularFile) { // handling potentially broken symlinks
-      try {
-        val fileContent = readFileAsFileContent(file.path)
-        val fileContentProvider =
-          if config.skipHeaderFileContext then null else new CustomFileContentProvider(headerFileFinder)
-        val lang            = createParseLanguage(file.path, fileContent.toString)
-        val scannerInfo     = createScannerInfo(file.path)
-        val translationUnit = lang.getASTTranslationUnit(fileContent, scannerInfo, fileContentProvider, null, opts, log)
-        val problems        = CPPVisitor.getProblems(translationUnit)
-        if (parserConfig.logProblems) logProblems(problems.toList)
-        if (parserConfig.logPreprocessor) logPreprocessorStatements(translationUnit)
-        ParseResult(
-          Option(translationUnit),
-          preprocessorErrorCount = translationUnit.getPreprocessorProblemsCount,
-          problems = problems.length
-        )
-      } catch {
-        case u: UnsupportedClassVersionError =>
-          logger.error("c2cpg requires at least JRE-17 to run. Please check your Java Runtime Environment!", u)
-          System.exit(1)
-          ParseResult(None, failure = Option(u)) // return value to make the compiler happy
-        case e: Throwable =>
-          ParseResult(None, failure = Option(e))
-      }
-    } else {
-      ParseResult(
-        None,
-        failure =
-          Option(new NoSuchFileException(s"File '${file.pathAsString}' does not exist. Check for broken symlinks!"))
-      )
-    }
+  private def parseInternal(file: Path, lang: ILanguage, accumulator: AstCreationPass.Accumulator): ParseResult = {
+    val fileContent = readFileAsFileContent(file)
+    prepareAndParse(file, lang, fileContent, accumulator)
   }
 
-  def preprocessorStatements(file: Path): Iterable[IASTPreprocessorStatement] = {
-    parse(file).map(t => preprocessorStatements(t)).getOrElse(Iterable.empty)
+  private def parseInternal(code: String, file: Path, accumulator: AstCreationPass.Accumulator): ParseResult = {
+    val lang        = CdtParser.createParseLanguage(file, code, config)
+    val fileContent = FileContent.create(file.toString, true, code.toCharArray)
+    prepareAndParse(file, lang, fileContent, accumulator)
   }
 
-  def parse(code: String, inFile: Path): Option[IASTTranslationUnit] = {
-    Try(parseInternal(code, inFile)) match {
-      case Failure(exception) =>
-        logger.warn(s"Failed to parse '$code' in file '$inFile': ${extractParseException(exception)}")
-        None
-      case Success(translationUnit) =>
-        Some(translationUnit)
-    }
-  }
-
-  def parse(file: Path): Option[IASTTranslationUnit] = {
-    val parseResult = parseInternal(file)
-    parseResult match {
-      case ParseResult(Some(t), c, p, _) =>
-        logger.info(s"Parsed '${t.getFilePath}' ($c preprocessor error(s), $p problems)")
-        Option(t)
-      case ParseResult(_, _, _, maybeThrowable) =>
-        logger.warn(
-          s"Failed to parse '$file': ${maybeThrowable.map(extractParseException).getOrElse("Unknown parse error!")}"
-        )
-        None
+  private def safeParseInternal(
+    fileContent: FileContent,
+    scannerInfo: ScannerInfo,
+    fileContentProvider: CustomFileContentProvider,
+    lang: ILanguage,
+    relativeFilePath: String
+  ): ParseResult = {
+    try {
+      val translationUnit = lang.getASTTranslationUnit(fileContent, scannerInfo, fileContentProvider, null, opts, log)
+      if (config.logProblems) logProblems(translationUnit)
+      if (config.logPreprocessor) logPreprocessorStatements(translationUnit)
+      ParseResult(Option(translationUnit), Some(relativeFilePath))
+    } catch {
+      case u: UnsupportedClassVersionError =>
+        logger.error("c2cpg requires at least JRE-17 to run. Please check your Java Runtime Environment!", u)
+        scala.sys.exit(1)
+      case s: StackOverflowError =>
+        /**   - Eclipse CDT’s C/C++ parser is heavily recursive (recursive-descent parsing, macro expansion, template
+          *     instantiation, deep include chains). For certain real-world inputs this can create extremely deep call
+          *     stacks and trigger a JVM `StackOverflowError`.
+          *   - `StackOverflowError` is a `VirtualMachineError`, which Scala’s `NonFatal` does not catch. Without an
+          *     explicit catch, a single problematic file would crash the whole process.
+          *   - Catching it here lets `CdtParser` turn the failure into a `ParseResult`, log it, and continue parsing
+          *     other files instead of aborting.
+          *   - The risk is higher when parsing large header graphs, complex templates/macros, parsing inactive code
+          *     (`OPTION_PARSE_INACTIVE_CODE`, which we use), or parsing headers twice (C and C++, which we do).
+          */
+        ParseResult(None, failure = Option(s))
+      case NonFatal(e) =>
+        ParseResult(None, failure = Option(e))
     }
   }
 

@@ -1,11 +1,11 @@
 package io.joern.jssrc2cpg.passes.ast
 
-import io.joern.jssrc2cpg.testfixtures.AstJsSrc2CpgSuite
+import io.joern.jssrc2cpg.testfixtures.JsSrc2CpgSuite
 import io.joern.x2cpg.layers.Base
 import io.shiftleft.codepropertygraph.generated.DispatchTypes
 import io.shiftleft.semanticcpg.language.*
 
-class DependencyAstCreationPassTests extends AstJsSrc2CpgSuite {
+class DependencyAstCreationPassTests extends JsSrc2CpgSuite {
 
   "AST generation for global builtins" should {
     "have correct structure for JSON.parse" in {
@@ -95,7 +95,6 @@ class DependencyAstCreationPassTests extends AstJsSrc2CpgSuite {
         |import {c} from "";
         |import * as d from "depD";
         |""".stripMargin)
-      Base.passes(cpg).foreach(_.createAndApply())
       val List(a, b, c, d) = cpg.imports.l
       a.code shouldBe "import {a} from \"depA\""
       a.importedEntity shouldBe Option("depA:a")
@@ -111,6 +110,11 @@ class DependencyAstCreationPassTests extends AstJsSrc2CpgSuite {
       d.importedAs shouldBe Option("d")
       val List(n) = a.namespaceBlock.l
       n.fullName shouldBe "Test0.js:<global>"
+
+      a.file.name.l shouldBe List("Test0.js")
+      b.file.name.l shouldBe List("Test0.js")
+      c.file.name.l shouldBe List("Test0.js")
+      d.file.name.l shouldBe List("Test0.js")
     }
 
     "have correct dependencies (require)" in {
@@ -181,6 +185,26 @@ class DependencyAstCreationPassTests extends AstJsSrc2CpgSuite {
       depB.name shouldBe "b"
       depB.dependencyGroupId shouldBe Option("depB")
       depB.version shouldBe "require"
+    }
+
+    "have correct import with multiple files" in {
+      val cpg = code(
+        """
+          |import {a} from "depA";
+          |""".stripMargin,
+        "Test0.js"
+      ).moreCode(
+        """
+          |import {b} from "depB";
+          |""".stripMargin,
+        "Test1.js"
+      )
+      val List(a, b) = cpg.imports.l
+      a.file.name.l shouldBe List("Test0.js")
+      b.file.name.l shouldBe List("Test1.js")
+
+      a.location.filename shouldBe "Test0.js"
+      b.location.filename shouldBe "Test1.js"
     }
 
     "have correct dependencies (different variations of import)" in {

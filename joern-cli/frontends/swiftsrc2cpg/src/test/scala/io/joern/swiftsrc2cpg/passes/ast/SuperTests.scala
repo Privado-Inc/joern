@@ -2,11 +2,11 @@
 
 package io.joern.swiftsrc2cpg.passes.ast
 
-import io.joern.swiftsrc2cpg.testfixtures.AstSwiftSrc2CpgSuite
+import io.joern.swiftsrc2cpg.testfixtures.SwiftSrc2CpgSuite
 
 import io.shiftleft.semanticcpg.language.*
 
-class SuperTests extends AstSwiftSrc2CpgSuite {
+class SuperTests extends SwiftSrc2CpgSuite {
 
   "SuperTests" should {
 
@@ -33,7 +33,7 @@ class SuperTests extends AstSwiftSrc2CpgSuite {
         |  }
         |}""".stripMargin)
       cpg.typeDecl.nameExact("D").method.isConstructor.block.astChildren.isCall.code.sorted.l shouldBe List(
-        "let wildcard_0: () -> D = self.init"
+        "let <wildcard>0: () -> D = self.init"
       )
     }
 

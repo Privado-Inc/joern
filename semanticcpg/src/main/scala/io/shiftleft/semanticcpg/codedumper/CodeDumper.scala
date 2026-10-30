@@ -1,7 +1,7 @@
 package io.shiftleft.semanticcpg.codedumper
 
 import io.shiftleft.codepropertygraph.generated.Languages
-import io.shiftleft.codepropertygraph.generated.nodes.{Expression, Local, Method, NewLocation}
+import io.shiftleft.codepropertygraph.generated.nodes.{Expression, Local, Method}
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.utils.IOUtils
 import org.slf4j.{Logger, LoggerFactory}
@@ -24,7 +24,8 @@ object CodeDumper {
       Languages.JAVA,
       Languages.JAVASRC,
       Languages.JSSRC,
-      Languages.SWIFTSRC
+      Languages.SWIFTSRC,
+      Languages.RUST
     )
 
   private def toAbsolutePath(path: String, rootPath: String): String = {
@@ -39,7 +40,7 @@ object CodeDumper {
   /** Dump string representation of code at given `location`.
     */
   def dump(
-    location: NewLocation,
+    location: LocationInfo,
     language: Option[String],
     rootPath: Option[String],
     highlight: Boolean,

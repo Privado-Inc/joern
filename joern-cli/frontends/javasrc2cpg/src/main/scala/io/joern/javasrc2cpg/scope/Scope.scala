@@ -24,7 +24,7 @@ case class NodeTypeInfo(
   isField: Boolean = false,
   isStatic: Boolean = false
 )
-class Scope(implicit val withSchemaValidation: ValidationMode, val disableTypeFallback: Boolean) {
+class Scope(implicit withSchemaValidation: ValidationMode, disableTypeFallback: Boolean) {
   private val logger = LoggerFactory.getLogger(this.getClass)
 
   private var scopeStack: List[JavaScopeElement] = Nil
@@ -44,14 +44,16 @@ class Scope(implicit val withSchemaValidation: ValidationMode, val disableTypeFa
   def pushTypeDeclScope(
     typeDecl: NewTypeDecl,
     isStatic: Boolean,
+    outerClassGenericSignature: Option[String] = None,
     methodNames: Set[String] = Set.empty,
     recordParameters: List[Parameter] = Nil
   ): Unit = {
-    val captures = getCapturesForNewScope(isStatic)
+    val captures       = getCapturesForNewScope(isStatic)
     val outerClassType = scopeStack.takeUntil(_.isInstanceOf[TypeDeclScope]) match {
       case Nil => None
 
-      case (head: TypeDeclScope) :: Nil => Option.unless(isStatic)(head.typeDecl.fullName)
+      case (head: TypeDeclScope) :: Nil =>
+        Option.unless(isStatic)(head.typeDecl.fullName)
 
       case head :: Nil =>
         // make exhaustive match checker happy, but is impossible
@@ -59,13 +61,20 @@ class Scope(implicit val withSchemaValidation: ValidationMode, val disableTypeFa
 
       case scopes =>
         Option
-          .unless(isStatic || scopes.init.exists(_.isStatic)) {
-            scopes.lastOption.collectFirst { case typeDeclScope: TypeDeclScope => typeDeclScope.typeDecl.fullName }
-          }
+          .unless(isStatic || scopes.init.exists(_.isStatic))(scopes.lastOption.collectFirst {
+            case typeDeclScope: TypeDeclScope => typeDeclScope.typeDecl.fullName
+          })
           .flatten
     }
-    scopeStack =
-      new TypeDeclScope(typeDecl, isStatic, captures, outerClassType, methodNames, recordParameters) :: scopeStack
+    scopeStack = new TypeDeclScope(
+      typeDecl,
+      isStatic,
+      captures,
+      outerClassType,
+      outerClassGenericSignature,
+      methodNames,
+      recordParameters
+    ) :: scopeStack
   }
 
   def pushNamespaceScope(namespace: NewNamespaceBlock): Unit = {
@@ -73,6 +82,25 @@ class Scope(implicit val withSchemaValidation: ValidationMode, val disableTypeFa
   }
 
   def popBlockScope(): BlockScope = popScope[BlockScope]()
+
+  /** In the lowering for pattern match expressions, locals for pattern variables are hoisted into the enclosing block
+    * scope and these need to be kept track of to be able to tell when local names need to be mangled.
+    *
+    * In most cases, these pattern variable names need to be added to the block scope for more than one level.
+    *
+    * One example is when lowering `if (o instanceof Foo f)`, an extra block scope is pushed while processing the `o
+    * instanceof Foo f` condition to allow more control for where pattern locals are added to the scope. But, the `f`
+    * local is hoisted into the block containing the `if`, so this must be recorded both in the block scope for `o
+    * instanceof ...` and be propagated up into the enclosing block. This method is simply a helper method which takes
+    * care of the propagation.
+    */
+  def popBlockAndHoistPatternVariables(): BlockScope = {
+    val poppedScope = popScope[BlockScope]()
+    enclosingBlock.foreach { enclosingBlock =>
+      poppedScope.getHoistedPatternLocals.foreach(enclosingBlock.addHoistedPatternLocal)
+    }
+    poppedScope
+  }
 
   def popMethodScope(): MethodScope = popScope[MethodScope]()
 
@@ -89,17 +117,34 @@ class Scope(implicit val withSchemaValidation: ValidationMode, val disableTypeFa
   }
 
   def addTopLevelType(name: String, typeFullName: String): Unit = {
-    val scopeType = ScopeTopLevelType(typeFullName)
+    val scopeType = ScopeTopLevelType(typeFullName, name)
     scopeStack.head.addTypeToScope(name, scopeType)
   }
 
-  def addInnerType(name: String, typeFullName: String): Unit = {
-    val scopeType = ScopeInnerType(typeFullName)
+  def addInnerType(name: String, typeFullName: String, internalName: String): Unit = {
+    val scopeType = ScopeInnerType(typeFullName, internalName)
+    scopeStack.head.addTypeToScope(name, scopeType)
+  }
+
+  def addTypeParameter(name: String, typeFullName: String): Unit = {
+    val scopeType = ScopeTypeParam(typeFullName, name)
     scopeStack.head.addTypeToScope(name, scopeType)
   }
 
   def addWildcardImport(prefix: String): Unit = {
     scopeStack.head.addWildcardImport(prefix)
+  }
+
+  def addStaticImport(memberName: String, declaringTypeFullName: String): Unit = {
+    enclosingNamespace.foreach(_.addStaticImport(memberName, declaringTypeFullName))
+  }
+
+  def addStaticWildcardImport(declaringTypeFullName: String): Unit = {
+    enclosingNamespace.foreach(_.addStaticWildcardImport(declaringTypeFullName))
+  }
+
+  def lookupStaticImport(memberName: String): Option[String] = {
+    enclosingNamespace.flatMap(_.lookupStaticImport(memberName))
   }
 
   def addDeclBinding(name: String, declBindingInfo: JavaparserBindingDeclType): Unit = {
@@ -289,12 +334,23 @@ class Scope(implicit val withSchemaValidation: ValidationMode, val disableTypeFa
   }
 
   def addLocalsForPatternsToEnclosingBlock(patterns: List[TypePatternExpr]): Unit = {
-    patterns.flatMap(enclosingMethod.get.getPatternVariableInfo(_)).foreach {
-      case PatternVariableInfo(typePatternExpr, variableLocal, _, _, _) =>
-        enclosingBlock.get.addPatternLocal(variableLocal, typePatternExpr)
+    patterns.foreach { pattern =>
+      enclosingMethod.get.getLocalForPattern(pattern).foreach(enclosingBlock.get.addLocal(_, pattern.getNameAsString))
     }
   }
 
+  def getHoistedPatternLocals: List[NewLocal] = {
+    scopeStack.collect { case blockScope: BlockScope => blockScope.getHoistedPatternLocals }.flatten
+  }
+
+  def getMangledName(variableName: String): String = {
+    val needsMangling = getHoistedPatternLocals.exists(_.name == variableName)
+
+    if (needsMangling)
+      enclosingMethod.get.mangleLocalName(variableName)
+    else
+      variableName
+  }
 }
 
 object Scope {
@@ -311,14 +367,15 @@ object Scope {
 
   sealed trait ScopeType {
     def typeFullName: String
+    def name: String
   }
 
   /** Used for top-level type declarations and imports that do not have captures to be concerned about or synthetic
     * names in the cpg
     */
-  final case class ScopeTopLevelType(override val typeFullName: String) extends ScopeType
+  final case class ScopeTopLevelType(override val typeFullName: String, override val name: String) extends ScopeType
 
-  final class ScopeInnerType(override val typeFullName: String) extends ScopeType {
+  final class ScopeInnerType(override val typeFullName: String, override val name: String) extends ScopeType {
     private val usedCaptures: mutable.ListBuffer[ScopeVariable] = mutable.ListBuffer()
 
     override def equals(other: Any): Boolean = {
@@ -332,32 +389,35 @@ object Scope {
   }
 
   object ScopeInnerType {
-    def apply(typeFullName: String): ScopeInnerType = {
-      new ScopeInnerType(typeFullName)
+    def apply(typeFullName: String, name: String): ScopeInnerType = {
+      new ScopeInnerType(typeFullName, name)
     }
   }
+
+  final case class ScopeTypeParam(override val typeFullName: String, override val name: String) extends ScopeType
 
   sealed trait ScopeVariable {
     def node: NewVariableNode
     def typeFullName: String
     def name: String
+    def genericSignature: String
+    def mangledName: String = name
   }
-  final case class ScopeLocal(override val node: NewLocal) extends ScopeVariable {
-    val typeFullName: String = node.typeFullName
-    val name: String         = node.name
+  final case class ScopeLocal(override val node: NewLocal, originalName: String) extends ScopeVariable {
+    val typeFullName: String         = node.typeFullName
+    val name: String                 = originalName
+    val genericSignature: String     = node.genericSignature
+    override val mangledName: String = node.name
   }
-  final case class ScopeParameter(override val node: NewMethodParameterIn) extends ScopeVariable {
+  final case class ScopeParameter(override val node: NewMethodParameterIn, override val genericSignature: String)
+      extends ScopeVariable {
     val typeFullName: String = node.typeFullName
     val name: String         = node.name
   }
   final case class ScopeMember(override val node: NewMember, isStatic: Boolean) extends ScopeVariable {
-    val typeFullName: String = node.typeFullName
-    val name: String         = node.name
-  }
-  final case class ScopePatternVariable(override val node: NewLocal, typePatternExpr: TypePatternExpr)
-      extends ScopeVariable {
-    val typeFullName: String = node.typeFullName
-    val name: String         = node.name
+    val typeFullName: String     = node.typeFullName
+    val name: String             = node.name
+    val genericSignature: String = node.genericSignature
   }
 
   sealed trait VariableLookupResult {
@@ -371,7 +431,7 @@ object Scope {
     // TODO: Refactor and remove this
     def asNodeInfoOption: Option[NodeTypeInfo] = None
   }
-  case object NotInScope extends VariableLookupResult
+  case object NotInScope                              extends VariableLookupResult
   sealed trait FoundVariable(variable: ScopeVariable) extends VariableLookupResult {
     override val typeFullName: Option[String]          = Some(variable.typeFullName)
     override val variableNode: Option[NewVariableNode] = Some(variable.node)

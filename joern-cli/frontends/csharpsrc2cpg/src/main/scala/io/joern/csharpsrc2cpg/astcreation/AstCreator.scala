@@ -4,8 +4,10 @@ import io.joern.csharpsrc2cpg.Constants
 import io.joern.csharpsrc2cpg.datastructures.{CSharpProgramSummary, CSharpScope, MethodScope, TypeScope}
 import io.joern.csharpsrc2cpg.parser.DotNetJsonAst.*
 import io.joern.csharpsrc2cpg.parser.{DotNetNodeInfo, ParserKeys}
-import io.joern.x2cpg.astgen.{AstGenNodeBuilder, ParserResult}
+import io.joern.csharpsrc2cpg.utils.Utils.*
+import io.joern.x2cpg.astgen.{AstGenNodeBuilder, BaseNodeInfo, ParserResult}
 import io.joern.x2cpg.{Ast, AstCreatorBase, ValidationMode}
+import io.joern.x2cpg.utils.OffsetUtils
 import io.shiftleft.codepropertygraph.generated.{DiffGraphBuilder, ModifierTypes, NodeTypes}
 import io.shiftleft.codepropertygraph.generated.nodes.{
   NewBlock,
@@ -27,7 +29,7 @@ class AstCreator(
   val parserResult: ParserResult,
   val programSummary: CSharpProgramSummary = CSharpProgramSummary()
 )(implicit withSchemaValidation: ValidationMode)
-    extends AstCreatorBase(relativeFileName)
+    extends AstCreatorBase[BaseNodeInfo[?], AstCreator](relativeFileName)
     with AstCreatorHelper
     with AstForDeclarationsCreator
     with AstForPrimitivesCreator
@@ -41,6 +43,10 @@ class AstCreator(
   protected val scope: CSharpScope = new CSharpScope(programSummary)
 
   protected var parseLevel: AstParseLevel = AstParseLevel.FULL_AST
+
+  override protected def offsetSource: Option[OffsetUtils.OffsetSourceType] = None
+
+  override protected def unadjustedOffset(node: BaseNodeInfo[?]): Option[(Int, Int)] = None
 
   override def createAst(): DiffGraphBuilder = {
     val hash = String.format(
@@ -72,43 +78,42 @@ class AstCreator(
     // Note: there can only be one such file in a given project, but we are currently
     // not checking this.
     if (globalStatements.nonEmpty) {
-      importAsts ++ astForTopLevelStatements(globalStatements) ++ nonGlobalStatementAsts
+      importAsts ++ astForTopLevelStatements(cu, globalStatements) ++ nonGlobalStatementAsts
     } else {
       importAsts ++ nonGlobalStatementAsts
     }
   }
 
-  private def astForTopLevelStatements(topLevelStmts: Seq[DotNetNodeInfo]): Seq[Ast] = {
-    val sanitizedFileName = relativeFileName.replace(java.io.File.separator, "_").replace(".", "_")
-    val className         = s"${sanitizedFileName}_Program"
-    val mainName          = "<Main>$"
-    val classFullName     = s"$className"
-    val mainFullName      = s"$classFullName.$mainName"
+  private def astForTopLevelStatements(cu: DotNetNodeInfo, topLevelStmts: Seq[DotNetNodeInfo]): Seq[Ast] = {
+    val className      = composeTopLevelClassName(relativeFileName)
+    val classFullName  = className
+    val mainName       = Constants.TopLevelMainMethodName
+    val mainParameters = List(("args", "System.String[]"))
+    val voidType       = BuiltinTypes.DotNetTypeMap(BuiltinTypes.Void)
+    val mainSignature  = composeMethodLikeSignature(voidType, mainParameters.map(_._2))
+    val mainFullName   = composeMethodFullName(classFullName, mainName, mainSignature)
 
     val classNode = NewTypeDecl()
       .name(className)
       .fullName(classFullName)
       .filename(relativeFileName)
 
-    val classModifiers = Seq(NewModifier().modifierType(ModifierTypes.INTERNAL))
-
-    val methodNode = NewMethod()
+    val classModifiers = modifierNode(cu, ModifierTypes.INTERNAL) :: Nil
+    val methodNode     = NewMethod()
       .name(mainName)
       .fullName(mainFullName)
       .filename(relativeFileName)
-      .signature("System.Void(System.String[])")
+      .signature(mainSignature)
 
-    val methodModifiers =
-      Seq(NewModifier().modifierType(ModifierTypes.STATIC), NewModifier().modifierType(ModifierTypes.PRIVATE))
-
-    val argsParameter = NewMethodParameterIn().name("args").typeFullName("System.String[]")
-    val methodBlock   = NewBlock().typeFullName("System.Void")
-    val methodReturn  = NewMethodReturn().typeFullName("System.Void")
+    val methodModifiers = modifierNode(cu, ModifierTypes.STATIC) :: modifierNode(cu, ModifierTypes.PRIVATE) :: Nil
+    val argsParameters  = mainParameters.map(x => NewMethodParameterIn().name(x._1).typeFullName(x._2))
+    val methodBlock     = NewBlock().typeFullName(voidType)
+    val methodReturn    = NewMethodReturn().typeFullName(methodBlock.typeFullName)
 
     val topLevelStmtAsts = {
       scope.pushNewScope(TypeScope(classFullName))
       scope.pushNewScope(MethodScope(mainFullName))
-      scope.addToScope("args", argsParameter)
+      argsParameters.foreach(x => scope.addToScope(x.name, x))
 
       val asts = topLevelStmts.flatMap(astForNode)
 
@@ -119,7 +124,7 @@ class AstCreator(
 
     val methodAst = Ast(methodNode)
       .withChildren(methodModifiers.map(Ast(_)))
-      .withChild(Ast(argsParameter))
+      .withChild(Ast(argsParameters))
       .withChild(Ast(methodBlock).withChildren(topLevelStmtAsts))
       .withChild(Ast(methodReturn))
 

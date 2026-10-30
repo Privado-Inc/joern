@@ -16,6 +16,7 @@ import com.github.javaparser.ast.expr.{
   MethodReferenceExpr,
   NameExpr,
   SuperExpr,
+  SwitchExpr,
   ThisExpr,
   TypeExpr,
   UnaryExpr
@@ -31,9 +32,8 @@ import io.joern.javasrc2cpg.typesolvers.TypeInfoCalculator.TypeConstants
 import io.joern.javasrc2cpg.util.{NameConstants, Util}
 import io.joern.x2cpg.{Ast, Defines}
 import io.joern.x2cpg.utils.AstPropertiesUtil.*
-import io.joern.x2cpg.utils.NodeBuilders.{newIdentifierNode, newOperatorCallNode}
 import io.shiftleft.codepropertygraph.generated.nodes.{AstNodeNew, NewCall, NewFieldIdentifier, NewLiteral, NewTypeRef}
-import io.shiftleft.codepropertygraph.generated.{EdgeTypes, Operators}
+import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, EdgeTypes, Operators}
 
 import scala.jdk.CollectionConverters.*
 import scala.jdk.OptionConverters.RichOptional
@@ -47,13 +47,7 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
         .orElse(getTypeFullName(expectedType))
         .map(typeInfoCalc.registerType)
         .getOrElse(defaultTypeFallback())
-    val callNode = newOperatorCallNode(
-      Operators.indexAccess,
-      code = expr.toString,
-      typeFullName = Some(typeFullName),
-      line = line(expr),
-      column = column(expr)
-    )
+    val callNode = operatorCallNode(expr, expr.toString, Operators.indexAccess, typeFullName = Some(typeFullName))
 
     val arrayExpectedType = expectedType.copy(fullName = expectedType.fullName.map(_ ++ "[]"))
     val nameAst           = astsForExpression(expr.getName, arrayExpectedType)
@@ -79,7 +73,7 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
         .orElse(getTypeFullName(expectedType))
         .map(typeInfoCalc.registerType)
         .getOrElse(defaultTypeFallback(expr.getElementType))
-      val callNode = newOperatorCallNode(Operators.alloc, code = expr.toString, typeFullName = Some(typeFullName))
+      val callNode  = operatorCallNode(expr, expr.toString, Operators.alloc, typeFullName = Some(typeFullName))
       val levelAsts = expr.getLevels.asScala.flatMap { lvl =>
         lvl.getDimension.toScala match {
           case Some(dimension) => astsForExpression(dimension, ExpectedType.Int)
@@ -98,13 +92,7 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
       .map(typeInfoCalc.registerType)
       .getOrElse(defaultTypeFallback())
 
-    val callNode = newOperatorCallNode(
-      Operators.arrayInitializer,
-      code = expr.toString,
-      typeFullName = Some(typeFullName),
-      line = line(expr),
-      column = column(expr)
-    )
+    val callNode = operatorCallNode(expr, expr.toString, Operators.arrayInitializer, typeFullName = Some(typeFullName))
 
     val MAX_INITIALIZERS = 1000
 
@@ -149,8 +137,8 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
       case BinaryExpr.Operator.LESS                 => Operators.lessThan
       case BinaryExpr.Operator.LESS_EQUALS          => Operators.lessEqualsThan
       case BinaryExpr.Operator.LEFT_SHIFT           => Operators.shiftLeft
-      case BinaryExpr.Operator.SIGNED_RIGHT_SHIFT   => Operators.logicalShiftRight
-      case BinaryExpr.Operator.UNSIGNED_RIGHT_SHIFT => Operators.arithmeticShiftRight
+      case BinaryExpr.Operator.SIGNED_RIGHT_SHIFT   => Operators.arithmeticShiftRight
+      case BinaryExpr.Operator.UNSIGNED_RIGHT_SHIFT => Operators.logicalShiftRight
       case BinaryExpr.Operator.XOR                  => Operators.xor
       case BinaryExpr.Operator.NOT_EQUALS           => Operators.notEquals
       case BinaryExpr.Operator.PLUS                 => Operators.addition
@@ -166,18 +154,12 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
     scope.pushBlockScope()
     val context = new BinaryExprContext(expr, new CombinedTypeSolver())
 
-    context
-      .typePatternExprsExposedToChild(expr.getRight)
-      .asScala
-      .flatMap(pattern => scope.enclosingMethod.flatMap(_.getPatternVariableInfo(pattern)))
-      .foreach { case PatternVariableInfo(pattern, local, _, _, _) =>
-        scope.enclosingBlock.foreach(_.addPatternLocal(local, pattern))
-      }
+    scope.addLocalsForPatternsToEnclosingBlock(context.typePatternExprsExposedToChild(expr.getRight).asScala.toList)
 
     val rhsArgs = astsForExpression(expr.getRight, expectedType)
     // TODO Fix code
     // val rhsCode = rhsArgs.headOption.flatMap(_.rootCode).getOrElse("")
-    scope.popBlockScope()
+    scope.popBlockAndHoistPatternVariables()
 
     val args = lhsArgs ++ rhsArgs
 
@@ -189,13 +171,12 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
         .map(typeInfoCalc.registerType)
         .getOrElse(defaultTypeFallback())
 
-    val callNode = newOperatorCallNode(
-      operatorName,
+    val callNode = operatorCallNode(
+      expr,
+      code(expr),
       // code = s"$lhsCode ${expr.getOperator.asString()} $rhsCode",
-      code = code(expr),
-      typeFullName = Some(typeFullName),
-      line = line(expr),
-      column = column(expr)
+      operatorName,
+      typeFullName = Some(typeFullName)
     )
 
     callAst(callNode, args)
@@ -212,13 +193,7 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
         }
         .getOrElse(defaultTypeFallback())
 
-    val callNode = newOperatorCallNode(
-      Operators.cast,
-      code = expr.toString,
-      typeFullName = Option(typeFullName),
-      line = line(expr),
-      column = column(expr)
-    )
+    val callNode = operatorCallNode(expr, expr.toString, Operators.cast, Option(typeFullName))
 
     val typeNode = NewTypeRef()
       .code(tryWithSafeStackOverflow(expr.getType.toString).getOrElse(code(expr)))
@@ -234,7 +209,7 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
 
   private[expressions] def astForClassExpr(expr: ClassExpr): Ast = {
     val someTypeFullName = Some(TypeConstants.Class)
-    val callNode = newOperatorCallNode(Operators.fieldAccess, expr.toString, someTypeFullName, line(expr), column(expr))
+    val callNode         = operatorCallNode(expr, code(expr), Operators.fieldAccess, someTypeFullName)
 
     val identifierType = tryWithSafeStackOverflow(expr.getType).toOption.flatMap(typeInfoCalc.fullName)
     val exprTypeString =
@@ -266,12 +241,12 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
     scope.pushBlockScope()
     scope.addLocalsForPatternsToEnclosingBlock(patternsExposedToThen)
     val thenAst = astsForExpression(expr.getThenExpr, expectedType)
-    scope.popBlockScope()
+    scope.popBlockAndHoistPatternVariables()
 
     scope.pushBlockScope()
     scope.addLocalsForPatternsToEnclosingBlock(patternsExposedToElse)
     val elseAst = astsForExpression(expr.getElseExpr, expectedType)
-    scope.popBlockScope()
+    scope.popBlockAndHoistPatternVariables()
 
     val typeFullName =
       expressionReturnTypeFullName(expr)
@@ -282,41 +257,13 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
         .getOrElse(defaultTypeFallback())
 
     val callNode =
-      newOperatorCallNode(Operators.conditional, expr.toString, Some(typeFullName), line(expr), column(expr))
+      operatorCallNode(expr, code(expr), Operators.conditional, Some(typeFullName))
 
     callAst(callNode, condAst ++ thenAst ++ elseAst)
   }
 
   private[expressions] def astForEnclosedExpression(expr: EnclosedExpr, expectedType: ExpectedType): Seq[Ast] = {
     astsForExpression(expr.getInner, expectedType)
-  }
-
-  private[expressions] def createFieldAccessAst(
-    base: Ast,
-    fieldAccessCode: String,
-    fieldAccessLineNo: Option[Int],
-    fieldAccessColumnNo: Option[Int],
-    fieldName: String,
-    fieldTypeFullName: String,
-    fieldLineNo: Option[Int],
-    fieldColumnNo: Option[Int]
-  ): Ast = {
-    val callNode =
-      newOperatorCallNode(
-        Operators.fieldAccess,
-        fieldAccessCode,
-        Some(fieldTypeFullName),
-        fieldAccessLineNo,
-        fieldAccessColumnNo
-      )
-
-    val fieldIdentifierNode = NewFieldIdentifier()
-      .code(fieldName)
-      .canonicalName(fieldName)
-      .lineNumber(fieldLineNo)
-      .columnNumber(fieldColumnNo)
-
-    callAst(callNode, Seq(base, Ast(fieldIdentifierNode)))
   }
 
   private[expressions] def astForFieldAccessExpr(expr: FieldAccessExpr, expectedType: ExpectedType): Ast = {
@@ -329,16 +276,18 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
     val fieldIdentifier = expr.getName
     val identifierAsts  = astsForExpression(expr.getScope, ExpectedType.empty)
 
-    createFieldAccessAst(
-      identifierAsts.head,
-      expr.toString,
-      line(expr),
-      column(expr),
-      fieldIdentifier.toString,
-      typeFullName,
-      line(fieldIdentifier),
-      column(fieldIdentifier)
-    )
+    val scopeType           = expressionReturnTypeFullName(expr.getScope)
+    val isArrayLengthAccess = fieldIdentifier.toString == NameConstants.Length && scopeType.exists(_.endsWith("[]"))
+
+    if (isArrayLengthAccess) {
+      // <operators>.sizeOf is used for array length lookups to avoid an issue with dataflow tracking where
+      // array.length and array[0] share a wildcard access path indexAccess and fieldAccess are not handled
+      // separately.
+      val callNode = operatorCallNode(expr, expr.toString, Operators.sizeOf, typeFullName = Some(typeFullName))
+      callAst(callNode, Seq(identifierAsts.head))
+    } else {
+      fieldAccessAst(expr, fieldIdentifier, identifierAsts.head, expr.toString, fieldIdentifier.toString, typeFullName)
+    }
   }
 
   private[expressions] def astForInstanceOfExpr(expr: InstanceOfExpr): Ast = {
@@ -346,15 +295,15 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
     val lhsAst = astsForExpression(expr.getExpression, ExpectedType.empty).head
     expr.getPattern.toScala
       .map { patternExpression =>
-        astForInstanceOfWithPattern(expr.getExpression, lhsAst, patternExpression)
+        instanceOfAstForPattern(patternExpression, lhsAst)
       }
       .getOrElse {
         val booleanTypeFullName = Some(TypeConstants.Boolean)
-        val callNode =
-          newOperatorCallNode(Operators.instanceOf, expr.toString, booleanTypeFullName, line(expr), column(expr))
+        val callNode            =
+          operatorCallNode(expr, code(expr), Operators.instanceOf, booleanTypeFullName)
 
-        val exprAst  = astsForExpression(expr.getExpression, ExpectedType.empty)
-        val exprType = tryWithSafeStackOverflow(expr.getType).toOption
+        val exprAst      = astsForExpression(expr.getExpression, ExpectedType.empty)
+        val exprType     = tryWithSafeStackOverflow(expr.getType).toOption
         val typeFullName = exprType
           .map(typ => typeInfoCalc.fullName(typ).getOrElse(defaultTypeFallback(typ)))
           .getOrElse(defaultTypeFallback())
@@ -390,7 +339,10 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
         .getOrElse(defaultTypeFallback())
 
     val identifier = identifierNode(superExpr, NameConstants.This, NameConstants.Super, typeFullName)
-    Ast(identifier)
+
+    val refsTo = scope.lookupVariable(NameConstants.This).variableNode.toList
+
+    Ast(identifier).withRefEdges(identifier, refsTo)
   }
 
   private[expressions] def astForThisExpr(expr: ThisExpr, expectedType: ExpectedType): Ast = {
@@ -431,13 +383,7 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
         .getOrElse(defaultTypeFallback())
 
     // TODO Fix code
-    val callNode = newOperatorCallNode(
-      operatorName,
-      code = expr.toString,
-      typeFullName = Some(typeFullName),
-      line = line(expr),
-      column = column(expr)
-    )
+    val callNode = operatorCallNode(expr, expr.toString, operatorName, Some(typeFullName))
 
     callAst(callNode, argsAsts)
   }
@@ -466,5 +412,11 @@ trait AstForSimpleExpressionsCreator { this: AstCreator =>
     val methodFullName = Util.composeMethodFullName(namespacePrefix, methodName, signature)
 
     Ast(methodRefNode(expr, expr.toString, methodFullName, typeFullName.getOrElse(defaultTypeFallback())))
+  }
+
+  private[expressions] def astForSwitchExpr(expr: SwitchExpr, expectedType: ExpectedType): Ast = {
+    val (selectorAst, selectorReferenceAst) = astForSwitchSelector(expr.getSelector, expr.getEntries)
+    val switchBodyAst                       = astForSwitchBody(expr, expr.getEntries, selectorReferenceAst)
+    matchAst(expr, Some(selectorAst), Seq(switchBodyAst), Some(s"switch(${code(expr.getSelector)})"))
   }
 }

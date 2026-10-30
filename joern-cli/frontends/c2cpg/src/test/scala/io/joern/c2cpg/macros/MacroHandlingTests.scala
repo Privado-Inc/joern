@@ -1,5 +1,7 @@
 package io.joern.c2cpg.macros
 
+import io.joern.c2cpg.Config
+import io.joern.c2cpg.astcreation.Defines
 import io.joern.c2cpg.testfixtures.C2CpgSuite
 import io.joern.c2cpg.testfixtures.DataFlowCodeToCpgSuite
 import io.joern.dataflowengineoss.language.*
@@ -20,7 +22,7 @@ class MacroHandlingTests extends C2CpgSuite {
        |  A_MACRO(*y, 2);
        |  return 10 * y;
        |}
-    """.stripMargin)
+    """.stripMargin).withConfig(Config().withDisableFileContent(false))
 
     "should correctly expand macro" in {
       val List(x) = cpg.method("foo").call.nameExact(Operators.assignment).l
@@ -52,10 +54,16 @@ class MacroHandlingTests extends C2CpgSuite {
 
     "should create a METHOD for the expanded macro" in {
       val List(m) = cpg.method.name("A_MACRO").l
-      m.fullName.endsWith("A_MACRO:2") shouldBe true
-      m.filename.endsWith(".c") shouldBe true
+      m.fullName shouldBe "Test0.c:A_MACRO:ANY(2)"
+      m.filename shouldBe "Test0.c"
+      m.code shouldBe "#define A_MACRO(x,c) (x = 10 + c)"
       m.lineNumber shouldBe Option(2)
       m.lineNumberEnd shouldBe Option(2)
+      m.columnNumber shouldBe Option(1)
+      m.columnNumberEnd shouldBe Option(33)
+      m.offset shouldBe Some(1)
+      m.offsetEnd shouldBe Some(34)
+      m.content shouldBe Some("#define A_MACRO(x,c) (x = 10 + c)")
       val List(param1, param2) = m.parameter.l.sortBy(_.order)
       param1.name shouldBe "p1"
       param2.name shouldBe "p2"
@@ -150,11 +158,12 @@ class MacroHandlingTests extends C2CpgSuite {
       val List(call1) = cpg.method("foo").call.nameExact("A_MACRO").l
       call1.code shouldBe "A_MACRO(dst, ptr, 1)"
       call1.name shouldBe "A_MACRO"
-      call1.methodFullName.endsWith("A_MACRO:3") shouldBe true
+      call1.methodFullName shouldBe "Test0.c:A_MACRO:ANY(3)"
       call1.lineNumber shouldBe Option(22)
       call1.columnNumber shouldBe Option(1)
       call1.typeFullName shouldBe "ANY"
       call1.dispatchType shouldBe DispatchTypes.INLINED
+      call1.code shouldBe "A_MACRO(dst, ptr, 1)"
 
       val List(arg1, arg2, arg3) = call1.argument.l.sortBy(_.order)
       arg1.code shouldBe "dst"
@@ -164,7 +173,7 @@ class MacroHandlingTests extends C2CpgSuite {
       val List(call2) = cpg.method("foo").call.nameExact("A_MACRO_2").l
       call2.code shouldBe "A_MACRO_2()"
       call2.name shouldBe "A_MACRO_2"
-      call2.methodFullName.endsWith("A_MACRO_2:0") shouldBe true
+      call2.methodFullName shouldBe "Test0.c:A_MACRO_2:ANY(0)"
       call2.lineNumber shouldBe Option(24)
       call2.columnNumber shouldBe Option(1)
       call2.typeFullName shouldBe "ANY"
@@ -317,8 +326,8 @@ class MacroHandlingTests extends C2CpgSuite {
           |}
           |""".stripMargin)
       cpg.local.count(l => l._astIn.isEmpty) shouldBe 0
-      cpg.local.count(l => l._astIn.size == 1) shouldBe 4
       cpg.local.count(l => l._astIn.size > 1) shouldBe 0
+      cpg.local.count(l => l._astIn.size == 1) shouldBe 3
     }
 
     "only have locals with exactly one ast parent" in {
@@ -356,6 +365,100 @@ class MacroHandlingTests extends C2CpgSuite {
       cpg.local.nameExact("foo").size shouldBe 1
     }
   }
+
+  "MacroHandlingTests11" should {
+    "only have exactly one method stubbed" in {
+      val cpg = code("""
+          |#define FOO() (long)va_arg(ap, int)
+          |void func(void) {
+          |  int foo;
+          |  foo = FOO();
+          |  foo = FOO();
+          |}
+          |""".stripMargin)
+      cpg.method.nameExact("FOO").size shouldBe 1
+    }
+  }
+
+  "MacroHandlingTests12" should {
+    val cpg = code("""
+        |struct s { int x; };
+        |const int A = 8;
+        |const char B = ',';
+        |volatile unsigned int C = 0;
+        |const long D = 1;
+        |const volatile short E = 2;
+        |const struct s F = {1};
+        |#define MA A
+        |#define MB B
+        |#define MC C
+        |#define MD D
+        |#define ME E
+        |#define MF F
+        |int use(void) { return MA + MB + MC + MD + ME + MF.x; }
+        |""".stripMargin)
+
+    "type macros naming qualified variables with their C type" in {
+      cpg.call
+        .nameExact("MA", "MB", "MC", "MD", "ME", "MF")
+        .map(call => call.name -> call.typeFullName)
+        .sorted
+        .l shouldBe
+        List(
+          "MA" -> "int",
+          "MB" -> "char",
+          "MC" -> "volatile unsigned int",
+          "MD" -> "long",
+          "ME" -> "volatile short",
+          "MF" -> "s"
+        )
+    }
+  }
+
+  "MacroHandlingTests13" should {
+    val typesBySpelling = List(
+      "long"               -> "long",
+      "long int"           -> "long",
+      "const long int"     -> "long",
+      "volatile long"      -> "volatile long",
+      "signed long"        -> "long",
+      "long signed int"    -> "long",
+      "signed int"         -> "int",
+      "signed"             -> "int",
+      "signed short"       -> "short",
+      "signed long long"   -> "long long",
+      "signed long *"      -> "long*",
+      "short"              -> "short",
+      "short int"          -> "short",
+      "unsigned short"     -> "unsigned short",
+      "unsigned short int" -> "unsigned short",
+      "long long"          -> "long long",
+      "unsigned long long" -> "unsigned long long",
+      "unsigned long"      -> "unsigned long",
+      "unsigned"           -> "unsigned int",
+      "signed char"        -> "signed char",
+      "unsigned char"      -> "unsigned char",
+      "long double"        -> "long double",
+      "unsigned long *"    -> "unsigned long*"
+    )
+    val declarations = typesBySpelling.map(_._1)
+    val source       = declarations.zipWithIndex.map { case (decl, i) => s"$decl V$i = 0;" }.mkString("\n") + "\n" +
+      declarations.indices.map(i => s"#define M$i V$i").mkString("\n") + "\n" +
+      "int use(void) { return " + declarations.indices.map(i => s"(int)M$i").mkString(" + ") + "; }\n"
+
+    for ((fileName, language) <- List("Test0.c" -> "C", "Test0.cpp" -> "C++")) {
+      s"type macros with the same full name for every spelling of a basic type in $language" in {
+        val cpg = code(source, fileName)
+        typesBySpelling.zipWithIndex.foreach { case ((decl, tpe), i) =>
+          withClue(s"declaration `$decl`: ") {
+            cpg.call.nameExact(s"M$i").typeFullName.l shouldBe List(tpe)
+            cpg.local.nameExact(s"V$i").typeFullName.distinct.l shouldBe List(tpe)
+            cpg.method.nameExact(s"M$i").fullName.l shouldBe List(s"$fileName:M$i:$tpe(0)")
+          }
+        }
+      }
+    }
+  }
 }
 
 class CfgMacroTests extends DataFlowCodeToCpgSuite {
@@ -386,7 +489,7 @@ class CfgMacroTests extends DataFlowCodeToCpgSuite {
   "should create correct CFG for macro expansion and find data flow" in {
     val List(callToMacro) = cpg.method("foo").call.dispatchType(DispatchTypes.INLINED).l
     callToMacro.argument.code.l shouldBe List("x")
-    callToMacro.cfgNext.code.toSetMutable shouldBe Set("x", "i_read")
+    callToMacro.cfgNext.code.toSetMutable shouldBe Set("x", s"${Defines.UnknownTag} i_read")
 
     val source = cpg.method("foo").call.name("MP4_GET4BYTES").argument(1).l
     val sink   = cpg.method("foo").call.name("sink").argument(1).l

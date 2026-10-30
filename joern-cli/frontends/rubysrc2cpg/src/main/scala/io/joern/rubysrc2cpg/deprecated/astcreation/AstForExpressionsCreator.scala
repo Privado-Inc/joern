@@ -109,7 +109,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     case ctx: SymbolLiteralContext            => astForSymbol(ctx.symbol())
     case ctx: RegularExpressionLiteralContext => Seq(astForRegularExpressionLiteral(ctx))
     case ctx: HereDocLiteralContext           => Seq(astForHereDocLiteral(ctx))
-    case _ =>
+    case _                                    =>
       logger.error(s"astForLiteralPrimaryExpression() $relativeFilename, ${text(ctx)} All contexts mismatched.")
       Seq()
   }
@@ -137,12 +137,13 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     if (ctx == null) {
       Seq.empty
     } else {
-      val expCmd = ctx.expressionOrCommands()
-      val exprAsts = Option(expCmd) match
+      val expCmd   = ctx.expressionOrCommands()
+      val exprAsts = Option(expCmd) match {
         case Some(expCmd) =>
           expCmd.expressionOrCommand().asScala.flatMap(astForExpressionOrCommand).toSeq
         case None =>
           Seq.empty
+      }
 
       if (ctx.splattingArgument != null) {
         val splattingAsts = astForExpressionOrCommand(ctx.splattingArgument.expressionOrCommand)
@@ -166,7 +167,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
 
       Seq(ctx.LOCAL_VARIABLE_IDENTIFIER, ctx.CONSTANT_IDENTIFIER)
         .flatMap(Option(_))
-        .headOption match
+        .headOption match {
         case Some(localVar) =>
           val name = localVar.getSymbol.getText
           val node = createIdentifierWithScope(ctx, name, name, Defines.Any, List(Defines.Any), true)
@@ -176,10 +177,11 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
           Seq(callAst(callNode, xAsts ++ Seq(yAst)))
         case None =>
           Seq.empty
+      }
     case ctx: ScopedConstantAccessSingleLeftHandSideContext =>
       val localVar  = ctx.CONSTANT_IDENTIFIER
       val varSymbol = localVar.getSymbol
-      val node =
+      val node      =
         createIdentifierWithScope(ctx, varSymbol.getText, varSymbol.getText, Defines.Any, List(Defines.Any), true)
       Seq(Ast(node))
     case _ =>
@@ -192,7 +194,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     val leftAst  = astForSingleLeftHandSideContext(ctx.singleLeftHandSide)
 
     val operatorName = getOperatorName(ctx.op)
-    val opCallNode =
+    val opCallNode   =
       callNode(ctx, code(ctx), operatorName, operatorName, DispatchTypes.STATIC_DISPATCH, None, Option(Defines.Any))
         .lineNumber(ctx.op.getLine)
         .columnNumber(ctx.op.getCharPositionInLine)
@@ -247,9 +249,10 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     val lhsExpressionAst = astForPrimaryContext(ctx.primary())
     val rhsExpressionAst = Option(ctx.indexingArguments).map(astForIndexingArgumentsContext).getOrElse(Seq())
 
-    val operator = lhsExpressionAst.flatMap(_.nodes).collectFirst { case x: NewIdentifier => x } match
+    val operator = lhsExpressionAst.flatMap(_.nodes).collectFirst { case x: NewIdentifier => x } match {
       case Some(node) if node.name == "Array" => Operators.arrayInitializer
       case _                                  => Operators.indexAccess
+    }
 
     val callNode = createOpCall(ctx.LBRACK, operator, code(ctx))
     Seq(callAst(callNode, lhsExpressionAst ++ rhsExpressionAst))
@@ -336,7 +339,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
 
   protected def astForConcatenatedStringExpressions(ctx: ConcatenatedStringExpressionContext): Ast = {
     val stringExpressionAsts = ctx.stringExpression().asScala.flatMap(astForStringExpression)
-    val callNode_ = callNode(
+    val callNode_            = callNode(
       ctx,
       code(ctx),
       RubyOperators.stringConcatenation,
@@ -358,9 +361,10 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     Seq(astForBinaryOperatorExpression(ctx, Operators.range, ctx.expression().asScala))
 
   protected def astForSuperExpression(ctx: SuperExpressionPrimaryContext): Ast = {
-    val argsAst = Option(ctx.argumentsWithParentheses()) match
+    val argsAst = Option(ctx.argumentsWithParentheses()) match {
       case Some(ctxArgs) => astForArgumentsWithParenthesesContext(ctxArgs)
       case None          => Seq()
+    }
     astForSuperCall(ctx, argsAst)
   }
 
@@ -383,7 +387,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     val testAst = astForExpressionOrCommand(ctx.expressionOrCommand()).headOption
     val bodyAst = astForCompoundStatement(ctx.doClause().compoundStatement())
     // TODO: testAst should be negated if it's going to be modelled as a while stmt.
-    whileAst(testAst, bodyAst, Some(text(ctx)), line(ctx), column(ctx))
+    legacyWhileAst(testAst, bodyAst, Some(text(ctx)), line(ctx), column(ctx))
   }
 
   protected def astForForExpression(ctx: ForExpressionContext): Ast = {
@@ -391,7 +395,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     val forExprAst = astForExpressionOrCommand(ctx.expressionOrCommand())
     val forBodyAst = astForCompoundStatement(ctx.doClause().compoundStatement())
     // TODO: for X in Y is not properly modelled by while Y
-    val forRootAst = whileAst(forExprAst.headOption, forBodyAst, Some(text(ctx)), line(ctx), column(ctx))
+    val forRootAst = legacyWhileAst(forExprAst.headOption, forBodyAst, Some(text(ctx)), line(ctx), column(ctx))
     forVarAst.headOption.map(forRootAst.withChild).getOrElse(forRootAst)
   }
 
@@ -408,7 +412,7 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
   protected def astForWhileExpression(ctx: WhileExpressionContext): Ast = {
     val testAst = astForExpressionOrCommand(ctx.expressionOrCommand())
     val bodyAst = astForCompoundStatement(ctx.doClause().compoundStatement())
-    whileAst(testAst.headOption, bodyAst, Some(text(ctx)), line(ctx), column(ctx))
+    legacyWhileAst(testAst.headOption, bodyAst, Some(text(ctx)), line(ctx), column(ctx))
   }
 
   protected def astForIfExpression(ctx: IfExpressionContext): Ast = {
@@ -494,11 +498,12 @@ trait AstForExpressionsCreator(implicit withSchemaValidation: ValidationMode) { 
     controlStructureAst(ifNode, testAst.headOption, thenAst ++ elseAst)
   }
 
-  protected def astForQuotedStringExpression(ctx: QuotedStringExpressionContext): Seq[Ast] = ctx match
+  protected def astForQuotedStringExpression(ctx: QuotedStringExpressionContext): Seq[Ast] = ctx match {
     case ctx: NonExpandedQuotedStringLiteralContext => Seq(astForNonExpandedQuotedString(ctx))
-    case _ =>
+    case _                                          =>
       logger.error(s"Translation for ${text(ctx)} not implemented yet")
       Seq()
+  }
 
   private def astForNonExpandedQuotedString(ctx: NonExpandedQuotedStringLiteralContext): Ast = {
     Ast(literalNode(ctx, code(ctx), getBuiltInType(Defines.String)))

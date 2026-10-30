@@ -11,12 +11,12 @@ import org.slf4j.LoggerFactory
 
 import scala.jdk.OptionConverters.RichOptional
 import io.joern.x2cpg.Defines.UnresolvedNamespace
-import io.shiftleft.codepropertygraph.generated.nodes.Call.PropertyNames
-import io.joern.javasrc2cpg.typesolvers.TypeInfoCalculator.TypeConstants
+import io.shiftleft.codepropertygraph.generated.PropertyNames
+import io.joern.javasrc2cpg.typesolvers.TypeInfoCalculator.{PrimitiveTypes, TypeConstants}
 
 class TypeInferencePass(cpg: Cpg) extends ForkJoinParallelCpgPass[Call](cpg) {
 
-  private val cache = new GuavaCache(CacheBuilder.newBuilder().build[String, Option[Method]]())
+  private val cache               = new GuavaCache(CacheBuilder.newBuilder().build[String, Option[Method]]())
   private val resolvedMethodIndex = cpg.method
     .filterNot(_.fullName.startsWith(Defines.UnresolvedNamespace))
     .filterNot(_.signature.startsWith(Defines.UnresolvedSignature))
@@ -55,7 +55,9 @@ class TypeInferencePass(cpg: Cpg) extends ForkJoinParallelCpgPass[Call](cpg) {
 
     val hasDifferingArg = method.parameter.zip(callArgs).exists { case (parameter, argument) =>
       val maybeArgumentType = argument.propertyOption(Properties.TypeFullName).getOrElse(TypeConstants.Any)
-      val argMatches        = maybeArgumentType == TypeConstants.Any || maybeArgumentType == parameter.typeFullName
+      val argMatches        =
+        maybeArgumentType == TypeConstants.Any || maybeArgumentType == parameter.typeFullName || (maybeArgumentType == TypeConstants.Null && !PrimitiveTypes
+          .contains(parameter.typeFullName))
 
       !argMatches
     }

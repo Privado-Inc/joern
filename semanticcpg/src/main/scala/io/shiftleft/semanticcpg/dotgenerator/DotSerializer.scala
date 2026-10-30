@@ -1,20 +1,22 @@
 package io.shiftleft.semanticcpg.dotgenerator
 
-import flatgraph.Accessors
-import io.shiftleft.codepropertygraph.generated.PropertyNames
 import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.codepropertygraph.generated.Properties
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.utils.MemberAccess
+import org.apache.commons.lang3.StringUtils
 import org.apache.commons.text.StringEscapeUtils
 
-import java.util.Optional
 import scala.collection.immutable.HashMap
 import scala.collection.mutable
 import scala.language.postfixOps
 
 object DotSerializer {
 
-  private val charLimit = 50
+  private val DefaultCharLimit: Int = 50
+  // maximum length of code fields in number of characters
+  private lazy val maxCharLimit: Int =
+    sys.env.get("JOERN_MAX_DOT_CODE_LENGTH").flatMap(_.toIntOption).getOrElse(DefaultCharLimit)
 
   case class Graph(
     vertices: List[StoredNode],
@@ -40,8 +42,10 @@ object DotSerializer {
       case Some(r) => namedGraphBegin(r)
       case None    => defaultGraphBegin()
     }
-    val nodeStrings = graph.vertices.map(nodeToDot)
-    val edgeStrings = graph.edges.map(e => edgeToDot(e, withEdgeTypes))
+
+    sb.append(s"""node [shape="rect"];  \n""")
+    val nodeStrings     = graph.vertices.map(nodeToDot)
+    val edgeStrings     = graph.edges.map(edge => edgeToDot(edge, withEdgeTypes))
     val subgraphStrings = graph.subgraph.zipWithIndex.map { case ((subgraph, nodes), idx) =>
       nodesToSubGraphs(subgraph, nodes, idx)
     }
@@ -50,7 +54,7 @@ object DotSerializer {
   }
 
   private def namedGraphBegin(root: AstNode): mutable.StringBuilder = {
-    val sb = new mutable.StringBuilder
+    val sb   = new mutable.StringBuilder
     val name = StringEscapeUtils.escapeHtml4(root match {
       case method: Method => method.name
       case _              => ""
@@ -64,48 +68,45 @@ object DotSerializer {
     sb.append(s"""digraph "$name" {  \n""")
   }
 
-  private def limit(str: String): String = if (str.length > charLimit) {
-    s"${str.take(charLimit - 3)}..."
-  } else {
-    str
-  }
+  private def limit(str: String): String = StringUtils.abbreviate(str, maxCharLimit)
 
   private def stringRepr(vertex: StoredNode): String = {
-    // TODO MP after the initial flatgraph migration (where we want to maintain semantics as far as
-    // possible) this might become `vertex.property(Properties.LineNumber)` which derives to `Option[Int]`
-    val lineNoMaybe = vertex.propertyOption[Int](PropertyNames.LINE_NUMBER)
+    val lineOpt  = vertex.property(Properties.LineNumber).map(_.toString)
+    val attrList = (vertex match {
+      case call: Call                            => List(call.name, limit(call.code))
+      case ctrl: ControlStructure                => List(ctrl.label, ctrl.controlStructureType, limit(ctrl.code))
+      case expr: Expression                      => List(expr.label, limit(expr.code), limit(toCfgNode(expr).code))
+      case method: Method                        => List(method.label, method.name)
+      case ret: MethodReturn                     => List(ret.label, ret.typeFullName)
+      case param: MethodParameterIn              => List("PARAM", limit(param.code))
+      case local: Local                          => List(local.label, s"${limit(local.code)}: ${local.typeFullName}")
+      case target: JumpTarget                    => List(target.label, target.name)
+      case modifier: Modifier                    => List(modifier.label, modifier.modifierType)
+      case annoAssign: AnnotationParameterAssign => List(annoAssign.label, limit(annoAssign.code))
+      case annoParam: AnnotationParameter        => List(annoParam.label, limit(annoParam.code))
+      case typ: Type                             => List(typ.label, typ.name)
+      case typeDecl: TypeDecl                    => List(typeDecl.label, typeDecl.name)
+      case member: Member                        => List(member.label, member.name)
+      case _                                     => List.empty
+    }).map(l => StringEscapeUtils.escapeHtml4(StringUtils.normalizeSpace(l)))
 
-    StringEscapeUtils.escapeHtml4(vertex match {
-      case call: Call                            => (call.name, limit(call.code)).toString
-      case contrl: ControlStructure              => (contrl.label, contrl.controlStructureType, contrl.code).toString
-      case expr: Expression                      => (expr.label, limit(expr.code), limit(toCfgNode(expr).code)).toString
-      case method: Method                        => (method.label, method.name).toString
-      case ret: MethodReturn                     => (ret.label, ret.typeFullName).toString
-      case param: MethodParameterIn              => ("PARAM", param.code).toString
-      case local: Local                          => (local.label, s"${local.code}: ${local.typeFullName}").toString
-      case target: JumpTarget                    => (target.label, target.name).toString
-      case modifier: Modifier                    => (modifier.label, modifier.modifierType).toString()
-      case annoAssign: AnnotationParameterAssign => (annoAssign.label, annoAssign.code).toString()
-      case annoParam: AnnotationParameter        => (annoParam.label, annoParam.code).toString()
-      case typ: Type                             => (typ.label, typ.name).toString()
-      case typeDecl: TypeDecl                    => (typeDecl.label, typeDecl.name).toString()
-      case member: Member                        => (member.label, member.name).toString()
-      case _                                     => ""
-    }) + lineNoMaybe.map(lineNo => s"<SUB>$lineNo</SUB>").getOrElse("")
+    (lineOpt match {
+      case Some(line) if attrList.nonEmpty => s"${attrList.head}, $line" :: attrList.tail
+      case _                               => Nil
+    }).distinct.mkString("<BR/>")
   }
 
   private def toCfgNode(node: StoredNode): CfgNode = {
     node match {
-      case node: Identifier         => node.parentExpression.get
-      case node: MethodRef          => node.parentExpression.get
-      case node: Literal            => node.parentExpression.get
-      case node: MethodParameterIn  => node.method
-      case node: MethodParameterOut => node.method.methodReturn
-      case node: Call if MemberAccess.isGenericMemberAccessName(node.name) =>
-        node.parentExpression.get
-      case node: CallRepr     => node
-      case node: MethodReturn => node
-      case node: Expression   => node
+      case node: Identifier                                                => node.parentExpression.get
+      case node: MethodRef                                                 => node.parentExpression.get
+      case node: Literal                                                   => node.parentExpression.get
+      case node: Call if MemberAccess.isGenericMemberAccessName(node.name) => node.parentExpression.get
+      case node: MethodParameterOut                                        => node.method.methodReturn
+      case node: MethodParameterIn                                         => node.method
+      case node: CallRepr                                                  => node
+      case node: MethodReturn                                              => node
+      case node: Expression                                                => node
     }
   }
 
@@ -123,7 +124,7 @@ object DotSerializer {
     s"""  "${edge.src.id}" -> "${edge.dst.id}" """ + labelStr
   }
 
-  def nodesToSubGraphs(subgraph: String, children: Seq[StoredNode], idx: Int): String = {
+  private def nodesToSubGraphs(subgraph: String, children: Seq[StoredNode], idx: Int): String = {
     val escapedName = StringEscapeUtils.escapeHtml4(subgraph)
     val childString = children.map { c => s"    \"${c.id()}\";" }.mkString("\n")
     s"""  subgraph cluster_$idx {

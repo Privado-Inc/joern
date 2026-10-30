@@ -2,10 +2,24 @@ package io.joern.php2cpg.querying
 
 import io.joern.php2cpg.testfixtures.PhpCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.Operators
-import io.shiftleft.codepropertygraph.generated.nodes.{FieldIdentifier, Identifier}
+import io.shiftleft.codepropertygraph.generated.nodes.{Call, FieldIdentifier, Identifier}
 import io.shiftleft.semanticcpg.language.*
 
 class FieldAccessTests extends PhpCode2CpgFixture {
+  "a property fetch with an arbitrary expression rhs should be represented as an index access" in {
+    val cpg = code("""<?php
+      |$obj->{foo()};
+      |""".stripMargin)
+
+    inside(cpg.call.name(".*operator.*").l) { case List(indexAccess) =>
+      indexAccess.name shouldBe Operators.indexAccess
+      indexAccess.code shouldBe "$obj->{foo()}"
+      inside(indexAccess.argument.l) { case List(objIdentifier: Identifier, fooCall: Call) =>
+        objIdentifier.name shouldBe "obj"
+        fooCall.name shouldBe "foo"
+      }
+    }
+  }
 
   "simple property fetches should be represented as normal field accesses" in {
     val cpg = code("""<?php
@@ -41,14 +55,14 @@ class FieldAccessTests extends PhpCode2CpgFixture {
       fieldAccess.code shouldBe "$$obj->$field"
       fieldAccess.lineNumber shouldBe Some(2)
 
-      inside(fieldAccess.argument.l) { case List(objIdentifier: Identifier, field: Identifier) =>
+      inside(fieldAccess.argument.l) { case List(objIdentifier: Identifier, fieldIdentifier: FieldIdentifier) =>
         objIdentifier.name shouldBe "obj"
         objIdentifier.code shouldBe "$$obj"
         objIdentifier.lineNumber shouldBe Some(2)
 
-        field.name shouldBe "field"
-        field.code shouldBe "$field"
-        field.lineNumber shouldBe Some(2)
+        fieldIdentifier.canonicalName shouldBe "field"
+        fieldIdentifier.code shouldBe "$field"
+        fieldIdentifier.lineNumber shouldBe Some(2)
       }
     }
   }
@@ -87,12 +101,12 @@ class FieldAccessTests extends PhpCode2CpgFixture {
       fieldAccess.code shouldBe "className::$field"
       fieldAccess.lineNumber shouldBe Some(2)
 
-      inside(fieldAccess.argument.l) { case List(classIdentifier: Identifier, fieldIdentifier: Identifier) =>
+      inside(fieldAccess.argument.l) { case List(classIdentifier: Identifier, fieldIdentifier: FieldIdentifier) =>
         classIdentifier.name shouldBe "className"
         classIdentifier.code shouldBe "className"
         classIdentifier.lineNumber shouldBe Some(2)
 
-        fieldIdentifier.name shouldBe "field"
+        fieldIdentifier.canonicalName shouldBe "field"
         fieldIdentifier.code shouldBe "$field"
         fieldIdentifier.lineNumber shouldBe Some(2)
       }

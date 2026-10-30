@@ -1,19 +1,22 @@
 package io.joern.pysrc2cpg
 
-import better.files.File
 import io.joern.x2cpg.passes.frontend.XConfigFileCreationPass
 import io.shiftleft.codepropertygraph.generated.Cpg
 
-class ConfigFileCreationPass(cpg: Cpg, requirementsTxt: String = "requirement.txt")
-    extends XConfigFileCreationPass(cpg) {
+import java.nio.file.Path
 
-  override val configFileFilters: List[File => Boolean] = List(
+class ConfigFileCreationPass(cpg: Cpg, requirementsTxt: String = "requirement.txt", config: Py2CpgOnFileSystemConfig)
+    extends XConfigFileCreationPass(cpg, config = config) {
+
+  override val configFileFilters: List[Path => Boolean] = List(
     // TOML files
     extensionFilter(".toml"),
     // INI files
     extensionFilter(".ini"),
     // YAML files
     extensionFilter(".yaml"),
+    // Jinja2 templates
+    extensionFilter(".jinja2"),
     // HTML files
     extensionFilter(".html"),
     // HTM files

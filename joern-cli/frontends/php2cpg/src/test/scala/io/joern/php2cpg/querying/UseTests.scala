@@ -1,5 +1,6 @@
 package io.joern.php2cpg.querying
 
+import io.joern.php2cpg.Config
 import io.joern.php2cpg.testfixtures.PhpCode2CpgFixture
 import io.shiftleft.semanticcpg.language.*
 
@@ -13,7 +14,7 @@ class UseTests extends PhpCode2CpgFixture {
     inside(cpg.imports.l) { case List(importStmt) =>
       importStmt.code shouldBe "use A\\B"
       importStmt.importedEntity should contain("A\\B")
-      importStmt.importedAs.isEmpty shouldBe true
+      importStmt.importedAs should contain("B")
     }
   }
 
@@ -25,11 +26,11 @@ class UseTests extends PhpCode2CpgFixture {
     inside(cpg.imports.l.sortBy(_.code)) { case List(aImport, bImport) =>
       aImport.code shouldBe "use A"
       aImport.importedEntity should contain("A")
-      aImport.importedAs.isEmpty shouldBe true
+      aImport.importedAs should contain("A")
 
       bImport.code shouldBe "use B"
       bImport.importedEntity should contain("B")
-      bImport.importedAs.isEmpty shouldBe true
+      bImport.importedAs should contain("B")
     }
   }
 
@@ -53,7 +54,7 @@ class UseTests extends PhpCode2CpgFixture {
     inside(cpg.imports.l) { case List(importStmt) =>
       importStmt.code shouldBe "use function foo\\bar"
       importStmt.importedEntity should contain("foo\\bar")
-      importStmt.importedAs.isEmpty shouldBe true
+      importStmt.importedAs should contain("bar")
     }
   }
 
@@ -65,7 +66,28 @@ class UseTests extends PhpCode2CpgFixture {
     inside(cpg.imports.l) { case List(importStmt) =>
       importStmt.code shouldBe "use const foo\\BAR"
       importStmt.importedEntity should contain("foo\\BAR")
-      importStmt.importedAs.isEmpty shouldBe true
+      importStmt.importedAs should contain("BAR")
+    }
+  }
+
+  "use statements should have the correct line number" in {
+    val cpg = code("""<?php
+      |use A\B;
+      |""".stripMargin)
+
+    inside(cpg.imports.l) { case List(importStmt) =>
+      importStmt.lineNumber shouldBe Some(2)
+    }
+  }
+
+  "use statements should have the correct offset" in {
+    val cpg = code("""<?php
+      |use A\B;
+      |""".stripMargin).withConfig(Config().withDisableFileContent(false))
+
+    inside(cpg.imports.l) { case List(importStmt) =>
+      val fileContent = cpg.file.head.content
+      fileContent.substring(importStmt.offset.get, importStmt.offsetEnd.get) shouldBe "A\\B"
     }
   }
 
@@ -77,11 +99,11 @@ class UseTests extends PhpCode2CpgFixture {
     inside(cpg.imports.l.sortBy(_.code)) { case List(aImport, bImport) =>
       aImport.code shouldBe "use A\\B\\C"
       aImport.importedEntity should contain("A\\B\\C")
-      aImport.importedAs.isEmpty shouldBe true
+      aImport.importedAs should contain("C")
 
       bImport.code shouldBe "use A\\D"
       bImport.importedEntity should contain("A\\D")
-      bImport.importedAs.isEmpty shouldBe true
+      bImport.importedAs should contain("D")
     }
   }
 }

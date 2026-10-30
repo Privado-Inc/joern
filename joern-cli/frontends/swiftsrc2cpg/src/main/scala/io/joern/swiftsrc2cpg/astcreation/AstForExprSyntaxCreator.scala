@@ -2,37 +2,135 @@ package io.joern.swiftsrc2cpg.astcreation
 
 import io.joern.swiftsrc2cpg.parser.SwiftNodeSyntax.*
 import io.joern.swiftsrc2cpg.passes.GlobalBuiltins
-import io.joern.x2cpg.Ast
+import io.joern.x2cpg
 import io.joern.x2cpg.datastructures.Stack.*
-import io.joern.x2cpg.ValidationMode
+import io.joern.x2cpg.datastructures.VariableScopeManager
 import io.joern.x2cpg.frontendspecific.swiftsrc2cpg.Defines
-import io.shiftleft.codepropertygraph.generated.ControlStructureTypes
-import io.shiftleft.codepropertygraph.generated.DispatchTypes
-import io.shiftleft.codepropertygraph.generated.Operators
-import io.shiftleft.codepropertygraph.generated.nodes.NewCall
-import io.shiftleft.codepropertygraph.generated.nodes.NewNode
+import io.joern.x2cpg.{Ast, ValidationMode}
+import io.shiftleft.codepropertygraph.generated.*
+import io.shiftleft.codepropertygraph.generated.nodes.{ExpressionNew, NewCall}
 
-import scala.annotation.unused
+import scala.annotation.{tailrec, unused}
 
 trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   this: AstCreator =>
 
+  private val MaxInitializers = 1000
+
+  /** Type information of a temp holding a de-sugared tuple subject: its own type and the element types by field path.
+    */
+  private case class TupleSubjectTypes(tpe: String, elementTypes: Map[List[String], String])
+
+  /** Subject temps created when de-sugaring tuple matching (switch, if-case, guard-case, tuple declarations, ...).
+    * Keyed by [[tupleSubjectKey]]: the temp names are only unique per enclosing method (see `scopeLocalUniqueName`).
+    */
+  private val tupleSubjects = scala.collection.mutable.HashMap.empty[String, TupleSubjectTypes]
+
+  private def tupleSubjectKey(tmpName: String): String = s"${scope.computeScopePath}.$tmpName"
+
+  /** Records the types of a tuple subject that gets copied into the temp variable `tmpName` during de-sugaring, e.g.
+    * `switch (x, "s") { ... }` becomes `<subject>0 = (x, "s"); switch <subject>0 { ... }`.
+    *
+    * Later field accesses like `<subject>0.1` look up these types via `createFieldAccessChain`.
+    *   - The type of the temp itself is the compiler type of `subject`, or `defaultType` if there is none. It is
+    *     returned.
+    *   - The type of each field (by index path, e.g. `List("2", "0")` for `<subject>0.2.0`) is the compiler type of the
+    *     corresponding element. It is only recorded if `subject` is a tuple literal. For any other subject (e.g. a
+    *     variable or a call) no element types are recorded here; `createFieldAccessChain` then uses the compiler type
+    *     of the matching pattern (literals and bindings only) for the last field, and `Any` for everything else.
+    */
+  protected def registerTupleSubject(tmpName: String, subject: SwiftNode, defaultType: String): String = {
+    val subjectType = fullnameProvider.typeFullname(subject).getOrElse(defaultType)
+    registerType(subjectType)
+    val elementTypes = subject match {
+      case tupleSubject: TupleExprSyntax => tupleElementTypes(tupleSubject, List.empty)
+      case _                             => Map.empty[List[String], String]
+    }
+    tupleSubjects.put(tupleSubjectKey(tmpName), TupleSubjectTypes(subjectType, elementTypes))
+    subjectType
+  }
+
+  /** The type of a registered tuple subject temp, or `Any` if it is not registered. */
+  protected def tupleSubjectType(tmpName: String): String =
+    tupleSubjects.get(tupleSubjectKey(tmpName)).map(_.tpe).getOrElse(Defines.Any)
+
+  private def astForEmptyListLikeExpr(node: SwiftNode): Ast = {
+    val op  = Operators.arrayInitializer
+    val tpe = fullnameProvider.typeFullname(node).getOrElse(Defines.Any)
+    registerType(tpe)
+    val initCallNode = createStaticCallNode(node, code(node), op, op, tpe)
+    callAst(initCallNode, List.empty)
+  }
+
   private def astForListLikeExpr(node: SwiftNode, elements: Seq[SwiftNode]): Ast = {
-    val op           = Operators.arrayInitializer
-    val initCallNode = callNode(node, code(node), op, op, DispatchTypes.STATIC_DISPATCH)
+    if (elements.isEmpty) { astForEmptyListLikeExpr(node) }
+    else {
+      node match {
+        case _: (ArrayExprSyntax | TupleExprSyntax) =>
+          val op  = Operators.arrayInitializer
+          val tpe = fullnameProvider.typeFullname(node).getOrElse(Defines.Any)
+          registerType(tpe)
+          val initCallNode = createStaticCallNode(node, code(node), op, op, tpe)
 
-    val MAX_INITIALIZERS = 1000
-    val clauses          = elements.slice(0, MAX_INITIALIZERS)
+          val clauses = elements.slice(0, MaxInitializers)
 
-    val args = clauses.map(x => astForNodeWithFunctionReference(x))
+          val args = clauses.map(astForNode)
 
-    val ast = callAst(initCallNode, args)
-    if (elements.sizeIs > MAX_INITIALIZERS) {
-      val placeholder =
-        literalNode(node, "<too-many-initializers>", Defines.Any).argumentIndex(MAX_INITIALIZERS)
-      ast.withChild(Ast(placeholder)).withArgEdge(initCallNode, placeholder)
-    } else {
-      ast
+          val ast = callAst(initCallNode, args)
+          if (elements.sizeIs > MaxInitializers) {
+            val placeholder =
+              literalNode(node, "<too-many-initializers>", Defines.Any).argumentIndex(MaxInitializers)
+            ast.withChild(Ast(placeholder)).withArgEdge(initCallNode, placeholder)
+          } else {
+            ast
+          }
+        case other =>
+          val blockNode_ = blockNode(node, code(node), Defines.Any)
+
+          scope.pushNewBlockScope(blockNode_)
+          localAstParentStack.push(blockNode_)
+
+          val tmpName      = scopeLocalUniqueName("tmp")
+          val localTmpNode = localNode(node, tmpName, tmpName, Defines.Any).order(0)
+          diffGraph.addEdge(localAstParentStack.head, localTmpNode, EdgeTypes.AST)
+
+          val slicedElements = elements.slice(0, MaxInitializers).toList
+
+          val propertiesAsts = slicedElements.map {
+            case dictElement: DictionaryElementSyntax =>
+              val lhsAst = astForNode(dictElement.key)
+              val rhsAst = astForNode(dictElement.value)
+
+              val lhsTmpNode = identifierNode(dictElement, tmpName)
+              scope.addVariableReference(tmpName, lhsTmpNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
+
+              val lhsIndexAccessCallAst = createIndexAccessCallAst(dictElement, Ast(lhsTmpNode), lhsAst)
+
+              createAssignmentCallAst(
+                dictElement,
+                lhsIndexAccessCallAst,
+                rhsAst,
+                s"${codeOf(lhsIndexAccessCallAst.nodes.head)} = ${codeOf(rhsAst.nodes.head)}"
+              )
+            case other => astForNode(other)
+          }
+
+          val tmpNode = identifierNode(node, tmpName)
+          scope.addVariableReference(tmpName, tmpNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
+
+          scope.popScope()
+          localAstParentStack.pop()
+
+          val placeHolderAst = if (elements.sizeIs > MaxInitializers) {
+            val placeholder = literalNode(node, "<too-many-initializers>", Defines.Any)
+            Ast(placeholder)
+          } else {
+            Ast()
+          }
+
+          val childrenAsts = propertiesAsts :+ placeHolderAst :+ Ast(tmpNode)
+          blockAst(blockNode_, childrenAsts)
+      }
     }
   }
 
@@ -43,22 +141,27 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   private def astForArrowExprSyntax(node: ArrowExprSyntax): Ast = notHandledYet(node)
 
   private def astForAsExprSyntax(node: AsExprSyntax): Ast = {
-    val op      = Operators.cast
-    val lhsNode = node.`type`
-    val typ     = code(lhsNode)
-    registerType(typ)
-    val lhsAst    = Ast(literalNode(lhsNode, code(lhsNode), None).dynamicTypeHintFullName(Seq(typ)))
-    val rhsAst    = astForNodeWithFunctionReference(node.expression)
-    val callNode_ = callNode(node, code(node), op, DispatchTypes.STATIC_DISPATCH).dynamicTypeHintFullName(Seq(typ))
-    val argAsts   = List(lhsAst, rhsAst)
-    callAst(callNode_, argAsts)
+    val op             = Operators.cast
+    val tpeNode        = node.`type`
+    val tpeCode        = code(tpeNode)
+    val tpeFromTypeMap = fullnameProvider.typeFullname(node)
+    val tpe            = tpeFromTypeMap.getOrElse(AstCreatorHelper.cleanType(tpeCode))
+    registerType(tpe)
+    val cpgCastExpression = createStaticCallNode(node, code(node), op, op, tpe)
+    val expr              = astForNode(node.expression)
+    val typeRefNode_      = typeRefNode(tpeNode, tpeCode, tpe)
+    val arg               = Ast(typeRefNode_)
+    callAst(cpgCastExpression, List(arg, expr))
   }
 
   private def astForAssignmentExprSyntax(node: AssignmentExprSyntax): Ast = notHandledYet(node)
 
   private def astForAwaitExprSyntax(node: AwaitExprSyntax): Ast = {
-    val callNode_ = callNode(node, code(node), "<operator>.await", DispatchTypes.STATIC_DISPATCH)
-    val argAsts   = List(astForNodeWithFunctionReference(node.expression))
+    val op  = "<operator>.await"
+    val tpe = fullnameProvider.typeFullname(node).getOrElse(Defines.Any)
+    registerType(tpe)
+    val callNode_ = createStaticCallNode(node, code(node), op, op, tpe)
+    val argAsts   = List(astForNode(node.expression))
     callAst(callNode_, argAsts)
   }
 
@@ -69,42 +172,39 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   private def astForBorrowExprSyntax(node: BorrowExprSyntax): Ast = {
-    astForNodeWithFunctionReference(node.expression)
+    astForNode(node.expression)
   }
 
-  private def astForCanImportExprSyntax(node: CanImportExprSyntax): Ast               = notHandledYet(node)
-  private def astForCanImportVersionInfoSyntax(node: CanImportVersionInfoSyntax): Ast = notHandledYet(node)
+  private def astForCanImportExprSyntax(node: _CanImportExprSyntax): Ast               = notHandledYet(node)
+  private def astForCanImportVersionInfoSyntax(node: _CanImportVersionInfoSyntax): Ast = notHandledYet(node)
 
   private def astForClosureExprSyntax(node: ClosureExprSyntax): Ast = {
-    astForNodeWithFunctionReference(node)
+    astForNode(node)
   }
 
   private def astForConsumeExprSyntax(node: ConsumeExprSyntax): Ast = {
-    astForNodeWithFunctionReference(node.expression)
+    astForNode(node.expression)
   }
 
   private def astForCopyExprSyntax(node: CopyExprSyntax): Ast = {
-    astForNodeWithFunctionReference(node.expression)
+    astForNode(node.expression)
   }
 
   private def astForDeclReferenceExprSyntax(node: DeclReferenceExprSyntax): Ast = {
-    val name      = code(node)
-    val identNode = identifierNode(node, name)
-    scope.addVariableReference(name, identNode)
-    Ast(identNode)
+    astForIdentifier(node)
   }
 
   private def astForDictionaryExprSyntax(node: DictionaryExprSyntax): Ast = {
     node.content match {
-      case _: SwiftToken                  => astForListLikeExpr(node, Seq.empty)
+      case t: SwiftToken                  => astForListLikeExpr(node, Seq(t))
       case d: DictionaryElementListSyntax => astForListLikeExpr(node, d.children)
     }
   }
 
   private def astForDiscardAssignmentExprSyntax(node: DiscardAssignmentExprSyntax): Ast = {
-    val name   = generateUnusedVariableName(usedVariableNames, "wildcard")
+    val name   = scopeLocalUniqueName("wildcard")
     val idNode = identifierNode(node, name)
-    scope.addVariableReference(name, idNode)
+    scope.addVariableReference(name, idNode, Defines.Any, EvaluationStrategies.BY_REFERENCE)
     Ast(idNode)
   }
 
@@ -119,7 +219,30 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   private def astForForceUnwrapExprSyntax(node: ForceUnwrapExprSyntax): Ast = {
-    astForNodeWithFunctionReference(node.expression)
+    astForNode(node.expression)
+  }
+
+  private def setFullNameInfoForCall(callExpr: FunctionCallExprSyntax, callNode: NewCall): Unit = {
+    fullnameProvider.declFullname(callExpr).foreach { fullNameWithSignature =>
+      val (fullName, signature) = methodInfoFromFullNameWithSignature(fullNameWithSignature)
+      val typeFullName          = fullnameProvider.typeFullname(callExpr).getOrElse(Defines.Any)
+      registerType(typeFullName)
+      callNode.methodFullName(s"$fullName:$signature")
+      callNode.signature(signature)
+      callNode.typeFullName(typeFullName)
+    }
+  }
+
+  /** Builds the argument ASTs for a call: positional arguments followed by the trailing closure and any additional
+    * trailing closures. The trailing-closure ASTs are evaluated before the positional arguments so that the side
+    * effects of `astForNode` (scope references, unique-name counters) run in that order.
+    */
+  private def argAstsForCall(callExpr: FunctionCallExprSyntax): Seq[Ast] = {
+    val trailingClosureAsts =
+      callExpr.trailingClosure.map(astForNode).toList
+    val additionalTrailingClosuresAsts =
+      callExpr.additionalTrailingClosures.children.map(element => astForNode(element.closure))
+    callExpr.arguments.children.map(astForNode) ++ trailingClosureAsts ++ additionalTrailingClosuresAsts
   }
 
   private def createBuiltinStaticCall(callExpr: FunctionCallExprSyntax, callee: ExprSyntax, fullName: String): Ast = {
@@ -127,40 +250,161 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
       case m: MemberAccessExprSyntax => code(m.declName)
       case _                         => code(callee)
     }
-    val callNode =
-      createStaticCallNode(code(callExpr), callName, fullName, line(callee), column(callee))
-    val argAsts = callExpr.arguments.children.map(astForNode)
-    callAst(callNode, argAsts)
+    val callNode = createStaticCallNode(callee, code(callExpr), callName, fullName, Defines.Any)
+    setFullNameInfoForCall(callExpr, callNode)
+
+    callAst(callNode, argAstsForCall(callExpr))
   }
 
-  private def handleCallNodeArgs(
-    callExpr: FunctionCallExprSyntax,
-    receiverAst: Ast,
-    baseNode: NewNode,
-    callName: String
-  ): Ast = {
-    val args = callExpr.arguments.children.map(astForNode) ++ callExpr.trailingClosure.toList.map(astForNode)
+  private def handleCallNodeArgs(callExpr: FunctionCallExprSyntax, baseAst: Ast, callName: String): Ast = {
+    val args = argAstsForCall(callExpr)
 
     val callExprCode = code(callExpr)
-    val callCode = callExprCode match {
-      case c if c.startsWith(".") && codeOf(baseNode) != "this" => s"${codeOf(baseNode)}$callExprCode"
-      case c if c.contains("#if ") =>
-        val recCode = codeOf(receiverAst.nodes.head)
-        if (recCode.endsWith(callName)) {
-          s"${codeOf(receiverAst.nodes.head)}(${code(callExpr.arguments)})"
-        } else {
-          s"${codeOf(receiverAst.nodes.head)}$callName(${code(callExpr.arguments)})"
-        }
-      case _ => callExprCode
+    val callCode     = if (callExprCode.startsWith(".")) {
+      s"${codeOf(baseAst.root.get)}$callExprCode"
+    } else if (callExprCode.contains("#if ")) {
+      s"${codeOf(baseAst.root.get)}.$callName(${code(callExpr.arguments)})"
+    } else callExprCode
+    val callNode_ = callNode(
+      callExpr,
+      callCode,
+      callName,
+      x2cpg.Defines.DynamicCallUnknownFullName,
+      DispatchTypes.DYNAMIC_DISPATCH,
+      None,
+      Option(Defines.Any)
+    )
+    setFullNameInfoForCall(callExpr, callNode_)
+
+    callAst(callNode_, args, Option(baseAst))
+  }
+
+  private def astForConstructorInvocation(expr: FunctionCallExprSyntax): Ast = {
+    astForConstructorInvocationCommon(expr)(finalizeSwiftInitCall)
+  }
+
+  private def astForObjcConstructorInvocation(expr: FunctionCallExprSyntax): Ast = {
+    astForConstructorInvocationCommon(expr)(finalizeObjcInitCall)
+  }
+
+  private def finalizeSwiftInitCall(expr: FunctionCallExprSyntax, constructorCallNode: NewCall, tpe: String): Unit = {
+    // Use decl/type info as provided by the fullnameProvider
+    // (methodFullName: "<fullName>:<signature>", signature: "<signature>", typeFullName: call's type).
+    setFullNameInfoForCall(expr, constructorCallNode)
+  }
+
+  private def parseObjcInitDeclFullname(fullNameFromCompiler: String): (String, String) = {
+    def splitAt(marker: String, add: Int): Option[(String, String)] = {
+      val idx = fullNameFromCompiler.indexOf(marker)
+      if (idx >= 0) {
+        val fn   = fullNameFromCompiler.substring(0, idx + add)
+        val rest = fullNameFromCompiler.substring(idx + marker.length)
+        Some((fn, rest))
+      } else None
     }
-    val callNode_ = callNode(callExpr, callCode, callName, DispatchTypes.DYNAMIC_DISPATCH)
-    // If the callee is a function itself, e.g. closure, then resolve this locally, if possible
-    if (callExpr.calledExpression.isInstanceOf[ClosureExprSyntax]) {
-      functionNodeToNameAndFullName.get(callExpr.calledExpression).foreach { case (name, fullName) =>
-        callNode_.name(name).methodFullName(fullName)
-      }
+
+    splitAt(".init", 0)
+      .orElse(splitAt(")init", 1))
+      .getOrElse(methodInfoFromFullNameWithSignature(fullNameFromCompiler))
+  }
+
+  private def finalizeObjcInitCall(expr: FunctionCallExprSyntax, constructorCallNode: NewCall, tpe: String): Unit = {
+    // For ObjC constructors: derive signature and return type from constructed type.
+    val (fullName, argumentsString) = fullnameProvider
+      .declFullname(expr)
+      .map(parseObjcInitDeclFullname)
+      .getOrElse((tpe, "()"))
+
+    val arguments = Option(argumentsString).map(_.trim).filter(_.nonEmpty).getOrElse("()")
+    val signature = s"$arguments->$tpe"
+
+    constructorCallNode.methodFullName(s"$fullName.init:$signature")
+    constructorCallNode.signature(signature)
+    constructorCallNode.typeFullName(tpe)
+  }
+
+  private def astForConstructorInvocationCommon(
+    expr: FunctionCallExprSyntax
+  )(finalizeInitCall: (FunctionCallExprSyntax, NewCall, String) => Unit): Ast = {
+    // get call is safe as this function is guarded by isRefToConstructor/isRefToObjcConstructor
+    val tpe = fullnameProvider.typeFullname(expr).get
+    registerType(tpe)
+
+    val callExprCode = code(expr)
+    val blockNode_   = blockNode(expr, callExprCode, tpe)
+    scope.pushNewBlockScope(blockNode_)
+
+    val tmpNodeName  = scopeLocalUniqueName("tmp")
+    val localTmpNode = localNode(expr, tmpNodeName, tmpNodeName, tpe).order(0)
+    diffGraph.addEdge(blockNode_, localTmpNode, EdgeTypes.AST)
+    scope.addVariable(tmpNodeName, localTmpNode, tpe, VariableScopeManager.ScopeType.BlockScope)
+
+    val tmpNode = identifierNode(expr, tmpNodeName, tmpNodeName, tpe)
+    scope.addVariableReference(tmpNodeName, tmpNode, tpe, EvaluationStrategies.BY_SHARING)
+
+    val allocOp            = Operators.alloc
+    val allocCallNode      = callNode(expr, allocOp, allocOp, allocOp, DispatchTypes.STATIC_DISPATCH)
+    val assignmentCallOp   = Operators.assignment
+    val assignmentCallNode =
+      callNode(expr, s"$tmpNodeName = $allocOp", assignmentCallOp, assignmentCallOp, DispatchTypes.STATIC_DISPATCH)
+    val assignmentAst = callAst(assignmentCallNode, List(Ast(tmpNode), Ast(allocCallNode)))
+
+    val baseNode = identifierNode(expr, tmpNodeName, tmpNodeName, tpe)
+    scope.addVariableReference(tmpNodeName, baseNode, tpe, EvaluationStrategies.BY_SHARING)
+
+    val constructorCallNode = callNode(
+      expr,
+      callExprCode,
+      "init",
+      x2cpg.Defines.UnresolvedNamespace,
+      DispatchTypes.STATIC_DISPATCH,
+      Some(x2cpg.Defines.UnresolvedSignature),
+      Some(Defines.Void)
+    )
+    finalizeInitCall(expr, constructorCallNode, tpe)
+
+    val args = argAstsForCall(expr)
+
+    val constructorCallAst = callAst(constructorCallNode, args, base = Some(Ast(baseNode)))
+
+    val retNode = identifierNode(expr, tmpNodeName, tmpNodeName, tpe)
+    scope.addVariableReference(tmpNodeName, retNode, tpe, EvaluationStrategies.BY_SHARING)
+
+    scope.popScope()
+    Ast(blockNode_).withChildren(Seq(assignmentAst, constructorCallAst, Ast(retNode)))
+  }
+
+  private def isRefToExtensionMethod(node: FunctionCallExprSyntax): Boolean = {
+    fullnameProvider.declFullnameRaw(node).exists(_.contains("<extension>"))
+  }
+
+  private def astForExtensionMethodCall(node: FunctionCallExprSyntax, baseAst: Ast, callName: String): Ast = {
+    val callNode =
+      createStaticCallNode(node, code(node), callName, x2cpg.Defines.DynamicCallUnknownFullName, Defines.Any)
+
+    fullnameProvider.declFullname(node).foreach { fullNameWithSignature =>
+      val (fullName, signature) = methodInfoFromFullNameWithSignature(fullNameWithSignature)
+      val typeFullName          = fullnameProvider.typeFullname(node).getOrElse(Defines.Any)
+      registerType(typeFullName)
+      callNode.methodFullName(MethodInfo.fullNameToExtensionFullName(s"$fullName:$signature", callName))
+      callNode.signature(signature)
+      callNode.typeFullName(typeFullName)
     }
-    callAst(callNode_, args, receiver = Option(receiverAst), base = Option(Ast(baseNode)))
+
+    val argAsts = argAstsForCall(node)
+    setArgumentIndices(argAsts)
+
+    val baseRoot = baseAst.root.toList
+    baseRoot match {
+      case List(x: ExpressionNew) => x.argumentIndex = 0
+      case _                      =>
+    }
+
+    Ast(callNode)
+      .withChild(baseAst)
+      .withChildren(argAsts)
+      .withArgEdges(callNode, baseRoot)
+      .withArgEdges(callNode, argAsts.flatMap(_.root))
   }
 
   private def astForFunctionCallExprSyntax(node: FunctionCallExprSyntax): Ast = {
@@ -169,48 +413,125 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     if (GlobalBuiltins.builtins.contains(calleeCode)) {
       createBuiltinStaticCall(node, callee, calleeCode)
     } else {
-      val (receiverAst, baseNode, callName) = callee match {
-        case m: MemberAccessExprSyntax =>
-          val base   = m.base
-          val member = m.declName
-          base match {
-            case None =>
-              // referencing implicit this
-              val receiverAst = astForNodeWithFunctionReference(callee)
-              val baseNode    = identifierNode(m, "this")
-              scope.addVariableReference("this", baseNode)
-              (receiverAst, baseNode, code(member))
-            case Some(d: DeclReferenceExprSyntax) if code(d) == "this" || code(d) == "self" =>
-              val receiverAst = astForNodeWithFunctionReference(callee)
-              val baseNode    = identifierNode(d, code(d))
-              scope.addVariableReference(code(d), baseNode)
-              (receiverAst, baseNode, code(member))
-            case Some(d: DeclReferenceExprSyntax) =>
-              val receiverAst = astForNodeWithFunctionReference(callee)
-              val baseNode    = identifierNode(d, code(d))
-              scope.addVariableReference(code(d), baseNode)
-              (receiverAst, baseNode, code(member))
-            case Some(otherBase) =>
-              val tmpVarName  = generateUnusedVariableName(usedVariableNames, "_tmp")
-              val baseTmpNode = identifierNode(otherBase, tmpVarName)
-              scope.addVariableReference(tmpVarName, baseTmpNode)
-              val baseAst   = astForNodeWithFunctionReference(otherBase)
-              val codeField = s"(${codeOf(baseTmpNode)} = ${codeOf(baseAst.nodes.head)})"
-              val tmpAssignmentAst =
-                createAssignmentCallAst(Ast(baseTmpNode), baseAst, codeField, line(otherBase), column(otherBase))
-              val memberNode = createFieldIdentifierNode(code(member), line(member), column(member))
-              val fieldAccessAst =
-                createFieldAccessCallAst(tmpAssignmentAst, memberNode, line(callee), column(callee))
-              val thisTmpNode = identifierNode(callee, tmpVarName)
-              (fieldAccessAst, thisTmpNode, code(member))
+      callee match {
+        case m: MemberAccessExprSyntax if isRefToExtensionMethod(node) =>
+          val memberCode = code(m.declName)
+          val baseAst    = m.base match {
+            case Some(base) if code(base) != "self" => astForNode(base)
+            case _                                  =>
+              val selfTpe  = fullNameOfEnclosingTypeDecl()
+              val selfNode = identifierNode(node, "self", "self", selfTpe)
+              scope.addVariableReference("self", selfNode, selfTpe, EvaluationStrategies.BY_REFERENCE)
+              Ast(selfNode)
           }
-        case _ =>
-          val receiverAst = astForNodeWithFunctionReference(callee)
-          val thisNode    = identifierNode(callee, "this").dynamicTypeHintFullName(typeHintForThisExpression())
-          scope.addVariableReference(thisNode.name, thisNode)
-          (receiverAst, thisNode, calleeCode)
+          astForExtensionMethodCall(node, baseAst, memberCode)
+        case m: MemberAccessExprSyntax if m.base.isEmpty || code(m.base.get) == "self" =>
+          // referencing implicit self
+          val selfTpe  = fullNameOfEnclosingTypeDecl()
+          val selfNode = identifierNode(node, "self", "self", selfTpe)
+          scope.addVariableReference("self", selfNode, selfTpe, EvaluationStrategies.BY_REFERENCE)
+          handleCallNodeArgs(node, Ast(selfNode), code(m.declName.baseName))
+        case m: MemberAccessExprSyntax if isRefToStaticFunction(node, calleeCode) =>
+          createBuiltinStaticCall(node, callee, calleeCode)
+        case m: MemberAccessExprSyntax =>
+          val memberCode = code(m.declName)
+          handleCallNodeArgs(node, astForNode(m.base.get), memberCode)
+        case other if isRefToConstructor(node, other) =>
+          astForConstructorInvocation(node)
+        case other if isRefToObjcConstructor(node, other) =>
+          astForObjcConstructorInvocation(node)
+        case other if isRefToClosure(node, other) =>
+          astForClosureCall(node)
+        case declReferenceExprSyntax: DeclReferenceExprSyntax if code(declReferenceExprSyntax) != "self" =>
+          val selfTpe  = fullNameOfEnclosingTypeDecl()
+          val selfNode = identifierNode(declReferenceExprSyntax, "self", "self", selfTpe)
+          scope.addVariableReference(selfNode.name, selfNode, selfTpe, EvaluationStrategies.BY_REFERENCE)
+          handleCallNodeArgs(node, Ast(selfNode), calleeCode)
+        case other =>
+          handleCallNodeArgs(node, astForNode(other), calleeCode)
       }
-      handleCallNodeArgs(node, receiverAst, baseNode, callName)
+    }
+  }
+
+  private def astForClosureCall(expr: FunctionCallExprSyntax): Ast = {
+    val tpe = fullnameProvider.typeFullname(expr).getOrElse(Defines.Any)
+    registerType(tpe)
+    val signature = fullnameProvider.typeFullnameRaw(expr.calledExpression).getOrElse(x2cpg.Defines.UnresolvedSignature)
+    val callName  = Defines.ClosureApplyMethodName
+    val callMethodFullname = s"${Defines.Function}<$signature>.$callName:$signature"
+    val baseAst            = astForIdentifier(expr.calledExpression)
+
+    val args = argAstsForCall(expr)
+
+    val callExprCode = code(expr)
+    val callNode_    = callNode(
+      expr,
+      callExprCode,
+      callName,
+      callMethodFullname,
+      DispatchTypes.DYNAMIC_DISPATCH,
+      Option(Defines.ErasedSignature),
+      Option(tpe)
+    )
+    callAst(callNode_, args, Option(baseAst))
+  }
+
+  private def isRefToClosure(func: FunctionCallExprSyntax, node: ExprSyntax): Boolean = {
+    if (!config.swiftBuild) {
+      // Early exit; without types from the compiler we will be unable to identify closure calls anyway.
+      // This saves us the fullnameProvider lookups below.
+      return false
+    }
+    node match {
+      case refExpr: DeclReferenceExprSyntax
+          if refExpr.baseName.isInstanceOf[identifier] &&
+            fullnameProvider.declFullname(func).isEmpty &&
+            fullnameProvider.typeFullname(refExpr).exists(_.startsWith(s"${Defines.Function}<")) =>
+        true
+      case _ => false
+    }
+  }
+
+  private def isRefToStaticFunction(func: FunctionCallExprSyntax, calleeCode: String): Boolean = {
+    val isPlainReference = !calleeCode.contains("(") && !calleeCode.contains(")")
+    fullnameProvider.isStaticCall(func) match {
+      // the compiler told us whether the receiver of the call is a type
+      case Some(isStatic) => isStatic && isPlainReference
+      // no compiler information available: fall back to a naming heuristic (type names start uppercase)
+      case None => calleeCode.headOption.exists(_.isUpper) && isPlainReference
+    }
+  }
+
+  private def isRefToConstructorCommon(func: FunctionCallExprSyntax, node: ExprSyntax)(
+    matchesFullName: String => Boolean
+  ): Boolean = {
+    if (!config.swiftBuild) {
+      // Early exit; without types from the compiler we will be unable to identify constructor calls anyway.
+      // This saves us the fullnameProvider lookups below.
+      return false
+    }
+
+    node match {
+      case refExpr: DeclReferenceExprSyntax
+          if refExpr.baseName.isInstanceOf[identifier] &&
+            fullnameProvider.typeFullname(func).nonEmpty &&
+            fullnameProvider.declFullname(func).exists(matchesFullName) =>
+        true
+      case _ => false
+    }
+  }
+
+  private def isRefToConstructor(func: FunctionCallExprSyntax, node: ExprSyntax): Boolean = {
+    isRefToConstructorCommon(func, node) { fullName =>
+      fullName.contains(".init(") && fullName.contains(")->")
+    }
+  }
+
+  private def isRefToObjcConstructor(func: FunctionCallExprSyntax, node: ExprSyntax): Boolean = {
+    isRefToConstructorCommon(func, node) { fullName =>
+      val typeFullName = fullnameProvider.typeFullname(func).get
+      fullName == s"$typeFullName.init" ||
+      (AstCreatorHelper.isObjcCall(fullName) && (fullName.contains(")init") || fullName.contains(".init")))
     }
   }
 
@@ -219,26 +540,89 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   private def astForIfExprSyntax(node: IfExprSyntax): Ast = {
-    val code         = this.code(node)
-    val ifNode       = controlStructureNode(node, ControlStructureTypes.IF, code)
-    val conditionAst = astForNode(node.conditions)
-    val thenAst      = astForNode(node.body)
-    val elseAst = node.elseBody match {
-      case Some(value) => astForNode(value)
-      case None        => Ast()
-    }
-    controlStructureAst(ifNode, Option(conditionAst), Seq(thenAst, elseAst))
+    handleOptionalBindingConditions(
+      node.conditions.children,
+      onAllSimple = simpleBindings => astForIfLetExprSyntax(node, simpleBindings, node.body, node.elseBody),
+      onPartial = (simpleBindings, tupleBindings, otherConditions) =>
+        astForIfLetExprSyntaxPartial(node, simpleBindings, tupleBindings, otherConditions, node.body, node.elseBody),
+      onStandard = () => {
+        val conditionAst = astForNode(node.conditions)
+        val thenAst      = astForNode(node.body)
+        val elseAst      = node.elseBody.map(astForNode)
+        ifThenElseAst(node, Some(conditionAst), thenAst, elseAst)
+      }
+    )
+  }
+
+  /** Handles Swift optional binding (if-let) constructs.
+    *
+    * De-sugars `if let baz = foo() { body }` into:
+    *
+    * Condition: { (<tmp>0 = foo()) != nil }
+    *
+    * Then block: { let baz = <tmp>0; body }
+    *
+    * For multiple bindings `if let a = foo(), let b = bar() { body }`:
+    *
+    * Condition: { (<tmp>0 = foo()) != nil && (<tmp>1 = bar()) != nil }
+    *
+    * Then block: { a = <tmp>0; b = <tmp>1; body }
+    *
+    * For mixed cases with/without initializers `if let a = foo(), let b { body }`:
+    *
+    * Condition: { (<tmp>0 = foo()) != nil && b != nil }
+    *
+    * Then block: { a = <tmp>0; body }
+    */
+  private def astForIfLetExprSyntax(
+    node: IfExprSyntax,
+    optionalBindings: Seq[OptionalBindingConditionSyntax],
+    thenBody: CodeBlockSyntax,
+    elseBody: Option[IfExprSyntax | CodeBlockSyntax]
+  ): Ast = {
+    val bindingInfos = collectBindingInfos(optionalBindings)
+    val conditionAst = buildOptionalBindingCondition(node, bindingInfos)
+    val thenAst      = buildBodyWithUnwrapping(thenBody, thenBody.statements.children, bindingInfos)
+    val elseAst      = elseBody.map(astForNode)
+    ifThenElseAst(node, Some(conditionAst), thenAst, elseAst)
+  }
+
+  /** Handles partial optional binding desugaring with other conditions.
+    *
+    * De-sugars `if let a = foo(), #unavailable(...) { body }` into:
+    *
+    * Condition: { ((<tmp>0 = foo()) != nil) && #unavailable(...) }
+    *
+    * Then block: { let a = <tmp>0; body }
+    */
+  private def astForIfLetExprSyntaxPartial(
+    node: IfExprSyntax,
+    simpleBindings: Seq[OptionalBindingConditionSyntax],
+    tupleBindings: Seq[OptionalBindingConditionSyntax],
+    otherConditions: Seq[ConditionElementSyntax],
+    thenBody: CodeBlockSyntax,
+    elseBody: Option[IfExprSyntax | CodeBlockSyntax]
+  ): Ast = {
+    val bindingInfos = collectBindingInfos(simpleBindings)
+    val conditionAst = buildOptionalBindingCondition(node, bindingInfos, otherConditions)
+    val thenAst      = buildBodyWithUnwrapping(thenBody, tupleBindings ++ thenBody.statements.children, bindingInfos)
+    val elseAst      = elseBody.map(astForNode)
+    ifThenElseAst(node, Some(conditionAst), thenAst, elseAst)
   }
 
   private def astForInOutExprSyntax(node: InOutExprSyntax): Ast = {
-    astForNodeWithFunctionReference(node.expression)
+    val op = Defines.PrefixOperatorMap(code(node.ampersand))
+    createStaticCallForOperatorAst(node, op, node.expression)
   }
 
   private def astForInfixOperatorExprSyntax(node: InfixOperatorExprSyntax): Ast = {
-    val op        = Defines.InfixOperatorMap(code(node.operator))
-    val lhsAst    = astForNodeWithFunctionReference(node.leftOperand)
-    val rhsAst    = astForNodeWithFunctionReference(node.rightOperand)
-    val callNode_ = callNode(node, code(node), op, DispatchTypes.STATIC_DISPATCH)
+    val op  = Defines.InfixOperatorMap(code(node.operator))
+    val tpe = fullnameProvider.typeFullname(node).getOrElse(Defines.Any)
+    registerType(tpe)
+
+    val lhsAst    = astForNode(node.leftOperand)
+    val rhsAst    = astForNode(node.rightOperand)
+    val callNode_ = createStaticCallNode(node, code(node), op, op, tpe)
     val argAsts   = List(lhsAst, rhsAst)
     callAst(callNode_, argAsts)
   }
@@ -248,58 +632,69 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   private def astForIsExprSyntax(node: IsExprSyntax): Ast = {
-    val lhsAst    = astForNodeWithFunctionReference(node.expression)
-    val rhsAst    = astForNode(node.`type`)
-    val callNode_ = callNode(node, code(node), Operators.instanceOf, DispatchTypes.STATIC_DISPATCH)
-    val argAsts   = List(lhsAst, rhsAst)
+    val op     = Operators.instanceOf
+    val lhsAst = astForNode(node.expression)
+
+    val tpeNode = node.`type`
+    val tpe     = simpleTypeNameForTypeSyntax(tpeNode)
+    registerType(tpe)
+
+    val callNode_    = createStaticCallNode(node, code(node), op, op, Defines.Bool)
+    val typeRefNode_ = typeRefNode(node, code(tpeNode), tpe)
+
+    val argAsts = List(lhsAst, Ast(typeRefNode_))
     callAst(callNode_, argAsts)
   }
 
   private def astForKeyPathExprSyntax(node: KeyPathExprSyntax): Ast = notHandledYet(node)
 
   private def astForMacroExpansionExprSyntax(node: MacroExpansionExprSyntax): Ast = {
-    val name = code(node.macroName)
-    val argAsts = astForNode(node.arguments) +:
-      node.trailingClosure.toList.map(astForNodeWithFunctionReference) :+
-      astForNode(node.additionalTrailingClosures)
+    val nodeCode = code(node.macroName)
+    val fullName = fullnameProvider.declFullname(node).getOrElse(nodeCode)
+    val tpe      = fullnameProvider.typeFullname(node).getOrElse(Defines.Any)
+    registerType(tpe)
+
+    val trailingClosureAsts            = node.trailingClosure.toList.map(astForNode)
+    val additionalTrailingClosuresAsts = node.additionalTrailingClosures.children.map(c => astForNode(c.closure))
+
+    val argAsts  = astForNode(node.arguments) +: (trailingClosureAsts ++ additionalTrailingClosuresAsts)
     val callNode =
       NewCall()
-        .name(name)
+        .name(nodeCode)
         .dispatchType(DispatchTypes.INLINED)
-        .methodFullName(name)
+        .methodFullName(fullName)
         .code(code(node))
-        .typeFullName(Defines.Any)
+        .typeFullName(tpe)
         .lineNumber(line(node))
         .columnNumber(column(node))
     callAst(callNode, argAsts)
   }
 
   private def astForMemberAccessExprSyntax(node: MemberAccessExprSyntax): Ast = {
-    val base   = node.base
-    val member = node.declName
+    val base    = node.base
+    val member  = node.declName
     val baseAst = base match {
       case None =>
-        // referencing implicit this
-        val baseNode = identifierNode(node, "this")
-        scope.addVariableReference("this", baseNode)
-        Ast(baseNode)
-      case Some(d: DeclReferenceExprSyntax) if code(d) == "this" || code(d) == "self" =>
-        val baseNode = identifierNode(d, code(d))
-        scope.addVariableReference(code(d), baseNode)
-        Ast(baseNode)
+        // Swift's documentation refers to this as "implicit member expression" or "shorthand syntax for enumeration cases".
+        // This syntax is not limited to enums. It works with several Swift types where the compiler can infer the type from context
+        // to access static members. This is a commonly used pattern.
+        // For enums only we could emit a Literal AST node representing the enum member. But as it works for other types as well,
+        // we emit an unknown node here to avoid making potentially wrong assumptions.
+        val code_        = code(member.baseName)
+        val unknownNode_ = unknownNode(node, code_)
+        return Ast(unknownNode_)
       case Some(otherBase) =>
-        astForNodeWithFunctionReference(otherBase)
+        astForNode(otherBase)
     }
 
     member.baseName match {
       case l @ integerLiteral(_) =>
         val memberNode = astForIntegerLiteralToken(l)
-        createIndexAccessCallAst(baseAst, memberNode, line(node), column(node))
+        createIndexAccessCallAst(node, baseAst, memberNode)
       case other =>
-        val memberNode = createFieldIdentifierNode(code(other), line(other), column(other))
-        createFieldAccessCallAst(baseAst, memberNode, line(node), column(node))
+        val memberNode = fieldIdentifierNode(other, code(other), code(other))
+        createFieldAccessCallAst(node, baseAst, memberNode)
     }
-
   }
 
   private def astForMissingExprSyntax(@unused node: MissingExprSyntax): Ast = Ast()
@@ -309,15 +704,15 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   private def astForOptionalChainingExprSyntax(node: OptionalChainingExprSyntax): Ast = {
-    astForNodeWithFunctionReference(node.expression)
+    astForNode(node.expression)
   }
 
   private def astForPackElementExprSyntax(node: PackElementExprSyntax): Ast = {
-    astForNodeWithFunctionReference(node.pack)
+    astForNode(node.pack)
   }
 
   private def astForPackExpansionExprSyntax(node: PackExpansionExprSyntax): Ast = {
-    astForNodeWithFunctionReference(node.repetitionPattern)
+    astForNode(node.repetitionPattern)
   }
 
   private def astForPatternExprSyntax(node: PatternExprSyntax): Ast = {
@@ -333,7 +728,7 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     node.base match {
       case Some(base) =>
         val maybeFunctionCallExpr = ifIfConfigClauses match {
-          case Nil => None
+          case Nil                                                                           => None
           case ifIfConfigClause :: Nil if ifConfigDeclConditionIsSatisfied(ifIfConfigClause) =>
             ifIfConfigClause.elements
           case _ :: Nil =>
@@ -352,13 +747,14 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
         }
         maybeFunctionCallExpr match {
           case Some(functionCallExpr: FunctionCallExprSyntax) =>
-            functionCallExpr.calledExpression match
+            functionCallExpr.calledExpression match {
               case MemberAccessExprSyntax(json) =>
                 val memberChildren = json("children").arr
                 memberChildren.addOne(base.json)
                 astForNode(functionCallExpr)
               case _ =>
                 notHandledYet(node)
+            }
           case _ => notHandledYet(node)
         }
       case None => astForNode(node.config)
@@ -367,17 +763,13 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   private def astForPostfixOperatorExprSyntax(node: PostfixOperatorExprSyntax): Ast = {
-    val operatorMethod = Defines.PostfixOperatorMap(code(node.operator))
-    val unaryCall      = callNode(node, code(node), operatorMethod, operatorMethod, DispatchTypes.STATIC_DISPATCH)
-    val expressionAst  = astForNodeWithFunctionReference(node.expression)
-    callAst(unaryCall, List(expressionAst))
+    val op = Defines.PostfixOperatorMap(code(node.operator))
+    createStaticCallForOperatorAst(node, op, node.expression)
   }
 
   private def astForPrefixOperatorExprSyntax(node: PrefixOperatorExprSyntax): Ast = {
-    val operatorMethod = Defines.PrefixOperatorMap(code(node.operator))
-    val unaryCall      = callNode(node, code(node), operatorMethod, operatorMethod, DispatchTypes.STATIC_DISPATCH)
-    val expressionAst  = astForNodeWithFunctionReference(node.expression)
-    callAst(unaryCall, List(expressionAst))
+    val op = Defines.PrefixOperatorMap(code(node.operator))
+    createStaticCallForOperatorAst(node, op, node.expression)
   }
 
   private def astForRegexLiteralExprSyntax(node: RegexLiteralExprSyntax): Ast = notHandledYet(node)
@@ -395,59 +787,426 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   private def astForSubscriptCallExprSyntax(node: SubscriptCallExprSyntax): Ast = {
-    val baseAst   = astForNodeWithFunctionReference(node.calledExpression)
+    val baseAst   = astForNode(node.calledExpression)
     val memberAst = astForNode(node.arguments)
-    val additionalArgsAsts = node.trailingClosure.toList.map(astForNode) ++
-      node.additionalTrailingClosures.children.map(c => astForNode(c.closure))
-    createIndexAccessCallAst(baseAst, memberAst, line(node), column(node), additionalArgsAsts)
+
+    val trailingClosureAsts            = node.trailingClosure.toList.map(astForNode)
+    val additionalTrailingClosuresAsts = node.additionalTrailingClosures.children.map(c => astForNode(c.closure))
+
+    val additionalArgsAsts = trailingClosureAsts ++ additionalTrailingClosuresAsts
+    createIndexAccessCallAst(node, baseAst, memberAst, additionalArgsAsts)
   }
 
   private def astForSuperExprSyntax(node: SuperExprSyntax): Ast = {
     Ast(identifierNode(node, "super"))
   }
 
-  protected def astsForSwitchCase(switchCase: SwitchCaseSyntax | IfConfigDeclSyntax): List[Ast] = {
-    val labelAst = Ast(createJumpTarget(switchCase))
+  private def hasTuplePattern(switchCase: SwitchCaseSyntax | IfConfigDeclSyntax): Boolean = {
+    @tailrec
+    def isTupleLikePattern(pattern: PatternSyntax): Boolean = pattern match {
+      case _: TuplePatternSyntax        => true
+      case e: ExpressionPatternSyntax   => e.expression.isInstanceOf[TupleExprSyntax]
+      case v: ValueBindingPatternSyntax => isTupleLikePattern(v.pattern)
+      case _                            => false
+    }
+    switchCase match {
+      case s: SwitchCaseSyntax =>
+        s.label match {
+          case i: SwitchCaseLabelSyntax => i.caseItems.children.exists(item => isTupleLikePattern(item.pattern))
+          case _                        => false
+        }
+      case _ => false
+    }
+  }
+
+  /** Creates a chain of field accesses: identifierNode(baseName)._fields(0)._fields(1)... Each call creates fresh
+    * identifier/field-identifier nodes so the resulting AST can be safely used as an argument without node-sharing
+    * issues.
+    */
+  protected def createFieldAccessChain(
+    baseName: String,
+    fields: List[String],
+    node: SwiftNode,
+    leafType: Option[String] = None
+  ): Ast = {
+    tupleSubjects.get(tupleSubjectKey(baseName)).map(_.elementTypes) match {
+      case Some(elementTypes) =>
+        // Base is a de-sugared tuple subject temp: use its declared type and the per-element types of the subject.
+        val baseType = scope.lookupVariable(baseName).map(_._2).getOrElse(Defines.Tuple)
+        registerType(baseType)
+        val baseNode = identifierNode(node, baseName, baseName, baseType)
+        val baseAst  = Ast(baseNode)
+        scope.addVariableReference(baseName, baseNode, baseType, EvaluationStrategies.BY_REFERENCE)
+        val (chainAst, _) = fields.foldLeft((baseAst, List.empty[String])) { case ((accAst, accPath), field) =>
+          val path = accPath :+ field
+          val tpe  = elementTypes.get(path).orElse(if (path == fields) leafType else None).getOrElse(Defines.Any)
+          registerType(tpe)
+          (createFieldAccessCallAst(node, accAst, fieldIdentifierNode(node, field, field), Some(tpe)), path)
+        }
+        chainAst
+      case None =>
+        val baseNode = identifierNode(node, baseName)
+        val baseAst  = Ast(baseNode)
+        scope.addVariableReference(baseName, baseNode, baseNode.typeFullName, EvaluationStrategies.BY_REFERENCE)
+        fields.foldLeft(baseAst) { (accAst, field) =>
+          createFieldAccessCallAst(node, accAst, fieldIdentifierNode(node, field, field))
+        }
+    }
+  }
+
+  /** The type of the field access created by [[createFieldAccessChain]]. */
+  private def accessType(accessAst: Ast): String = accessAst.root match {
+    case Some(call: NewCall) => call.typeFullName
+    case _                   => Defines.Any
+  }
+
+  /** The type the compiler reports for a binding pattern element (e.g. `a` in `let (a, b)`). Only a fallback if the
+    * subject is no tuple literal.
+    */
+  private def patternElementType(element: SwiftNode): Option[String] = fullnameProvider.typeFullname(element)
+
+  /** The type the compiler reports for a literal in a matching pattern (e.g. `1` in `case (1, "a")`). Other matching
+    * patterns are not queried: their type is not necessarily the type of the matched element (e.g. `ClosedRange<Int>`
+    * for `2...5`, or any type with a custom `~=`), whereas literals are typed by their context.
+    */
+  private def literalPatternElementType(expr: SwiftNode): Option[String] = expr match {
+    case _: IntegerLiteralExprSyntax | _: FloatLiteralExprSyntax | _: BooleanLiteralExprSyntax |
+        _: StringLiteralExprSyntax | _: NilLiteralExprSyntax =>
+      fullnameProvider.typeFullname(expr)
+    case _ => None
+  }
+
+  /** Collects the types of all elements of a tuple subject expression by path (e.g. `List("0", "1")`). Only elements
+    * for which the compiler reported a type are contained. Nothing is derived by parsing type strings.
+    */
+  private def tupleElementTypes(tupleExpr: TupleExprSyntax, parentPath: List[String]): Map[List[String], String] = {
+    val elements = tupleExpr.elements.children.toList
+    if (elements.size < 2) return Map.empty
+    elements.zipWithIndex.flatMap { case (element, idx) =>
+      val path     = parentPath :+ s"$idx"
+      val own      = fullnameProvider.typeFullname(element.expression).map(path -> _)
+      val children = element.expression match {
+        case inner: TupleExprSyntax => tupleElementTypes(inner, path)
+        case _                      => Map.empty[List[String], String]
+      }
+      own.toList ++ children
+    }.toMap
+  }
+
+  /** De-sugaring from:
+    *
+    * case (1, 2): where subject is <subject>
+    *
+    * to:
+    *
+    * <subject>.0 == 1 && <subject>.1 == 2
+    *
+    * Nested tuples like case ((1, 2), 3): are handled recursively: <subject>.0.0 == 1 && <subject>.0.1 == 2 &&
+    * <subject>.1 == 3
+    */
+  protected def astForExpressionTuplePattern(
+    tupleExpr: TupleExprSyntax,
+    subjectBase: String,
+    subjectFieldPath: List[String],
+    node: SwiftNode
+  ): Ast = {
+    val elements     = tupleExpr.elements.children.toList
+    val equalityAsts = elements.zipWithIndex.map { case (element, idx) =>
+      val currentPath = subjectFieldPath :+ s"$idx"
+      element.expression match {
+        case inner: TupleExprSyntax =>
+          astForExpressionTuplePattern(inner, subjectBase, currentPath, node)
+        case _ =>
+          val subjectCode = (subjectBase :: currentPath).mkString(".")
+          val subjectAst  =
+            createFieldAccessChain(subjectBase, currentPath, node, literalPatternElementType(element.expression))
+          val rhsAst = astForNode(element)
+          val eqCode = s"$subjectCode == ${code(element.expression)}"
+          val eqNode = createStaticCallNode(node, eqCode, Operators.equals, Operators.equals, Defines.Bool)
+          callAst(eqNode, List(subjectAst, rhsAst))
+      }
+    }
+    equalityAsts.reduceLeft { (accAst, nextAst) =>
+      val andCode = s"${codeOf(accAst.nodes.head)} && ${codeOf(nextAst.nodes.head)}"
+      val andNode = createStaticCallNode(node, andCode, Operators.logicalAnd, Operators.logicalAnd, Defines.Bool)
+      callAst(andNode, List(accAst, nextAst))
+    }
+  }
+
+  protected def isBindingTupleExpr(tupleExpr: TupleExprSyntax): Boolean = {
+    tupleExpr.elements.children.exists { elem =>
+      elem.expression.isInstanceOf[PatternExprSyntax]
+    }
+  }
+
+  private def astsForCaseItemPattern(item: SwitchCaseItemSyntax, subjectTmpName: Option[String]): List[Ast] = {
+    subjectTmpName match {
+      case None          => List(astForNode(item.pattern))
+      case Some(tmpName) =>
+        item.pattern match {
+          case ep: ExpressionPatternSyntax if ep.expression.isInstanceOf[TupleExprSyntax] =>
+            val tupleExpr = ep.expression.asInstanceOf[TupleExprSyntax]
+            if (isBindingTupleExpr(tupleExpr)) {
+              astsForBindingTupleExpr(tupleExpr, tmpName, List.empty, ep)
+            } else {
+              List(astForExpressionTuplePattern(tupleExpr, tmpName, List.empty, ep))
+            }
+          case vb: ValueBindingPatternSyntax =>
+            vb.pattern match {
+              case tp: TuplePatternSyntax =>
+                astsForBindingTuplePattern(tp, tmpName, List.empty, vb)
+              case ep: ExpressionPatternSyntax if ep.expression.isInstanceOf[TupleExprSyntax] =>
+                astsForBindingTupleExpr(
+                  ep.expression.asInstanceOf[TupleExprSyntax],
+                  tmpName,
+                  List.empty,
+                  vb,
+                  allBindings = true
+                )
+              case _ => List(astForNode(item.pattern))
+            }
+          case tuple: TuplePatternSyntax =>
+            astsForBindingTuplePattern(tuple, tmpName, List.empty, tuple)
+          case _ =>
+            List(astForNode(item.pattern))
+        }
+    }
+  }
+
+  /** De-sugaring from:
+    *
+    * case let (a, b): where subject is <subject>
+    *
+    * to (emitted at the start of the case block):
+    *
+    * var a = <subject>.0 var b = <subject>.1
+    *
+    * Works with both TuplePatternSyntax and TupleExprSyntax representations, since the Swift parser may produce either
+    * form depending on whether `let`/`var` is on the outside (`case let (a, b):`) or per-element (`case (var a, var
+    * b):`).
+    *
+    * Tuple elements that are not bindings (e.g. `is Type`, `.enumCase`, literal expressions, or `_` wildcards) are
+    * de-sugared into the appropriate condition checks (instanceOf, equality) or skipped.
+    */
+
+  /** Creates an instanceOf check for an IsTypePatternSyntax against a subject field access. */
+  private def astForIsTypePatternInTupleContext(
+    isType: IsTypePatternSyntax,
+    subjectAst: Ast,
+    subjectCode: String,
+    node: SwiftNode
+  ): List[Ast] = {
+    val tpeNode = isType.`type`
+    val tpe     = simpleTypeNameForTypeSyntax(tpeNode)
+    registerType(tpe)
+    val op             = Operators.instanceOf
+    val instanceOfCode = s"$subjectCode is ${code(tpeNode)}"
+    val instanceOfNode = createStaticCallNode(node, instanceOfCode, op, op, Defines.Bool)
+    val typeRefNode_   = typeRefNode(isType, code(tpeNode), tpe)
+    List(callAst(instanceOfNode, List(subjectAst, Ast(typeRefNode_))))
+  }
+
+  /** Creates an equality check for an expression pattern against a subject field access. */
+  private def astForExpressionPatternInTupleContext(
+    ep: ExpressionPatternSyntax,
+    subjectAst: Ast,
+    subjectCode: String,
+    node: SwiftNode
+  ): List[Ast] = {
+    val rhsAst = astForNode(ep.expression)
+    val eqCode = s"$subjectCode == ${code(ep.expression)}"
+    val eqNode = createStaticCallNode(node, eqCode, Operators.equals, Operators.equals, Defines.Bool)
+    List(callAst(eqNode, List(subjectAst, rhsAst)))
+  }
+
+  /** Creates a variable binding assignment for a pattern element against a subject field access. */
+  private def astForBindingInTupleContext(
+    varName: String,
+    subjectAst: Ast,
+    subjectCode: String,
+    anchorNode: SwiftNode,
+    elementType: String
+  ): List[Ast] = {
+    registerType(elementType)
+    val localNode_ = localNode(anchorNode, varName, varName, elementType).order(0)
+    diffGraph.addEdge(localAstParentStack.head, localNode_, EdgeTypes.AST)
+    scope.addVariable(varName, localNode_, elementType, VariableScopeManager.ScopeType.BlockScope)
+    val lhsNode    = identifierNode(anchorNode, varName, varName, elementType)
+    val assignCode = s"$varName = $subjectCode"
+    List(createAssignmentCallAst(anchorNode, Ast(lhsNode), subjectAst, assignCode))
+  }
+
+  protected def astsForBindingTuplePattern(
+    tuplePat: TuplePatternSyntax,
+    subjectBase: String,
+    subjectFieldPath: List[String],
+    node: SwiftNode
+  ): List[Ast] = {
+    tuplePat.elements.children.toList.zipWithIndex.flatMap { case (element, idx) =>
+      val currentPath = subjectFieldPath :+ s"$idx"
+      element.pattern match {
+        case inner: TuplePatternSyntax =>
+          astsForBindingTuplePattern(inner, subjectBase, currentPath, node)
+        case vb: ValueBindingPatternSyntax =>
+          vb.pattern match {
+            case inner: TuplePatternSyntax =>
+              astsForBindingTuplePattern(inner, subjectBase, currentPath, node)
+            case _ =>
+              val subjectCode = (subjectBase :: currentPath).mkString(".")
+              val subjectAst  = createFieldAccessChain(subjectBase, currentPath, node, patternElementType(vb.pattern))
+              astForBindingInTupleContext(code(vb.pattern), subjectAst, subjectCode, tuplePat, accessType(subjectAst))
+          }
+        case _: WildcardPatternSyntax =>
+          List.empty
+        case other =>
+          val subjectCode = (subjectBase :: currentPath).mkString(".")
+          val leafType    = other match {
+            case ep: ExpressionPatternSyntax => literalPatternElementType(ep.expression)
+            case _                           => None
+          }
+          val subjectAst = createFieldAccessChain(subjectBase, currentPath, node, leafType)
+          other match {
+            case isType: IsTypePatternSyntax =>
+              astForIsTypePatternInTupleContext(isType, subjectAst, subjectCode, node)
+            case ep: ExpressionPatternSyntax =>
+              astForExpressionPatternInTupleContext(ep, subjectAst, subjectCode, node)
+            case _ =>
+              astForBindingInTupleContext(code(other), subjectAst, subjectCode, tuplePat, accessType(subjectAst))
+          }
+      }
+    }
+  }
+
+  /** Determines whether an expression inside a tuple represents a binding (let/var pattern). */
+  private def isBindingExpression(expr: ExprSyntax): Boolean = expr match {
+    case p: PatternExprSyntax =>
+      p.pattern match {
+        case _: ValueBindingPatternSyntax => true
+        case _: IdentifierPatternSyntax   => true
+        case _                            => false
+      }
+    case _ => false
+  }
+
+  /** Dispatches a PatternSyntax inside a tuple context to the appropriate de-sugaring. */
+  private def astsForPatternInTupleContext(
+    pattern: PatternSyntax,
+    subjectAst: Ast,
+    subjectCode: String,
+    node: SwiftNode
+  ): List[Ast] = pattern match {
+    case isType: IsTypePatternSyntax =>
+      astForIsTypePatternInTupleContext(isType, subjectAst, subjectCode, node)
+    case ep: ExpressionPatternSyntax =>
+      astForExpressionPatternInTupleContext(ep, subjectAst, subjectCode, node)
+    case _: WildcardPatternSyntax =>
+      List.empty
+    case other =>
+      val rhsAst = astForNode(other)
+      val eqCode = s"$subjectCode == ${code(other)}"
+      val eqNode = createStaticCallNode(node, eqCode, Operators.equals, Operators.equals, Defines.Bool)
+      List(callAst(eqNode, List(subjectAst, rhsAst)))
+  }
+
+  protected def astsForBindingTupleExpr(
+    tupleExpr: TupleExprSyntax,
+    subjectBase: String,
+    subjectFieldPath: List[String],
+    node: SwiftNode,
+    allBindings: Boolean = false
+  ): List[Ast] = {
+    tupleExpr.elements.children.toList.zipWithIndex.flatMap { case (element, idx) =>
+      val currentPath = subjectFieldPath :+ s"$idx"
+      element.expression match {
+        case inner: TupleExprSyntax =>
+          astsForBindingTupleExpr(inner, subjectBase, currentPath, node, allBindings)
+        case _: DiscardAssignmentExprSyntax =>
+          List.empty
+        case expr =>
+          val subjectCode = (subjectBase :: currentPath).mkString(".")
+          val isBinding   = allBindings || isBindingExpression(expr)
+          val subjectAst  =
+            createFieldAccessChain(
+              subjectBase,
+              currentPath,
+              node,
+              if (isBinding) patternElementType(expr) else literalPatternElementType(expr)
+            )
+          if (isBinding) {
+            val varName = extractBindingName(expr)
+            astForBindingInTupleContext(varName, subjectAst, subjectCode, tupleExpr, accessType(subjectAst))
+          } else {
+            expr match {
+              case p: PatternExprSyntax =>
+                astsForPatternInTupleContext(p.pattern, subjectAst, subjectCode, node)
+              case _ =>
+                val rhsAst = astForNode(element)
+                val eqCode = s"$subjectCode == ${code(expr)}"
+                val eqNode = createStaticCallNode(node, eqCode, Operators.equals, Operators.equals, Defines.Bool)
+                List(callAst(eqNode, List(subjectAst, rhsAst)))
+            }
+          }
+      }
+    }
+  }
+
+  /** Extract the variable name from a binding expression element. Handles:
+    *   - `DeclReferenceExprSyntax` (`a` in `case let (a, b):`)
+    *   - `PatternExprSyntax(ValueBindingPatternSyntax(IdentifierPatternSyntax))` (`var a` in `case (var a, var b):`)
+    */
+  private def extractBindingName(expr: ExprSyntax): String = {
+    expr match {
+      case d: DeclReferenceExprSyntax => code(d)
+      case p: PatternExprSyntax       =>
+        p.pattern match {
+          case vb: ValueBindingPatternSyntax => code(vb.pattern)
+          case other                         => code(other)
+        }
+      case other => code(other)
+    }
+  }
+
+  protected def astsForSwitchCase(
+    switchCase: SwitchCaseSyntax | IfConfigDeclSyntax,
+    subjectTmpName: Option[String] = None
+  ): List[Ast] = {
+    val labelAst                   = Ast(createJumpTarget(switchCase))
     val (testAsts, consequentAsts) = switchCase match {
       case s: SwitchCaseSyntax =>
         val (tAsts, flowAst) = s.label match {
           case i: SwitchCaseLabelSyntax =>
             val children         = i.caseItems.children
-            val childrenTestAsts = children.map(c => astForNodeWithFunctionReference(c.pattern))
+            val childrenTestAsts = children.toList.flatMap(c => astsForCaseItemPattern(c, subjectTmpName))
             val childrenFlowAsts = children.collect {
               case child if child.whereClause.isDefined =>
                 val whereClause = child.whereClause.get
-                val ifNode =
-                  controlStructureNode(whereClause.condition, ControlStructureTypes.IF, code(whereClause.condition))
-                val whereAst = astForNodeWithFunctionReference(whereClause)
-                val whereClauseCallNode = callNode(
-                  whereClause.condition,
-                  s"!(${code(whereClause.condition)})",
-                  Operators.logicalNot,
-                  DispatchTypes.STATIC_DISPATCH
-                )
+                val whereAst    = astForNode(whereClause)
+
+                val op                  = Operators.logicalNot
+                val whereClauseCallNode =
+                  createStaticCallNode(
+                    whereClause.condition,
+                    s"!(${code(whereClause.condition)})",
+                    op,
+                    op,
+                    Defines.Bool
+                  )
+
                 val argAsts = List(whereAst)
                 val testAst = callAst(whereClauseCallNode, argAsts)
-                val consequentAst =
-                  Ast(controlStructureNode(whereClause.condition, ControlStructureTypes.CONTINUE, "continue"))
-                setOrderExplicitly(testAst, 1)
-                setOrderExplicitly(consequentAst, 2)
-                Ast(ifNode)
-                  .withChild(testAst)
-                  .withConditionEdge(ifNode, testAst.nodes.head)
-                  .withChild(consequentAst)
+                val thenAst = continueAst(whereClause.condition, "continue")
+                ifThenElseAst(whereClause, Some(testAst), thenAst, None)
             }
             (childrenTestAsts, childrenFlowAsts)
           case other => (List(astForNode(other)), List.empty)
         }
         val needsSyntheticBreak = !s.statements.children.lastOption.exists(_.item.isInstanceOf[FallThroughStmtSyntax])
-        val cAsts = if (needsSyntheticBreak) {
-          flowAst :+ astForNode(s.statements) :+ Ast(controlStructureNode(s, ControlStructureTypes.BREAK, "break"))
-        } else {
-          flowAst :+ astForNode(s.statements)
-        }
-        setArgumentIndices(cAsts)
-        (tAsts.toList, cAsts.toList)
+        val statementsAsts      = if (s.statements.children.isEmpty) List.empty else List(astForNode(s.statements))
+        val asts                = flowAst ++ statementsAsts
+        val cAsts               = if (needsSyntheticBreak) {
+          asts :+ breakAst(s, "break")
+        } else asts
+        (tAsts, cAsts.toList)
       case i: IfConfigDeclSyntax =>
         (List.empty, List(astForIfConfigDeclSyntax(i)))
     }
@@ -455,52 +1214,85 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   private def astForSwitchExprSyntax(node: SwitchExprSyntax): Ast = {
-    val switchNode = controlStructureNode(node, ControlStructureTypes.SWITCH, code(node))
+    val cases            = node.cases.children.toList
+    val hasTuplePatterns = cases.exists(hasTuplePattern)
 
-    // The semantics of switch statement children is partially defined by their order value.
-    // The blockAst must have order == 2. Only to avoid collision we set switchExpressionAst to 1
-    // because the semantics of it is already indicated via the condition edge.
-    val switchExpressionAst = astForNodeWithFunctionReference(node.subject)
-    setOrderExplicitly(switchExpressionAst, 1)
+    if (hasTuplePatterns) {
+      val outerBlockNode = blockNode(node)
+      scope.pushNewBlockScope(outerBlockNode)
+      localAstParentStack.push(outerBlockNode)
 
-    val blockNode_ = blockNode(node).order(2)
-    scope.pushNewBlockScope(blockNode_)
-    localAstParentStack.push(blockNode_)
+      // The subject may have side effects - assign it to a temp so it is evaluated only once.
+      val subjectTmpName   = scopeLocalUniqueName("subject")
+      val subjectType      = registerTupleSubject(subjectTmpName, node.subject, Defines.Tuple)
+      val subjectLocalNode = localNode(node, subjectTmpName, subjectTmpName, subjectType).order(0)
+      diffGraph.addEdge(localAstParentStack.head, subjectLocalNode, EdgeTypes.AST)
+      scope.addVariable(subjectTmpName, subjectLocalNode, subjectType, VariableScopeManager.ScopeType.BlockScope)
 
-    val casesAsts = node.cases.children.flatMap(astsForSwitchCase)
-    setArgumentIndices(casesAsts.toList)
+      val subjectExprAst   = astForNode(node.subject)
+      val subjectIdentNode = identifierNode(node, subjectTmpName, subjectTmpName, subjectType)
+      scope.addVariableReference(subjectTmpName, subjectIdentNode, subjectType, EvaluationStrategies.BY_REFERENCE)
+      val subjectAssignAst =
+        createAssignmentCallAst(node, Ast(subjectIdentNode), subjectExprAst, s"$subjectTmpName = ${code(node.subject)}")
 
-    scope.popScope()
-    localAstParentStack.pop()
+      val condIdentNode = identifierNode(node, subjectTmpName, subjectTmpName, subjectType)
+      scope.addVariableReference(subjectTmpName, condIdentNode, subjectType, EvaluationStrategies.BY_REFERENCE)
+      val condAst = Ast(condIdentNode)
 
-    Ast(switchNode)
-      .withChild(switchExpressionAst)
-      .withConditionEdge(switchNode, switchExpressionAst.nodes.head)
-      .withChild(blockAst(blockNode_, casesAsts.toList))
+      val switchBlockNode = blockNode(node).order(2)
+      scope.pushNewBlockScope(switchBlockNode)
+      localAstParentStack.push(switchBlockNode)
+      val casesAsts = cases.flatMap(astsForSwitchCase(_, Some(subjectTmpName)))
+      scope.popScope()
+      localAstParentStack.pop()
+
+      val switchBlockAst  = blockAst(switchBlockNode, casesAsts)
+      val switchAstResult = switchAst(node, Some(condAst), Seq(switchBlockAst))
+
+      scope.popScope()
+      localAstParentStack.pop()
+
+      blockAst(outerBlockNode, List(subjectAssignAst, switchAstResult))
+    } else {
+      val switchExpressionAst = astForNode(node.subject)
+
+      val blockNode_ = blockNode(node)
+      scope.pushNewBlockScope(blockNode_)
+      localAstParentStack.push(blockNode_)
+      val casesAsts = cases.flatMap(astsForSwitchCase(_, None))
+      scope.popScope()
+      localAstParentStack.pop()
+
+      val switchBlockAst = blockAst(blockNode_, casesAsts)
+      switchAst(node, Some(switchExpressionAst), Seq(switchBlockAst))
+    }
   }
 
   private def astForTernaryExprSyntax(node: TernaryExprSyntax): Ast = {
-    val name = Operators.conditional
-    val call = callNode(node, code(node), name, name, DispatchTypes.STATIC_DISPATCH)
+    val op  = Operators.conditional
+    val tpe = fullnameProvider.typeFullname(node).getOrElse(Defines.Any)
+    registerType(tpe)
+    val call = createStaticCallNode(node, code(node), op, op, tpe)
 
-    val condAst = astForNodeWithFunctionReference(node.condition)
-    val posAst  = astForNodeWithFunctionReference(node.thenExpression)
-    val negAst  = astForNodeWithFunctionReference(node.elseExpression)
+    val condAst = astForNode(node.condition)
+    val posAst  = astForNode(node.thenExpression)
+    val negAst  = astForNode(node.elseExpression)
 
     val children = List(condAst, posAst, negAst)
     callAst(call, children)
   }
 
   private def astForTryExprSyntax(node: TryExprSyntax): Ast = {
-    val tryNode = controlStructureNode(node, ControlStructureTypes.TRY, code(node))
-    val bodyAst = astForNode(node.expression)
-    tryCatchAst(tryNode, bodyAst, Seq.empty, None)
+    // Try expression does not change the value of the expression.
+    // We do not model the try semantics, so we just return the expression AST.
+    // That way the data-flow is preserved.
+    astForNode(node.expression)
   }
 
   private def astForTupleExprSyntax(node: TupleExprSyntax): Ast = {
     node.elements.children.toList match {
       case Nil         => astForListLikeExpr(node, Seq.empty)
-      case head :: Nil => astForNodeWithFunctionReference(head)
+      case head :: Nil => astForNode(head)
       case other       => astForListLikeExpr(node, other)
     }
   }
@@ -508,12 +1300,14 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
   private def astForTypeExprSyntax(node: TypeExprSyntax): Ast = {
     val nodeCode = code(node)
     registerType(nodeCode)
-    Ast(identifierNode(node, nodeCode, dynamicTypeHints = Seq(nodeCode)))
+    Ast(identifierNode(node, nodeCode, nodeCode, Defines.Any, Seq(nodeCode)))
   }
 
   private def astForUnresolvedAsExprSyntax(node: UnresolvedAsExprSyntax): Ast           = notHandledYet(node)
   private def astForUnresolvedIsExprSyntax(node: UnresolvedIsExprSyntax): Ast           = notHandledYet(node)
   private def astForUnresolvedTernaryExprSyntax(node: UnresolvedTernaryExprSyntax): Ast = notHandledYet(node)
+
+  private def astForUnsafeExprSyntax(node: UnsafeExprSyntax): Ast = astForNode(node.expression)
 
   protected def astForExprSyntax(exprSyntax: ExprSyntax): Ast = exprSyntax match {
     case node: ArrayExprSyntax                 => astForArrayExprSyntax(node)
@@ -524,8 +1318,8 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     case node: BinaryOperatorExprSyntax        => astForBinaryOperatorExprSyntax(node)
     case node: BooleanLiteralExprSyntax        => astForBooleanLiteralExprSyntax(node)
     case node: BorrowExprSyntax                => astForBorrowExprSyntax(node)
-    case node: CanImportExprSyntax             => astForCanImportExprSyntax(node)
-    case node: CanImportVersionInfoSyntax      => astForCanImportVersionInfoSyntax(node)
+    case node: _CanImportExprSyntax            => astForCanImportExprSyntax(node)
+    case node: _CanImportVersionInfoSyntax     => astForCanImportVersionInfoSyntax(node)
     case node: ClosureExprSyntax               => astForClosureExprSyntax(node)
     case node: ConsumeExprSyntax               => astForConsumeExprSyntax(node)
     case node: CopyExprSyntax                  => astForCopyExprSyntax(node)
@@ -569,5 +1363,6 @@ trait AstForExprSyntaxCreator(implicit withSchemaValidation: ValidationMode) {
     case node: UnresolvedAsExprSyntax          => astForUnresolvedAsExprSyntax(node)
     case node: UnresolvedIsExprSyntax          => astForUnresolvedIsExprSyntax(node)
     case node: UnresolvedTernaryExprSyntax     => astForUnresolvedTernaryExprSyntax(node)
+    case node: UnsafeExprSyntax                => astForUnsafeExprSyntax(node)
   }
 }
