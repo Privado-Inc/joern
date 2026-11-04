@@ -1,7 +1,10 @@
 package io.joern.rubysrc2cpg.astcreation
 
+import io.joern.rubysrc2cpg.passes.Defines.RubyOperators
 import io.joern.rubysrc2cpg.passes.{Defines, GlobalTypes}
+import io.joern.x2cpg.Ast
 import io.shiftleft.codepropertygraph.generated.nodes.NewNode
+import org.slf4j.LoggerFactory
 
 import java.util.Objects
 
@@ -60,9 +63,10 @@ object RubyIntermediateAst {
   final case class StatementList(statements: List[RubyExpression])(span: TextSpan)
       extends RubyExpression(span)
       with RubyStatement {
-    override def text: String = statements.size match
+    override def text: String = statements.size match {
       case 0 | 1 => span.text
       case _     => "(...)"
+    }
 
     def size: Int = statements.size
   }
@@ -70,9 +74,10 @@ object RubyIntermediateAst {
   final case class SingletonStatementList(statements: List[RubyExpression])(span: TextSpan)
       extends RubyExpression(span)
       with RubyStatement {
-    override def text: String = statements.size match
+    override def text: String = statements.size match {
       case 0 | 1 => span.text
       case _     => "(...)"
+    }
 
     def size: Int = statements.size
   }
@@ -295,8 +300,8 @@ object RubyIntermediateAst {
   final case class IfExpression(
     condition: RubyExpression,
     thenClause: RubyExpression,
-    elsifClauses: List[RubyExpression],
-    elseClause: Option[RubyExpression]
+    elsifClauses: List[RubyExpression] = Nil,
+    elseClause: Option[RubyExpression] = None
   )(span: TextSpan)
       extends RubyExpression(span)
       with ControlFlowStatement
@@ -348,7 +353,9 @@ object RubyIntermediateAst {
 
   final case class ArrayPattern(children: List[RubyExpression])(span: TextSpan) extends RubyExpression(span)
 
-  final case class MatchVariable()(span: TextSpan) extends RubyExpression(span)
+  final case class MatchVariable()(span: TextSpan) extends RubyExpression(span) {
+    def toSimpleIdentifier: SimpleIdentifier = SimpleIdentifier()(span)
+  }
 
   final case class NextExpression()(span: TextSpan) extends RubyExpression(span) with ControlFlowStatement
 
@@ -371,7 +378,7 @@ object RubyIntermediateAst {
   final case class TypeIdentifier(typeFullName: String)(span: TextSpan)
       extends RubyExpression(span)
       with RubyIdentifier {
-    def isBuiltin: Boolean        = typeFullName.startsWith(GlobalTypes.builtinPrefix)
+    def isBuiltin: Boolean        = typeFullName.startsWith(GlobalTypes.corePrefix)
     override def toString: String = s"TypeIdentifier(${span.text}, $typeFullName)"
   }
 
@@ -404,6 +411,25 @@ object RubyIntermediateAst {
         case s                                    => s
       }
     }
+
+  }
+
+  object StaticLiteral {
+
+    private val logger = LoggerFactory.getLogger(getClass)
+
+    def unapply(literal: StaticLiteral): Option[String] = {
+      val typeName = literal.typeFullName.stripPrefix(s"${GlobalTypes.corePrefix}.")
+      Some(typeName).filter(GlobalTypes.bundledClasses.contains) match {
+        case None =>
+          logger.warn(
+            s"Unapply called on static literal with type not contained within known bundled classes: ${literal.typeFullName}"
+          )
+          Some(literal.typeFullName)
+        case x => x
+      }
+
+    }
   }
 
   final case class DynamicLiteral(typeFullName: String, expressions: List[RubyExpression])(span: TextSpan)
@@ -430,12 +456,12 @@ object RubyIntermediateAst {
 
     def isStatic: Boolean = !isDynamic
 
-    def typeFullName: String = Defines.getBuiltInType(Defines.Array)
+    def typeFullName: String = Defines.prefixAsCoreType(Defines.Array)
   }
 
   sealed trait HashLike extends RubyExpression with LiteralExpr {
     def elements: List[RubyExpression]
-    def typeFullName: String = Defines.getBuiltInType(Defines.Hash)
+    def typeFullName: String = Defines.prefixAsCoreType(Defines.Hash)
   }
 
   final case class HashLiteral(elements: List[RubyExpression])(span: TextSpan)
@@ -484,34 +510,45 @@ object RubyIntermediateAst {
       extends RubyExpression(span)
       with RubyCall
 
-  sealed trait AccessModifier extends AllowedTypeDeclarationChild {
+  final case class ErbTemplateCall(target: RubyExpression, arguments: List[RubyExpression])(span: TextSpan)
+      extends RubyExpression(span)
+      with RubyCall
+
+  sealed trait AccessModifier {
     def toSimpleIdentifier: SimpleIdentifier
+    def arguments: List[RubyExpression]
   }
 
-  sealed trait MethodAccessModifier extends AllowedTypeDeclarationChild {
+  sealed trait MethodAccessModifier {
     def toSimpleIdentifier: SimpleIdentifier
-    def method: RubyExpression
+    def arguments: List[RubyExpression]
   }
 
-  final case class PublicModifier()(span: TextSpan) extends RubyExpression(span) with AccessModifier {
+  final case class PublicModifier(arguments: List[RubyExpression] = Nil)(span: TextSpan)
+      extends RubyExpression(span)
+      with AccessModifier {
     override def toSimpleIdentifier: SimpleIdentifier = SimpleIdentifier(None)(span)
   }
 
-  final case class PrivateModifier()(span: TextSpan) extends RubyExpression(span) with AccessModifier {
+  final case class PrivateModifier(arguments: List[RubyExpression] = Nil)(span: TextSpan)
+      extends RubyExpression(span)
+      with AccessModifier {
     override def toSimpleIdentifier: SimpleIdentifier = SimpleIdentifier(None)(span)
   }
 
-  final case class ProtectedModifier()(span: TextSpan) extends RubyExpression(span) with AccessModifier {
+  final case class ProtectedModifier(arguments: List[RubyExpression] = Nil)(span: TextSpan)
+      extends RubyExpression(span)
+      with AccessModifier {
     override def toSimpleIdentifier: SimpleIdentifier = SimpleIdentifier(None)(span)
   }
 
-  final case class PrivateMethodModifier(method: RubyExpression)(span: TextSpan)
+  final case class PrivateMethodModifier(arguments: List[RubyExpression])(span: TextSpan)
       extends RubyExpression(span)
       with MethodAccessModifier {
     override def toSimpleIdentifier: SimpleIdentifier = SimpleIdentifier(None)(span.spanStart("private_class_method"))
   }
 
-  final case class PublicMethodModifier(method: RubyExpression)(span: TextSpan)
+  final case class PublicMethodModifier(arguments: List[RubyExpression])(span: TextSpan)
       extends RubyExpression(span)
       with MethodAccessModifier {
     override def toSimpleIdentifier: SimpleIdentifier = SimpleIdentifier(None)(span.spanStart("public_class_method"))
@@ -539,11 +576,38 @@ object RubyIntermediateAst {
     def withoutBlock: SimpleCall = SimpleCall(target, arguments)(span)
   }
 
+  /** A Ruby call where the target is the `base`, and the `methodName` is the call.
+    */
+  trait RubyCallWithBase extends RubyCall {
+
+    def op: String
+
+    def methodName: String
+
+    def memberCallWithTarget(newTarget: RubyExpression): MemberCall =
+      MemberCall(newTarget, op, methodName, arguments)(span)
+
+    override def withBlock(block: Block): RubyCallWithBlock[?] =
+      MemberCallWithBlock(target, op, methodName, arguments, block)(span)
+  }
+
   /** Represents member calls, e.g. `x.y(z,w)` */
   final case class MemberCall(target: RubyExpression, op: String, methodName: String, arguments: List[RubyExpression])(
     span: TextSpan
   ) extends RubyExpression(span)
-      with RubyCall {
+      with RubyCallWithBase
+
+  /** Represents a member call that affects the global regex match variables
+    */
+  final case class RegexMatchMemberCall(
+    target: RubyExpression,
+    op: String,
+    methodName: String,
+    arguments: List[RubyExpression]
+  )(span: TextSpan)
+      extends RubyExpression(span)
+      with RubyCallWithBase {
+
     override def withBlock(block: Block): RubyCallWithBlock[?] =
       MemberCallWithBlock(target, op, methodName, arguments, block)(span)
   }
@@ -619,6 +683,10 @@ object RubyIntermediateAst {
     */
   final case class DummyNode(node: NewNode)(span: TextSpan) extends RubyExpression(span)
 
+  /** A dummy class for wrapping around `Ast` and allowing it to integrate with RubyNode classes.
+    */
+  final case class DummyAst(ast: Ast)(span: TextSpan) extends RubyExpression(span)
+
   final case class UnaryExpression(op: String, expression: RubyExpression)(span: TextSpan) extends RubyExpression(span)
 
   final case class BinaryExpression(lhs: RubyExpression, op: String, rhs: RubyExpression)(span: TextSpan)
@@ -630,4 +698,5 @@ object RubyIntermediateAst {
       extends RubyExpression(span)
       with AllowedTypeDeclarationChild
 
+  final case class EmptyExpression(override val span: TextSpan) extends RubyExpression(span)
 }

@@ -1,6 +1,10 @@
 package io.joern.rubysrc2cpg.passes
 
+import org.slf4j.LoggerFactory
+
 object Defines {
+
+  private val logger = LoggerFactory.getLogger(getClass)
 
   val Any: String          = "ANY"
   val Defined: String      = "defined"
@@ -32,23 +36,42 @@ object Defines {
 
   val Resolver: String = "<dependency-resolver>"
 
-  def getBuiltInType(typeInString: String) = s"${GlobalTypes.kernelPrefix}.$typeInString"
+  def prefixAsKernelDefined(typeInString: String): String = {
+    if (GlobalTypes.bundledClasses.contains(typeInString))
+      logger.warn(s"Type '$typeInString' is considered a 'core' type, not a 'Kernel-contained' type")
+    s"${GlobalTypes.kernelPrefix}.$typeInString"
+  }
+
+  def prefixAsCoreType(typeInString: String): String = {
+    if (!GlobalTypes.bundledClasses.contains(typeInString))
+      logger.warn(s"Type '$typeInString' not considered a 'core' type")
+    s"${GlobalTypes.corePrefix}.$typeInString"
+  }
 
   object RubyOperators {
-    val backticks: String = "<operator>.backticks"
-    val hashInitializer   = "<operator>.hashInitializer"
-    val association       = "<operator>.association"
-    val splat             = "<operator>.splat"
-    val arrayPatternMatch = "<operator>.arrayPatternMatch"
-    val regexpMatch       = "=~"
-    val regexpNotMatch    = "!~"
+    val backticks: String  = "<operator>.backticks"
+    val hashInitializer    = "<operator>.hashInitializer"
+    val association        = "<operator>.association"
+    val splat              = "<operator>.splat"
+    val regexpMatch        = "=~"
+    val regexpNotMatch     = "!~"
+    val templateOutRaw     = "<operator>.templateOutRaw"
+    val templateOutEscape  = "<operator>.templateOutEscape"
+    val bufferAppend       = "<operator>.joernBufferAppend"
+    val publicModifier     = "<operator>.publicModifier"
+    val privateModifier    = "<operator>.privateModifier"
+    val protectedModifier  = "<operator>.protectedModifier"
+    val privateClassMethod = "<operator>.privateClassMethod"
+    val publicClassMethod  = "<operator>.publicClassMethod"
+
+    val regexMethods = Set("match") // TODO: Figure out how to model these, "sub", "gsub")
   }
 }
 
 object GlobalTypes {
-  val Kernel        = "Kernel"
-  val builtinPrefix = "__core"
-  val kernelPrefix  = s"$builtinPrefix.$Kernel"
+  val Kernel       = "Kernel"
+  val corePrefix   = "__core"
+  val kernelPrefix = s"$corePrefix.$Kernel"
 
   /** Source: https://ruby-doc.org/docs/ruby-doc-bundle/Manual/man-1.4/function.html
     */

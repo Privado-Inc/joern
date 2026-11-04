@@ -1,16 +1,19 @@
 package io.joern.swiftsrc2cpg.io
 
-import better.files.File
 import io.joern.swiftsrc2cpg.Config
 import io.joern.swiftsrc2cpg.passes.AstCreationPass
 import io.joern.swiftsrc2cpg.utils.AstGenRunner
 import io.joern.x2cpg.ValidationMode
 import io.joern.x2cpg.X2Cpg.newEmptyCpg
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.utils.FileUtil
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.wordspec.AnyWordSpec
 import org.scalatest.BeforeAndAfterAll
+
+import java.nio.file.{Files, Path}
 
 import java.util.regex.Pattern
 
@@ -30,20 +33,20 @@ class ExcludeTests extends AnyWordSpec with Matchers with TableDrivenPropertyChe
       "index.swift"
     )
 
-  private val projectUnderTest: File = {
-    val dir = File.newTemporaryDirectory("swiftsrc2cpgTestsExcludeTest")
+  private val projectUnderTest: Path = {
+    val dir = Files.createTempDirectory("swiftsrc2cpgTestsExcludeTest")
     testFiles.foreach { testFile =>
       val file = dir / testFile
-      file.createIfNotExists(createParents = true)
+      file.createWithParentsIfNotExists(createParents = true)
     }
     dir
   }
 
-  override def afterAll(): Unit = projectUnderTest.delete(swallowIOExceptions = true)
+  override def afterAll(): Unit = FileUtil.delete(projectUnderTest, swallowIoExceptions = true)
 
   private def testWithArguments(exclude: Seq[String], excludeRegex: String, expectedFiles: Set[String]): Unit = {
-    File.usingTemporaryDirectory("swiftsrc2cpgTests") { tmpDir =>
-      val cpg = newEmptyCpg()
+    FileUtil.usingTemporaryDirectory("swiftsrc2cpgTests") { tmpDir =>
+      val cpg    = newEmptyCpg()
       val config = Config()
         .withInputPath(projectUnderTest.toString)
         .withOutputPath(tmpDir.toString)
@@ -146,6 +149,24 @@ class ExcludeTests extends AnyWordSpec with Matchers with TableDrivenPropertyChe
       s"$statement" in testWithArguments(exclude, excludeRegex, result)
     }
 
+  }
+
+  "Forwarding --exclude-regex to SwiftAstGen" should {
+    "prevent the binary from emitting a JSON for an excluded file" in {
+      // Verifies that the regex actually reaches the binary: post-filtering in
+      // execute() would also drop the file from the CPG, so we inspect the raw
+      // astgen output directory directly.
+      FileUtil.usingTemporaryDirectory("swiftsrc2cpgTests") { tmpDir =>
+        val config = Config()
+          .withInputPath(projectUnderTest.toString)
+          .withOutputPath(tmpDir.toString)
+          .withIgnoredFilesRegex(".*index\\..*")
+        new AstGenRunner(config).execute(tmpDir)
+        val emittedJsons = tmpDir.listFiles().map(_.getFileName.toString).toSet
+        emittedJsons should not contain "index.swift.json"
+        emittedJsons should contain("a.swift.json")
+      }
+    }
   }
 
 }

@@ -1,41 +1,41 @@
 package io.joern.php2cpg.parser
-import better.files.File
-import io.joern.x2cpg.utils.ExternalCommand
+import io.shiftleft.semanticcpg.utils.{ExternalCommand, FileUtil}
+import FileUtil.*
 import org.slf4j.LoggerFactory
 
 import scala.io.Source
 import scala.util.{Failure, Success, Try, Using}
+import java.nio.file.{Files, Path}
 import upickle.default.*
 
 import scala.collection.mutable
 
 /** Parses the high-level symbol information of a project.
   */
-class ClassParser(targetDir: File) {
+class ClassParser(targetDir: Path) {
 
   import ClassParser.*
 
   private val logger = LoggerFactory.getLogger(this.getClass)
 
-  private lazy val classParserScript = {
-    val f = File.newTemporaryFile("ClassParser", ".php").deleteOnExit(swallowIOExceptions = true)
-    Using(Source.fromResource("ClassParser.php")) { br =>
-      f.writeText(br.getLines().mkString("\n"))
-    }
-    f
-  }
+  def parse(): Try[List[ClassParserClass]] = {
+    val inputDirectory = targetDir.getParent.toAbsolutePath
 
-  private lazy val phpClassParseCommand: Seq[String] =
-    Seq("php", classParserScript.pathAsString, targetDir.pathAsString)
+    FileUtil.usingTemporaryFile("ClassParser", ".php") { scriptFile =>
+      Using(Source.fromResource("ClassParser.php")) { br =>
+        Files.writeString(scriptFile, br.getLines().mkString("\n"))
+      }
 
-  def parse(): Try[List[ClassParserClass]] = Try {
-    val inputDirectory = targetDir.parent.canonicalPath
-    ExternalCommand.run(phpClassParseCommand, inputDirectory).toTry.map(_.reverse) match {
-      case Success(output) =>
-        read[List[ClassParserClass]](output.mkString("\n"))
-      case Failure(exception) =>
-        logger.error(s"Failure running `ClassParser.php` with $phpClassParseCommand", exception.getMessage)
-        throw exception
+      ExternalCommand
+        .run(Seq("php", scriptFile.toString, targetDir.toString), Option(inputDirectory))
+        .toTry
+        .map(_.reverse) match {
+        case Success(output) =>
+          Try(read[List[ClassParserClass]](output.mkString("\n")))
+        case Failure(exception) =>
+          logger.error(s"Failure running `ClassParser.php`", exception.getMessage)
+          Failure(exception)
+      }
     }
   }
 

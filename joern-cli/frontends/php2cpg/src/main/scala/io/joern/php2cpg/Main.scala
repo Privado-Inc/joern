@@ -12,26 +12,39 @@ final case class Config(
   phpIni: Option[String] = None,
   phpParserBin: Option[String] = None,
   phpExtensions: Set[String] = Set(),
-  downloadDependencies: Boolean = false
+  downloadDependencies: Boolean = false,
+  override val genericConfig: X2CpgConfig.GenericConfig = X2CpgConfig.GenericConfig(),
+  override val typeRecoveryParserConfig: TypeRecoveryParserConfig.Config = TypeRecoveryParserConfig.Config(),
+  override val typeStubsFilePath: Option[String] = None
 ) extends X2CpgConfig[Config]
-    with TypeRecoveryParserConfig[Config]
-    with TypeStubsParserConfig[Config]
-    with DependencyDownloadConfig[Config] {
+    with TypeRecoveryParserConfig
+    with TypeStubsParserConfig
+    with DependencyDownloadConfig {
+
+  override def withGenericConfig(value: X2CpgConfig.GenericConfig): Config =
+    copy(genericConfig = value)
+
+  override def withTypeRecoveryParserConfig(value: TypeRecoveryParserConfig.Config): Config =
+    copy(typeRecoveryParserConfig = value)
 
   def withPhpIni(phpIni: String): Config = {
-    copy(phpIni = Some(phpIni)).withInheritedFields(this)
+    copy(phpIni = Some(phpIni))
   }
 
   def withPhpParserBin(phpParserBin: String): Config = {
-    copy(phpParserBin = Some(phpParserBin)).withInheritedFields(this)
+    copy(phpParserBin = Some(phpParserBin))
   }
 
   def withExtensions(phpExtensions: Set[String]): Config = {
-    copy(phpExtensions = phpExtensions).withInheritedFields(this)
+    copy(phpExtensions = phpExtensions)
   }
 
   override def withDownloadDependencies(downloadDependencies: Boolean): Config = {
-    copy(downloadDependencies = downloadDependencies).withInheritedFields(this)
+    copy(downloadDependencies = downloadDependencies)
+  }
+
+  protected override def internalWithTypeStubsFilePath(typeStubsFilePath: String): Config = {
+    copy(typeStubsFilePath = Some(typeStubsFilePath))
   }
 }
 
@@ -57,12 +70,4 @@ object Frontend {
   }
 }
 
-object Main extends X2CpgMain(cmdLineParser, new Php2Cpg()) with FrontendHTTPServer[Config, Php2Cpg] {
-
-  override protected def newDefaultConfig(): Config = Config()
-
-  def run(config: Config, php2Cpg: Php2Cpg): Unit = {
-    if (config.serverMode) { startup() }
-    else { php2Cpg.run(config) }
-  }
-}
+object Main extends X2CpgMain(new Php2Cpg(): Php2Cpg, cmdLineParser)

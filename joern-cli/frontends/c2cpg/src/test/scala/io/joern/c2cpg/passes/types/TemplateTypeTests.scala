@@ -20,16 +20,16 @@ class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CppExt) {
         case List(typeDeclX, typeDeclY, typeDeclA, typeDeclB) =>
           typeDeclX.name shouldBe "X"
           typeDeclX.fullName shouldBe "X"
-          typeDeclX.aliasTypeFullName shouldBe Option("X<T>")
+          typeDeclX.aliasTypeFullName shouldBe empty
           typeDeclY.name shouldBe "Y"
           typeDeclY.fullName shouldBe "Y"
-          typeDeclY.aliasTypeFullName shouldBe Option("Y<A,B>")
+          typeDeclY.aliasTypeFullName shouldBe empty
           typeDeclA.name shouldBe "A"
           typeDeclA.fullName shouldBe "A"
-          typeDeclA.aliasTypeFullName shouldBe Option("X<int>")
+          typeDeclA.aliasTypeFullName shouldBe Option("X")
           typeDeclB.name shouldBe "B"
           typeDeclB.fullName shouldBe "B"
-          typeDeclB.aliasTypeFullName shouldBe Option("Y<int, char>")
+          typeDeclB.aliasTypeFullName shouldBe Option("Y")
       }
     }
 
@@ -38,15 +38,14 @@ class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CppExt) {
         |template<typename T> class X;
         |template<typename A, typename B> class Y : public X<A> {};
         |""".stripMargin)
-      inside(cpg.typeDecl.nameNot(NamespaceTraversal.globalNamespaceName).filter(x => !x.isExternal).l) {
-        case List(x, y) =>
-          x.name shouldBe "X"
-          x.fullName shouldBe "X"
-          x.aliasTypeFullName shouldBe Option("X<T>")
-          y.name shouldBe "Y"
-          y.fullName shouldBe "Y"
-          y.aliasTypeFullName shouldBe Option("Y<A,B>")
-          y.inheritsFromTypeFullName shouldBe Seq("X<A>")
+      inside(
+        cpg.typeDecl.nameNot(NamespaceTraversal.globalNamespaceName).filter(x => !x.isExternal).sortBy(_.fullName).l
+      ) { case List(x, y) =>
+        x.name shouldBe "X"
+        x.fullName shouldBe "X"
+        y.name shouldBe "Y"
+        y.fullName shouldBe "Y"
+        y.inheritsFromTypeFullName shouldBe Seq("X")
       }
     }
 
@@ -58,7 +57,36 @@ class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CppExt) {
         case List(foo) =>
           foo.name shouldBe "Foo"
           foo.fullName shouldBe "Foo"
-          foo.aliasTypeFullName shouldBe Option("Foo<A,B>")
+      }
+    }
+
+    "be correct for alias templates" in {
+      val cpg = code("""
+        |struct Widget { int w; };
+        |template <typename T> struct Box { T v; };
+        |template <typename T> using APtr = T*;
+        |template <typename T> using AId  = T;
+        |template <typename T> using ABox = Box<T>;
+        |using PlainWidgetPtr = Widget*;
+        |void take(APtr<Widget> p);
+        |struct Holder { APtr<Widget> m; };
+        |void f() {
+        |  PlainWidgetPtr c0 = nullptr;
+        |  APtr<Widget>   a0 = nullptr;
+        |  AId<int>       a1 = 1;
+        |  ABox<int>      a2;
+        |}
+        |""".stripMargin)
+      inside(cpg.local.l) { case List(c0, a0, a1, a2) =>
+        c0.typeFullName shouldBe "PlainWidgetPtr"
+        a0.typeFullName shouldBe "Widget*"
+        a1.typeFullName shouldBe "int"
+        a2.typeFullName shouldBe "Box"
+      }
+      cpg.member.nameExact("m").typeFullName.l shouldBe List("Widget*")
+      inside(cpg.method.nameExact("take").l) { case List(take) =>
+        take.fullName shouldBe "take:void(Widget*)"
+        take.parameter.nameExact("p").typeFullName.l shouldBe List("Widget*")
       }
     }
 
@@ -72,10 +100,10 @@ class TemplateTypeTests extends C2CpgSuite(fileSuffix = FileDefaults.CppExt) {
        |""".stripMargin)
       inside(cpg.method.nameNot("<global>").internal.l) { case List(x, y) =>
         x.name shouldBe "x"
-        x.fullName shouldBe "x:void(ANY,ANY)"
+        x.fullName shouldBe "x:void(T,U)"
         x.signature shouldBe "void(T,U)"
         y.name shouldBe "y"
-        y.fullName shouldBe "y:void(ANY,ANY)"
+        y.fullName shouldBe "y:void(T,U)"
         y.signature shouldBe "void(T,U)"
       }
     }

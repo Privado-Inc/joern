@@ -101,8 +101,8 @@ class ImplicitRequirePass(cpg: Cpg, externalTypes: Seq[TypeImportInfo] = Nil)
       .flatMap {
         case x if x.name == Initialize =>
           x.receiver.headOption.flatMap {
-            case x: TypeRef    => Option(getFieldBaseFromString(x.code))
-            case x: Identifier => Option(x.name)
+            case x: TypeRef                                 => Option(getFieldBaseFromString(x.code))
+            case x: Identifier                              => Option(x.name)
             case x: Call if x.name == Operators.fieldAccess =>
               Option(fieldAccessBase(x.asInstanceOf[FieldAccess]))
             case _ => None
@@ -148,7 +148,7 @@ class ImplicitRequirePass(cpg: Cpg, externalTypes: Seq[TypeImportInfo] = Nil)
     builder.addNode(requireCallNode)
     // Create literal argument
     val pathLiteralNode =
-      NewLiteral().code(s"'$path'").typeFullName(s"$kernelPrefix.String").argumentIndex(1).order(2)
+      NewLiteral().code(s"'$path'").typeFullName(s"$builtinPrefix.String").argumentIndex(1).order(2)
     builder.addEdge(requireCallNode, pathLiteralNode, EdgeTypes.AST)
     builder.addEdge(requireCallNode, pathLiteralNode, EdgeTypes.ARGUMENT)
     requireCallNode

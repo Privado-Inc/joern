@@ -1,15 +1,15 @@
 package io.joern.rubysrc2cpg.deprecated.passes
 
-import better.files.File
 import io.joern.rubysrc2cpg.deprecated.astcreation.{AstCreator, ResourceManagedParser}
 import io.joern.rubysrc2cpg.deprecated.utils.{PackageContext, PackageTable}
 import io.joern.x2cpg.ValidationMode
-import io.joern.x2cpg.datastructures.Global
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.passes.ForkJoinParallelCpgPass
 import org.slf4j.LoggerFactory
 
-import scala.util.{Failure, Success, Try}
+import java.nio.file.{Files, Paths}
+import scala.jdk.CollectionConverters.*
+import scala.util.{Failure, Success, Try, Using}
 
 class AstPackagePass(
   cpg: Cpg,
@@ -26,8 +26,8 @@ class AstPackagePass(
     getRubyDependenciesFile(inputPath) ++ getRubyDependenciesFile(tempExtDir)
 
   override def runOnPart(diffGraph: DiffGraphBuilder, filePath: String): Unit = {
-    parser.parse(filePath) match
-      case Failure(exception) => logger.warn(s"Could not parse file: $filePath, skipping", exception);
+    parser.parse(filePath) match {
+      case Failure(exception)  => logger.warn(s"Could not parse file: $filePath, skipping", exception);
       case Success(programCtx) =>
         Try(
           new AstCreator(
@@ -37,13 +37,21 @@ class AstPackagePass(
             Option(inputPath)
           ).createAst()
         )
+    }
 
   }
 
   private def getRubyDependenciesFile(inputPath: String): Array[String] = {
-    val currentDir = File(inputPath)
-    if (currentDir.exists) {
-      currentDir.listRecursively.filter(_.extension.exists(_ == ".rb")).map(_.path.toString).toArray
+    val currentDir = Paths.get(inputPath).toAbsolutePath.normalize()
+    if (Files.exists(currentDir)) {
+      Using.resource(Files.walk(currentDir)) { paths =>
+        paths
+          .iterator()
+          .asScala
+          .filter(path => Files.isRegularFile(path) && path.getFileName.toString.toLowerCase.endsWith(".rb"))
+          .map(_.toString)
+          .toArray
+      }
     } else {
       Array.empty
     }

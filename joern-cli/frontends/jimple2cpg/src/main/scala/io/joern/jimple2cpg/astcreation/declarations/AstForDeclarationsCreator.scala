@@ -1,11 +1,10 @@
 package io.joern.jimple2cpg.astcreation.declarations
 
 import io.joern.jimple2cpg.astcreation.{AstCreator, JvmStringOpts}
-import io.joern.x2cpg.utils.NodeBuilders
 import io.joern.x2cpg.{Ast, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{ModifierTypes, PropertyNames}
-import soot.{SootClass, SootMethod}
+import soot.{SootClass, SootMethod, SootField}
 import soot.tagkit.*
 
 import scala.collection.mutable
@@ -28,7 +27,7 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode)
         Some(ModifierTypes.VIRTUAL)
       else None,
       if (classDeclaration.isSynchronized) Some("SYNCHRONIZED") else None
-    ).flatten.map(m => Ast(NodeBuilders.newModifierNode(m).code(m.toLowerCase)))
+    ).flatten.map(m => Ast(modifierNode(classDeclaration, m).code(m.toLowerCase)))
   }
 
   protected def astsForModifiers(methodDeclaration: SootMethod): Seq[NewModifier] = {
@@ -43,7 +42,17 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode)
         Some(ModifierTypes.VIRTUAL)
       else None,
       if (methodDeclaration.isSynchronized) Some("SYNCHRONIZED") else None
-    ).flatten.map(m => NodeBuilders.newModifierNode(m).code(m.toLowerCase))
+    ).flatten.map(m => modifierNode(methodDeclaration, m).code(m.toLowerCase))
+  }
+
+  protected def astsForModifiers(fieldDeclaration: SootField): Seq[Ast] = {
+    Seq(
+      if (fieldDeclaration.isPublic) Some(ModifierTypes.PUBLIC) else None,
+      if (fieldDeclaration.isPrivate) Some(ModifierTypes.PRIVATE) else None,
+      if (fieldDeclaration.isStatic) Some(ModifierTypes.STATIC) else None,
+      if (fieldDeclaration.isProtected) Some(ModifierTypes.PROTECTED) else None,
+      if (fieldDeclaration.isFinal) Some(ModifierTypes.FINAL) else None
+    ).flatten.map(m => Ast(modifierNode(fieldDeclaration, m).code(m.toLowerCase)))
   }
 
   protected def astsForHostTags(host: AbstractHost): Seq[Ast] = {
@@ -57,7 +66,7 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode)
     val typeFullName = registerType(annotationTag.getType.parseAsJavaType)
     val name         = typeFullName.split('.').last
     val elementNodes = annotationTag.getElems.asScala.map(astForAnnotationElement(_, host)).toSeq
-    val code = s"@$name(${elementNodes.flatMap(_.root).flatMap(_.properties.get(PropertyNames.CODE)).mkString(", ")})"
+    val code = s"@$name(${elementNodes.flatMap(_.root).flatMap(_.properties.get(PropertyNames.Code)).mkString(", ")})"
 
     val annotation = annotationNode(host, code, name, typeFullName)
     annotationAst(annotation, elementNodes)
@@ -95,7 +104,7 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode)
     astChildren.append(annoElement match {
       case x: AnnotationAnnotationElem =>
         val rhsAst = astsForAnnotations(x.getValue, parent)
-        codeBuilder.append(s"${rhsAst.root.flatMap(_.properties.get(PropertyNames.CODE)).mkString(", ")}")
+        codeBuilder.append(s"${rhsAst.root.flatMap(_.properties.get(PropertyNames.Code)).mkString(", ")}")
         rhsAst
       case x: AnnotationArrayElem =>
         val (rhsAst, code) = astForAnnotationArrayElement(x, parent)
@@ -126,7 +135,7 @@ trait AstForDeclarationsCreator(implicit withSchemaValidation: ValidationMode)
 
   private def astForAnnotationArrayElement(x: AnnotationArrayElem, parent: AbstractHost): (Ast, String) = {
     val elems = x.getValues.asScala.map(astForAnnotationElement(_, parent)).toSeq
-    val code  = s"{${elems.flatMap(_.root).flatMap(_.properties.get(PropertyNames.CODE)).mkString(", ")}}"
+    val code  = s"{${elems.flatMap(_.root).flatMap(_.properties.get(PropertyNames.Code)).mkString(", ")}}"
     val array = NewArrayInitializer().code(code).lineNumber(line(parent)).columnNumber(column(parent))
     setArgumentIndices(elems)
     (Ast(array).withChildren(elems), code)

@@ -1,48 +1,68 @@
 package io.joern.rubysrc2cpg.datastructures
 
-import better.files.File
-import io.joern.rubysrc2cpg.passes.GlobalTypes
-import io.joern.rubysrc2cpg.passes.GlobalTypes.builtinPrefix
+import io.joern.rubysrc2cpg.passes.{GlobalTypes, Defines as RubyDefines}
 import io.joern.x2cpg.Defines
-import io.joern.x2cpg.datastructures.{TypedScopeElement, *}
+import io.joern.x2cpg.datastructures.*
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{DeclarationNew, NewLocal, NewMethodParameterIn}
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
+import io.shiftleft.semanticcpg.utils.FileUtil
 
 import java.io.File as JFile
+import java.nio.file.{Files, Paths}
 import scala.collection.mutable
 import scala.reflect.ClassTag
+import scala.collection.mutable
 import scala.util.Try
 
 class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     extends Scope[String, DeclarationNew, TypedScopeElement]
     with TypedScope[RubyMethod, RubyField, RubyType](summary) {
 
+  private var tmpClassCounter     = 0
+  private var tmpProcParamCounter = 0
+  private var tmpClosureCounter   = 0
+
   private val builtinMethods = GlobalTypes.kernelFunctions
     .map(m => RubyMethod(m, List.empty, Defines.Any, Some(GlobalTypes.kernelPrefix)))
     .toList
 
+  // Insertion ordered, as type resolution picks the first match among the types in scope
   override val typesInScope: mutable.Set[RubyType] =
-    mutable.Set(RubyType(GlobalTypes.kernelPrefix, builtinMethods, List.empty))
+    mutable.LinkedHashSet(RubyType(GlobalTypes.kernelPrefix, builtinMethods, List.empty))
 
   // Add some built-in methods that are significant
-  // TODO: Perhaps create an offline pre-built list of methods
   typesInScope.addAll(
     Seq(
       RubyType(
-        s"$builtinPrefix.Array",
-        List(RubyMethod("[]", List.empty, s"$builtinPrefix.Array", Option(s"$builtinPrefix.Array"))),
+        RubyDefines.prefixAsCoreType(RubyDefines.Array),
+        List(
+          RubyMethod(
+            "[]",
+            List.empty,
+            RubyDefines.prefixAsCoreType(RubyDefines.Array),
+            Option(RubyDefines.prefixAsCoreType(RubyDefines.Array))
+          )
+        ),
         List.empty
       ),
       RubyType(
-        s"$builtinPrefix.Hash",
-        List(RubyMethod("[]", List.empty, s"$builtinPrefix.Hash", Option(s"$builtinPrefix.Hash"))),
+        RubyDefines.prefixAsCoreType(RubyDefines.Hash),
+        List(
+          RubyMethod(
+            "[]",
+            List.empty,
+            RubyDefines.prefixAsCoreType(RubyDefines.Hash),
+            Option(RubyDefines.prefixAsCoreType(RubyDefines.Hash))
+          )
+        ),
         List.empty
       )
     )
   )
 
-  override val membersInScope: mutable.Set[MemberLike] = mutable.Set(builtinMethods*)
+  override val membersInScope: mutable.Set[MemberLike] = mutable.LinkedHashSet(builtinMethods*)
 
   /** @return
     *   using the stack, will initialize a new module scope object.
@@ -68,16 +88,16 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
 
   def pushField(field: FieldDecl): Unit = {
     popScope().foreach {
-      case TypeScope(fullName, fields) =>
-        pushNewScope(TypeScope(fullName, fields :+ field))
-      case x =>
+      case TypeScope(fullName, fields, visMap) =>
+        pushNewScope(TypeScope(fullName, fields :+ field, visMap))
+      case scope =>
         pushField(field)
-        pushNewScope(x)
+        pushNewScope(scope)
     }
   }
 
   def getFieldsInScope: List[FieldDecl] =
-    stack.collect { case ScopeElement(TypeScope(_, fields), _) => fields }.flatten
+    stack.collect { case ScopeElement(TypeScope(_, fields, _), _) => fields }.flatten
 
   def findFieldInScope(fieldName: String): Option[FieldDecl] = {
     getFieldsInScope.find(_.name == fieldName)
@@ -87,12 +107,12 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     // Use the summary to determine if there is a constructor present
     val mappedScopeNode = scopeNode match {
       case n: NamespaceLikeScope =>
-        typesInScope.addAll(summary.typesUnderNamespace(n.fullName))
+        typesInScope.addAll(summary.typesUnderNamespaceSorted(n.fullName))
         n
       case n: ProgramScope =>
-        typesInScope.addAll(summary.typesUnderNamespace(n.fullName))
+        typesInScope.addAll(summary.typesUnderNamespaceSorted(n.fullName))
         n
-      case TypeScope(name, _) =>
+      case TypeScope(name, _, _) =>
         typesInScope.addAll(summary.matchingTypes(name))
         scopeNode
       case _ => scopeNode
@@ -107,7 +127,7 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
   override def addToScope(identifier: String, variable: DeclarationNew): TypedScopeElement = {
     variable match {
       case _: NewMethodParameterIn => super.addToScope(identifier, variable)
-      case _ =>
+      case _                       =>
         stack.collectFirst {
           case x @ ScopeElement(_: MethodLikeScope, _) => x
           case x @ ScopeElement(_: ProgramScope, _)    => x
@@ -125,10 +145,23 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     }
   }
 
-  def lookupVariableInOuterScope(identifier: String): List[DeclarationNew] = {
-    stack.drop(1).collect {
+  def lookupCapturedVariable(identifier: String): Option[DeclarationNew] = {
+    val outerStack     = stack.drop(1)
+    val methodBoundary = outerStack.indexWhere {
+      case ScopeElement(m: MethodLikeScope, _) if !m.fullName.contains("<lambda>") => true
+      case _                                                                       => false
+    }
+    val reachableScopes = if (methodBoundary >= 0) outerStack.take(methodBoundary + 1) else outerStack
+    reachableScopes.collectFirst {
       case scopeElement if scopeElement.variables.contains(identifier) =>
         scopeElement.variables(identifier)
+    }
+  }
+
+  def lookupSelfInCurrentScope: Option[DeclarationNew] = {
+    stack.headOption.collectFirst {
+      case scopeElement if scopeElement.variables.contains(RubyDefines.Self) =>
+        scopeElement.variables(RubyDefines.Self)
     }
   }
 
@@ -144,7 +177,7 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     // NB: Tracking whatever has been added to $LOADER is dynamic and requires post-processing step!
     val resolvedPath =
       if (isRelative) {
-        Try((File(currentFilePath).parent / path).pathAsString).toOption
+        Try((Paths.get(currentFilePath).getParent / path).toAbsolutePath.normalize().toString).toOption
           .map(_.stripPrefix(s"$projectRoot${JFile.separator}"))
           .getOrElse(path)
       } else {
@@ -153,13 +186,13 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
 
     val pathsToImport =
       if (isWildCard) {
-        val dir = File(projectRoot) / resolvedPath
-        if (dir.isDirectory)
-          dir.list
-            .map(
-              _.pathAsString.stripPrefix(s"$projectRoot${JFile.separator}").stripSuffix(".rb").replaceAll("\\\\", "/")
-            )
+        val dir = Paths.get(projectRoot) / resolvedPath
+        if (Files.isDirectory(dir))
+          dir
+            .listFiles()
+            .map(_.toString.stripPrefix(s"$projectRoot${JFile.separator}").stripSuffix(".rb").replaceAll("\\\\", "/"))
             .toList
+            .sorted // directory listing order is file system dependent
         else Nil
       } else {
         resolvedPath :: Nil
@@ -177,9 +210,41 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     }
   }
 
+  def getNewClassTmp: String = {
+    val surroundingFullName = this.surroundingScopeFullName.getOrElse(RubyDefines.Main)
+
+    stack.collectFirst {
+      case ScopeElement(scopeNode: NamespaceScope, _) => s"$surroundingFullName.${scopeNode.getNextClassTmp}"
+      case ScopeElement(node: TypeLikeScope, _)       => s"$surroundingFullName.${node.getNextClassTmp}"
+      case ScopeElement(node: MethodLikeScope, _)     => s"$surroundingFullName.${node.getNextClassTmp}"
+    }.get
+  }
+
+  def getNewVarTmp: String = {
+    stack.collectFirst {
+      case ScopeElement(scopeNode: NamespaceScope, _) => s"${scopeNode.getNextVarTmp}"
+      case ScopeElement(node: TypeLikeScope, _)       => s"${node.getNextVarTmp}"
+      case ScopeElement(node: MethodLikeScope, _) if !node.fullName.contains("<lambda>") => s"${node.getNextVarTmp}"
+    }.get
+  }
+
+  def getNewProcParam: Either[String, String] = {
+    stack.collectFirst { case ScopeElement(node: TypeLikeScope, _) =>
+      Left(s"${node.getNextProcParamTmp}")
+    }.get
+  }
+
+  def getNewClosureName: String = {
+    stack.collectFirst {
+      case ScopeElement(scopeNode: NamespaceScope, _) => s"${scopeNode.getNextClosureName}"
+      case ScopeElement(node: TypeLikeScope, _)       => s"${node.getNextClosureName}"
+      case ScopeElement(node: MethodLikeScope, _)     => s"${node.getNextClosureName}"
+    }.get
+  }
+
   def addImportedFunctions(importName: String): Unit = {
-    val matchingTypes = summary.namespaceToType.values.flatten.filter { x =>
-      x.name.startsWith(importName)
+    val matchingTypes = summary.allTypesSorted.filter { candidateType =>
+      candidateType.name.startsWith(importName)
     }
 
     typesInScope.addAll(matchingTypes)
@@ -190,7 +255,7 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
   }
 
   def addRequireGem(gemName: String): Unit = {
-    val matchingTypes = summary.namespaceToType.values.flatten.filter(_.name.startsWith(gemName))
+    val matchingTypes = summary.allTypesSorted.filter(_.name.startsWith(gemName))
     typesInScope.addAll(matchingTypes)
   }
 
@@ -238,7 +303,7 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
   def anonProcParam: Option[String] = stack.collectFirst {
     case ScopeElement(x: MethodLikeScope, _) if x.procParam.isLeft =>
       x.procParam match {
-        case Left(param) => param
+        case Left(param)  => param
         case Right(param) =>
           param // this is just so that we don't get a pattern match warning, but should never be triggered
       }
@@ -256,18 +321,19 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
     */
   def procParamName: Option[NewMethodParameterIn] = {
     stack
-      .collectFirst {
-        case ScopeElement(x: MethodLikeScope, _) if x.hasYield =>
-          x.procParam match {
-            case Left(param)  => param
-            case Right(param) => param
-          }
-      }
+      .collectFirst { case ScopeElement(x: MethodLikeScope, _) => x }
+      .filter(_.hasYield)
+      .map(_.procParam.fold(identity, identity))
       .flatMap(lookupVariable(_).collect { case p: NewMethodParameterIn => p })
   }
 
   def surroundingTypeFullName: Option[String] = stack.collectFirst { case ScopeElement(x: TypeLikeScope, _) =>
     x.fullName
+  }
+
+  def visibilityForMethod(methodName: String): Option[String] = stack.collectFirst {
+    case ScopeElement(x: TypeScope, _) if x.visibilityMap.contains(methodName)   => x.visibilityMap(methodName)
+    case ScopeElement(x: ModuleScope, _) if x.visibilityMap.contains(methodName) => x.visibilityMap(methodName)
   }
 
   /** Searches the surrounding classes for a class that matches the given value. Returns it if found.
@@ -361,9 +427,9 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
       .orElse {
         super.tryResolveTypeReference(normalizedTypeName) match {
           case None if GlobalTypes.kernelFunctions.contains(normalizedTypeName) =>
-            Option(RubyType(s"${GlobalTypes.kernelPrefix}.$normalizedTypeName", List.empty, List.empty))
+            Option(RubyType(RubyDefines.prefixAsKernelDefined(normalizedTypeName), List.empty, List.empty))
           case None if GlobalTypes.bundledClasses.contains(normalizedTypeName) =>
-            Option(RubyType(s"${GlobalTypes.builtinPrefix}.$normalizedTypeName", List.empty, List.empty))
+            Option(RubyType(RubyDefines.prefixAsCoreType(normalizedTypeName), List.empty, List.empty))
           case None =>
             None
           case x => x
@@ -382,10 +448,11 @@ class RubyScope(summary: RubyProgramSummary, projectRoot: Option[String])
         case scopeElement if scopeElement.variables.contains(identifier) =>
           scopeElement
       }
-      .map {
-        case ScopeElement(x: NamespaceLikeScope, _) => x.fullName
-        case ScopeElement(x: TypeLikeScope, _)      => x.fullName
-        case ScopeElement(x: MethodLikeScope, _)    => x.fullName
+      .flatMap {
+        case ScopeElement(x: NamespaceLikeScope, _) => Some(x.fullName)
+        case ScopeElement(x: TypeLikeScope, _)      => Some(x.fullName)
+        case ScopeElement(x: MethodLikeScope, _)    => Some(x.fullName)
+        case _                                      => None
       }
   }
 

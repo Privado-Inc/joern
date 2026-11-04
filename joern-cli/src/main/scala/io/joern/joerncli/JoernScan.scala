@@ -1,26 +1,27 @@
 package io.joern.joerncli
 
-import better.files.*
 import io.joern.console.scan.{ScanPass, outputFindings}
-import io.joern.console.{BridgeBase, DefaultArgumentProvider, Query, QueryDatabase}
+import io.joern.console.{BridgeBase, DefaultArgumentProvider, Query, QueryDatabase, QueryJsonSerialization}
 import io.joern.dataflowengineoss.queryengine.{EngineConfig, EngineContext}
-import io.joern.dataflowengineoss.semanticsloader.{Semantics, NoSemantics}
+import io.joern.dataflowengineoss.semanticsloader.{NoSemantics, Semantics}
 import io.joern.joerncli.JoernScan.getQueriesFromQueryDb
 import io.joern.joerncli.Scan.{allTag, defaultTag}
 import io.joern.joerncli.console.ReplBridge
 import io.shiftleft.codepropertygraph.generated.Languages
-import io.shiftleft.semanticcpg.language.{DefaultNodeExtensionFinder, NodeExtensionFinder}
+import io.shiftleft.semanticcpg.language.locationCreator
 import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext, LayerCreatorOptions}
+import io.shiftleft.semanticcpg.utils.FileUtil
+import io.shiftleft.semanticcpg.utils.FileUtil.*
+import scopt.OptionParser
 
-import org.json4s.native.Serialization
-import org.json4s.{Formats, NoTypeHints}
-
+import java.nio.file.{Files, Path, Paths}
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
+import scala.util.Properties
 
 object JoernScanConfig {
-  val defaultDbVersion: String    = "latest"
-  val defaultDumpQueryDestination = "/tmp/querydb.json"
+  val defaultDbVersion: String            = "latest"
+  val defaultDumpQueryDestination: String = Paths.get(Properties.tmpDir, "querydb.json").absolutePathAsString
 }
 
 case class JoernScanConfig(
@@ -42,16 +43,17 @@ case class JoernScanConfig(
 object JoernScan extends BridgeBase {
   override val applicationName = "joern"
 
-  val implementationVersion = getClass.getPackage.getImplementationVersion
+  val implementationVersion: String = getClass.getPackage.getImplementationVersion
 
-  def main(args: Array[String]) = {
+  def main(args: Array[String]): Unit = {
     val (scanArgs, frontendArgs) = CpgBasedTool.splitArgs(args)
-    optionParser.parse(scanArgs, JoernScanConfig()).foreach { config =>
-      run(config, frontendArgs)
+    optionParser.parse(scanArgs, JoernScanConfig()) match {
+      case Some(config) => run(config, frontendArgs)
+      case None         => System.exit(1)
     }
   }
 
-  val optionParser = new scopt.OptionParser[JoernScanConfig]("joern-scan") {
+  val optionParser: OptionParser[JoernScanConfig] = new scopt.OptionParser[JoernScanConfig]("joern-scan") {
     head(
       s"Creates a code property graph and scans it with queries from installed bundles.\nVersion: `$implementationVersion`"
     )
@@ -130,11 +132,9 @@ object JoernScan extends BridgeBase {
 
   private def dumpQueriesAsJson(outFileName: String): Unit = {
     implicit val engineContext: EngineContext = EngineContext(NoSemantics)
-    implicit val formats: AnyRef & Formats    = Serialization.formats(NoTypeHints)
     val queryDb                               = new QueryDatabase(new JoernDefaultArgumentProvider(0))
-    better.files
-      .File(outFileName)
-      .write(Serialization.write(queryDb.allQueries))
+    val outFile                               = Paths.get(outFileName)
+    Files.writeString(outFile, QueryJsonSerialization.write(queryDb.allQueries))
     println(s"Queries written to: $outFileName")
   }
 
@@ -150,10 +150,9 @@ object JoernScan extends BridgeBase {
   }
 
   private def runScanPlugin(config: JoernScanConfig, frontendArgs: List[String]): Unit = {
-
     if (config.src == "") {
       println(optionParser.usage)
-      return
+      System.exit(1)
     }
 
     if (queryNames().isEmpty) {
@@ -173,7 +172,10 @@ object JoernScan extends BridgeBase {
         overwrite = config.overwrite,
         store = config.store,
         language = config.language,
-        frontendArgs = frontendArgs.toArray
+        frontendArgs = frontendArgs.toArray,
+        scanMaxCallDepth = Some(Scan.defaultOpts.maxCallDepth),
+        scanScriptNames = Scan.defaultOpts.names,
+        scanTagNames = Scan.defaultOpts.tags
       )
     run(shellConfig)
     println(s"Run `joern --for-input-path ${config.src}` to explore interactively")
@@ -197,19 +199,21 @@ object JoernScan extends BridgeBase {
 
   def downloadAndInstallQueryDatabase(version: String = ""): Unit = {
     val actualVersion = Option(version).filter(_ != "").getOrElse(JoernScanConfig.defaultDbVersion)
-    File.usingTemporaryDirectory("joern-scan") { dir =>
+    FileUtil.usingTemporaryDirectory("joern-scan") { dir =>
       val queryDbZipPath = downloadDefaultQueryDatabase(actualVersion, dir)
       addQueryDatabase(queryDbZipPath)
     }
   }
 
-  private def downloadDefaultQueryDatabase(version: String, outDir: File): String = {
+  private def downloadDefaultQueryDatabase(version: String, outDir: Path): String = {
     val url = urlForVersion(version)
     println(s"Downloading default query bundle from: $url")
     val r          = requests.get(url)
     val queryDbZip = outDir / "querydb.zip"
-    val absPath    = queryDbZip.path.toAbsolutePath.toString
-    queryDbZip.writeBytes(r.bytes.iterator)
+    val absPath    = queryDbZip.absolutePathAsString
+
+    FileUtil.writeBytes(queryDbZip, r.bytes)
+
     println(s"Wrote: ${queryDbZip.size} bytes to $absPath")
     absPath
   }
@@ -238,10 +242,9 @@ object JoernScan extends BridgeBase {
     }
   }
 
-  override protected def runBeforeCode = ReplBridge.runBeforeCode
-  override protected def promptStr     = ReplBridge.promptStr
-  override protected def greeting      = ReplBridge.greeting
-  override protected def onExitCode    = ReplBridge.onExitCode
+  override protected def runBeforeCode: Seq[String] = ReplBridge.runBeforeCode
+  override protected def promptStr: String          = ReplBridge.promptStr
+  override protected def greeting: String           = ReplBridge.greeting
 }
 
 object Scan {
@@ -257,18 +260,21 @@ class ScanOptions(var maxCallDepth: Int, var names: Array[String], var tags: Arr
     extends LayerCreatorOptions {}
 
 class Scan(options: ScanOptions)(implicit engineContext: EngineContext) extends LayerCreator {
-  implicit val finder: NodeExtensionFinder = DefaultNodeExtensionFinder
-
   override val overlayName: String = Scan.overlayName
   override val description: String = Scan.description
 
   override def create(context: LayerCreatorContext): Unit = {
-    val allQueries = getQueriesFromQueryDb(new JoernDefaultArgumentProvider(options.maxCallDepth))
+    val maxCallDepth =
+      if (options.maxCallDepth == 2 && Scan.defaultOpts.maxCallDepth != 2) Scan.defaultOpts.maxCallDepth
+      else options.maxCallDepth
+    val allQueries = getQueriesFromQueryDb(new JoernDefaultArgumentProvider(maxCallDepth))
     if (allQueries.isEmpty) {
       println("No queries found, you probably forgot to install a query database.")
       return
     }
-    val queriesAfterFilter = filteredQueries(allQueries, options.names, options.tags)
+    val names              = if (options.names.isEmpty) Scan.defaultOpts.names else options.names
+    val tags               = if (options.tags.isEmpty) Scan.defaultOpts.tags else options.tags
+    val queriesAfterFilter = filteredQueries(allQueries, names, tags)
     if (queriesAfterFilter.isEmpty) {
       println("No queries matched current filter selection (total number of queries: `" + allQueries.length + "`)")
       return

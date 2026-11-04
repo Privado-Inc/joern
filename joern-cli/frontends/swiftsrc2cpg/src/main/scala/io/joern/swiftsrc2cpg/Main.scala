@@ -1,19 +1,40 @@
 package io.joern.swiftsrc2cpg
 
 import io.joern.swiftsrc2cpg.Frontend.*
-import io.joern.x2cpg.passes.frontend.{TypeRecoveryParserConfig, XTypeRecovery, XTypeRecoveryConfig}
+import io.joern.x2cpg.X2CpgConfig
+import io.joern.x2cpg.X2CpgMain
+import io.joern.x2cpg.passes.frontend.TypeRecoveryParserConfig
+import io.joern.x2cpg.passes.frontend.XTypeRecoveryConfig
 import io.joern.x2cpg.utils.Environment
-import io.joern.x2cpg.{X2CpgConfig, X2CpgMain}
 import io.joern.x2cpg.utils.server.FrontendHTTPServer
 import scopt.OParser
 
-import java.nio.file.Paths
+import java.nio.file.{Path, Paths}
 
-final case class Config(defines: Set[String] = Set.empty)
-    extends X2CpgConfig[Config]
-    with TypeRecoveryParserConfig[Config] {
+final case class Config(
+  defines: Set[String] = Set.empty,
+  swiftBuild: Boolean = false,
+  buildLogPath: Option[Path] = None,
+  override val genericConfig: X2CpgConfig.GenericConfig = X2CpgConfig.GenericConfig(),
+  override val typeRecoveryParserConfig: TypeRecoveryParserConfig.Config = TypeRecoveryParserConfig.Config()
+) extends X2CpgConfig[Config]
+    with TypeRecoveryParserConfig {
+
+  override def withGenericConfig(value: X2CpgConfig.GenericConfig): Config = copy(genericConfig = value)
+
+  override def withTypeRecoveryParserConfig(value: TypeRecoveryParserConfig.Config): Config =
+    copy(typeRecoveryParserConfig = value)
+
   def withDefines(defines: Set[String]): Config = {
-    this.copy(defines = defines).withInheritedFields(this)
+    copy(defines = defines)
+  }
+
+  def withSwiftBuild(swiftBuild: Boolean): Config = {
+    copy(swiftBuild = swiftBuild)
+  }
+
+  def withBuildLogPath(buildLogPath: Path): Config = {
+    copy(buildLogPath = Option(buildLogPath))
   }
 }
 
@@ -29,26 +50,24 @@ object Frontend {
       opt[String]("define")
         .unbounded()
         .text("define a name")
-        .action((d, c) => c.withDefines(c.defines + d))
+        .action((d, c) => c.withDefines(c.defines + d)),
+      opt[Unit]("swift-build")
+        .text("build the project to retrieve full Swift compiler type information (requires Swift > 6.1)")
+        .action((path, c) => c.withSwiftBuild(true)),
+      opt[Path]("build-log-path")
+        .text("the path to the compiler debug output log file (this enables --swift-build; requires Swift > 6.1)")
+        .validate { path =>
+          val file = path.toRealPath().toFile
+          if (!file.isFile || !file.canRead) {
+            failure(s"Unable to read compiler debug output log file: '${file.toString}'")
+          } else {
+            success
+          }
+        }
+        .action((path, c) => c.withSwiftBuild(true).withBuildLogPath(path))
     )
   }
 
 }
 
-object Main extends X2CpgMain(cmdLineParser, new SwiftSrc2Cpg()) with FrontendHTTPServer[Config, SwiftSrc2Cpg] {
-
-  override protected def newDefaultConfig(): Config = Config()
-
-  def run(config: Config, swiftsrc2cpg: SwiftSrc2Cpg): Unit = {
-    if (config.serverMode) { startup() }
-    else {
-      val absPath = Paths.get(config.inputPath).toAbsolutePath.toString
-      if (Environment.pathExists(absPath)) {
-        swiftsrc2cpg.run(config.withInputPath(absPath))
-      } else {
-        System.exit(1)
-      }
-    }
-  }
-
-}
+object Main extends X2CpgMain(new SwiftSrc2Cpg(), cmdLineParser)

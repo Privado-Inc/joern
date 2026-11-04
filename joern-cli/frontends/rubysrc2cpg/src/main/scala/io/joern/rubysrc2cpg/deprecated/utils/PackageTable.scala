@@ -54,21 +54,24 @@ class PackageTable {
       }
 
   def getPackageInfo(moduleName: String): List[MethodTableModel] = {
-    methodTableMap.get(moduleName) match
+    methodTableMap.get(moduleName) match {
       case Some(value) => value.toList
       case None        => List.empty[MethodTableModel]
+    }
   }
 
   def getModule(gemOrFileName: String): List[ModuleModel] = {
-    moduleMapping.get(gemOrFileName) match
+    moduleMapping.get(gemOrFileName) match {
       case Some(value) => value.toList
       case None        => List.empty[ModuleModel]
+    }
   }
 
   def getTypeDecl(gemOrFileName: String): List[TypeDeclModel] = {
-    typeDeclMapping.get(gemOrFileName) match
+    typeDeclMapping.get(gemOrFileName) match {
       case Some(value) => value.toList
       case None        => List.empty[TypeDeclModel]
+    }
   }
 
   def set(table: PackageTable): Unit = {
@@ -77,9 +80,9 @@ class PackageTable {
     typeDeclMapping.addAll(table.typeDeclMapping)
   }
   def clear(): Unit = {
-    methodTableMap.clear
-    moduleMapping.clear
-    typeDeclMapping.clear
+    methodTableMap.clear()
+    moduleMapping.clear()
+    typeDeclMapping.clear()
   }
 }
 

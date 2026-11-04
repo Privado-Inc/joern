@@ -8,27 +8,20 @@ import ujson.Obj
 trait AstForTemplateDomCreator(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
   protected def astForJsxElement(jsxElem: BabelNodeInfo): Ast = {
-    val domNode = createTemplateDomNode(jsxElem.node.toString, jsxElem.code, jsxElem.lineNumber, jsxElem.columnNumber)
+    val domNode      = templateDomNode(jsxElem.node.toString, jsxElem.code, jsxElem.lineNumber, jsxElem.columnNumber)
     val openingAst   = astForNodeWithFunctionReference(jsxElem.json("openingElement"))
-    val childrenAsts = astForNodes(jsxElem.json("children").arr.toList)
-    val closingAst =
-      safeObj(jsxElem.json, "closingElement")
-        .map(e => astForNodeWithFunctionReference(Obj(e)))
-        .getOrElse(Ast())
+    val childrenAsts = astForNodes(jsxElem.json("children").arr)
+    val closingAst   = safeObj(jsxElem.json, "closingElement")
+      .map(elem => astForNodeWithFunctionReference(Obj(elem)))
+      .getOrElse(Ast())
     val allChildrenAsts = openingAst +: childrenAsts :+ closingAst
-    setArgumentIndices(allChildrenAsts)
     Ast(domNode).withChildren(allChildrenAsts)
   }
 
   protected def astForJsxFragment(jsxFragment: BabelNodeInfo): Ast = {
-    val domNode = createTemplateDomNode(
-      jsxFragment.node.toString,
-      jsxFragment.code,
-      jsxFragment.lineNumber,
-      jsxFragment.columnNumber
-    )
-    val childrenAsts = astForNodes(jsxFragment.json("children").arr.toList)
-    setArgumentIndices(childrenAsts)
+    val name         = jsxFragment.node.toString
+    val domNode      = templateDomNode(name, jsxFragment.code, jsxFragment.lineNumber, jsxFragment.columnNumber)
+    val childrenAsts = astForNodes(jsxFragment.json("children").arr)
     Ast(domNode).withChildren(childrenAsts)
   }
 
@@ -37,39 +30,37 @@ trait AstForTemplateDomCreator(implicit withSchemaValidation: ValidationMode) { 
     // Hence, we strip it away with astgen and restore it here.
     // parserResult.fileContent contains the unmodified Vue.js source code for the current file.
     // We look at the previous character there and re-add the colon if needed.
-    val colon = pos(jsxAttr.json)
+    val colon = start(jsxAttr.json)
       .collect {
-        case position if position > 0 && parserResult.fileContent.substring(position - 1, position) == ":" => ":"
+        case position if position > 0 && parserResult.fileContent.charAt(position - 1) == ':' => ":"
       }
       .getOrElse("")
     val domNode =
-      createTemplateDomNode(
+      templateDomNode(
         jsxAttr.node.toString,
         s"$colon${jsxAttr.code}",
         jsxAttr.lineNumber,
         jsxAttr.columnNumber.map(_ - colon.length)
       )
     val valueAst = safeObj(jsxAttr.json, "value")
-      .map(e => astForNodeWithFunctionReference(Obj(e)))
+      .map(elem => astForNodeWithFunctionReference(Obj(elem)))
       .getOrElse(Ast())
-    setArgumentIndices(List(valueAst))
     Ast(domNode).withChild(valueAst)
   }
 
   protected def astForJsxOpeningElement(jsxOpeningElem: BabelNodeInfo): Ast = {
-    val domNode = createTemplateDomNode(
+    val domNode = templateDomNode(
       jsxOpeningElem.node.toString,
       jsxOpeningElem.code,
       jsxOpeningElem.lineNumber,
       jsxOpeningElem.columnNumber
     )
-    val childrenAsts = astForNodes(jsxOpeningElem.json("attributes").arr.toList)
-    setArgumentIndices(childrenAsts)
+    val childrenAsts = astForNodes(jsxOpeningElem.json("attributes").arr)
     Ast(domNode).withChildren(childrenAsts)
   }
 
   protected def astForJsxClosingElement(jsxClosingElem: BabelNodeInfo): Ast = {
-    val domNode = createTemplateDomNode(
+    val domNode = templateDomNode(
       jsxClosingElem.node.toString,
       jsxClosingElem.code,
       jsxClosingElem.lineNumber,
@@ -79,33 +70,31 @@ trait AstForTemplateDomCreator(implicit withSchemaValidation: ValidationMode) { 
   }
 
   protected def astForJsxText(jsxText: BabelNodeInfo): Ast =
-    Ast(createTemplateDomNode(jsxText.node.toString, jsxText.code, jsxText.lineNumber, jsxText.columnNumber))
+    Ast(templateDomNode(jsxText.node.toString, jsxText.code, jsxText.lineNumber, jsxText.columnNumber))
 
   protected def astForJsxExprContainer(jsxExprContainer: BabelNodeInfo): Ast = {
-    val domNode = createTemplateDomNode(
+    val domNode = templateDomNode(
       jsxExprContainer.node.toString,
       jsxExprContainer.code,
       jsxExprContainer.lineNumber,
       jsxExprContainer.columnNumber
     )
     val nodeInfo = createBabelNodeInfo(jsxExprContainer.json("expression"))
-    val exprAst = nodeInfo.node match {
+    val exprAst  = nodeInfo.node match {
       case JSXEmptyExpression => Ast()
       case _                  => astForNodeWithFunctionReference(nodeInfo.json)
     }
-    setArgumentIndices(List(exprAst))
     Ast(domNode).withChild(exprAst)
   }
 
   protected def astForJsxSpreadAttribute(jsxSpreadAttr: BabelNodeInfo): Ast = {
-    val domNode = createTemplateDomNode(
+    val domNode = templateDomNode(
       jsxSpreadAttr.node.toString,
       jsxSpreadAttr.code,
       jsxSpreadAttr.lineNumber,
       jsxSpreadAttr.columnNumber
     )
     val argAst = astForNodeWithFunctionReference(jsxSpreadAttr.json("argument"))
-    setArgumentIndices(List(argAst))
     Ast(domNode).withChild(argAst)
   }
 

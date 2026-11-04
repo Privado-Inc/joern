@@ -1,7 +1,9 @@
 package io.joern.c2cpg.passes.ast
 
+import io.joern.c2cpg.astcreation.Defines
 import io.joern.c2cpg.testfixtures.C2CpgSuite
 import io.shiftleft.codepropertygraph.generated.EvaluationStrategies
+import io.shiftleft.codepropertygraph.generated.ModifierTypes
 import io.shiftleft.codepropertygraph.generated.NodeTypes
 import io.shiftleft.codepropertygraph.generated.Operators
 import io.shiftleft.codepropertygraph.generated.nodes.Identifier
@@ -53,22 +55,22 @@ class MethodTests extends C2CpgSuite {
     val cpg = code("int foo(); int bar() { return woo(); }")
 
     "should identify method as stub" in {
-      cpg.method.isStub.name.toSetMutable shouldBe Set(NamespaceTraversal.globalNamespaceName, "foo", "woo")
-      cpg.method.isNotStub.name.l shouldBe List("bar")
+      cpg.method.isStub.fullName.sorted.l shouldBe List("<includes>:<global>", "foo", "woo")
+      cpg.method.isNotStub.fullName.sorted.l shouldBe List("Test0.c:<global>", "bar")
     }
   }
 
   "MethodTest3" should {
     val cpg = code("void doFoo() {}")
 
-    "should not generate a type decl for method definitions" in {
+    "should generate a type decl for top level method definitions" in {
       inside(cpg.method.name("doFoo").l) { case List(x) =>
         x.name shouldBe "doFoo"
         x.fullName shouldBe "doFoo"
         x.astParentType shouldBe NodeTypes.TYPE_DECL
         x.astParentFullName should endWith(NamespaceTraversal.globalNamespaceName)
       }
-      cpg.typeDecl.fullName.l should not contain "doFoo"
+      cpg.typeDecl.fullName.l should contain("doFoo")
     }
   }
 
@@ -113,7 +115,7 @@ class MethodTests extends C2CpgSuite {
     "should be correct for methods with line breaks / whitespace" in {
       inside(cpg.method("foo").l) { case List(foo) =>
         foo.name shouldBe "foo"
-        foo.fullName shouldBe "foo<A, B, C>:void()"
+        foo.fullName shouldBe "foo:void()"
         foo.signature shouldBe "void()"
       }
     }
@@ -300,6 +302,130 @@ class MethodTests extends C2CpgSuite {
     }
   }
 
+  "Deleted and defaulted special members" should {
+    "be distinguishable by modifier" in {
+      val cpg = code(
+        """
+          |struct Deleted      { Deleted(const Deleted&) = delete; };
+          |struct Defaulted    { Defaulted(const Defaulted&) = default; };
+          |struct DeclaredOnly { DeclaredOnly(const DeclaredOnly&); };
+          |struct UserBody     { UserBody(const UserBody&) {} };
+          |""".stripMargin,
+        "test.cpp"
+      )
+      val List(deleted) = cpg.method.fullNameExact("Deleted.Deleted:void(Deleted&)").l
+      deleted.modifier.modifierType.sorted.l shouldBe List(
+        ModifierTypes.CONSTRUCTOR,
+        Defines.ModifierDeleted,
+        ModifierTypes.PUBLIC
+      ).sorted
+
+      val List(defaulted) = cpg.method.fullNameExact("Defaulted.Defaulted:void(Defaulted&)").l
+      defaulted.modifier.modifierType.sorted.l shouldBe List(
+        ModifierTypes.CONSTRUCTOR,
+        Defines.ModifierDefaulted,
+        ModifierTypes.PUBLIC
+      ).sorted
+
+      val List(declaredOnly) = cpg.method.fullNameExact("DeclaredOnly.DeclaredOnly:void(DeclaredOnly&)").l
+      declaredOnly.modifier.modifierType.sorted.l shouldBe List(ModifierTypes.CONSTRUCTOR)
+
+      val List(userBody) = cpg.method.fullNameExact("UserBody.UserBody:void(UserBody&)").l
+      userBody.modifier.modifierType.sorted.l shouldBe List(ModifierTypes.CONSTRUCTOR, ModifierTypes.PUBLIC)
+
+      cpg.typeDecl
+        .filter(_.method.isConstructor.modifier.modifierTypeExact(Defines.ModifierDeleted).nonEmpty)
+        .name
+        .l shouldBe List("Deleted")
+    }
+
+    "be correct for destructors and assignment operators" in {
+      val cpg = code(
+        """
+          |struct A {
+          |  ~A() = default;
+          |  A& operator=(const A&) = delete;
+          |  A& operator=(A&&) = default;
+          |};
+          |struct B { ~B() = delete; };
+          |""".stripMargin,
+        "test.cpp"
+      )
+      cpg.method.fullNameExact("A.~A:ANY()").modifier.modifierType.l shouldBe List(Defines.ModifierDefaulted)
+      cpg.method.fullNameExact("B.~B:ANY()").modifier.modifierType.l shouldBe List(Defines.ModifierDeleted)
+      cpg.method.fullNameExact("A.=:A&(A&)").modifier.modifierType.l shouldBe List(Defines.ModifierDeleted)
+      cpg.method.fullNameExact("A.=:A&(A&&)").modifier.modifierType.l shouldBe List(Defines.ModifierDefaulted)
+    }
+
+    "be correct for the DISALLOW_COPY macro idiom" in {
+      val cpg = code(
+        """
+          |#define DISALLOW_COPY(T) T(const T&) = delete; T& operator=(const T&) = delete
+          |struct M { DISALLOW_COPY(M); };
+          |""".stripMargin,
+        "test.cpp"
+      )
+      // code is only the macro invocation here, so the modifier is the only witness
+      cpg.method.fullNameExact("M.M:void(M&)").code.l shouldBe List("DISALLOW_COPY(M)")
+      cpg.method.fullNameExact("M.M:void(M&)").modifier.modifierType.sorted.l shouldBe
+        List(ModifierTypes.CONSTRUCTOR, Defines.ModifierDeleted, ModifierTypes.PUBLIC).sorted
+      cpg.method.fullNameExact("M.=:M&(M&)").modifier.modifierType.l shouldBe List(Defines.ModifierDeleted)
+    }
+
+    "be absent for plain definitions and for C" in {
+      val cpg = code(
+        """
+          |struct C { C(); C(const C&) = default; };
+          |C::C() {}
+          |""".stripMargin,
+        "test.cpp"
+      ).moreCode(
+        """
+          |void foo();
+          |void bar() {}
+          |""".stripMargin,
+        "test.c"
+      )
+      cpg.method.fullNameExact("C.C:void()").modifier.modifierType.sorted.l shouldBe List(
+        ModifierTypes.CONSTRUCTOR,
+        ModifierTypes.PUBLIC
+      )
+      cpg.method.fullNameExact("C.C:void(C&)").modifier.modifierType.sorted.l shouldBe
+        List(ModifierTypes.CONSTRUCTOR, Defines.ModifierDefaulted, ModifierTypes.PUBLIC).sorted
+      cpg.method.nameExact("foo", "bar").modifier.modifierType.l shouldBe List.empty
+    }
+  }
+
+  "Constructor modifier for declared-only constructors" should {
+    "be present" in {
+      val cpg = code(
+        """
+          |struct S {
+          |  S();
+          |  S(const S&);
+          |  void m();
+          |  ~S();
+          |};
+          |""".stripMargin,
+        "test.cpp"
+      )
+      cpg.method.isConstructor.fullName.sorted.l shouldBe List("S.S:void()", "S.S:void(S&)")
+      cpg.method.fullNameExact("S.m:void()").modifier.modifierType.l shouldBe List.empty
+      cpg.method.fullNameExact("S.~S:ANY()").modifier.modifierType.l shouldBe List.empty
+    }
+
+    "not be added to plain C functions" in {
+      val cpg = code(
+        """
+          |void foo();
+          |void bar() {}
+          |""".stripMargin,
+        "test.c"
+      )
+      cpg.method.isConstructor.l shouldBe List.empty
+    }
+  }
+
   "Name for method parameter in parentheses" should {
     "be correct" in {
       val cpg = code("""
@@ -328,6 +454,93 @@ class MethodTests extends C2CpgSuite {
       val List(method) = cpg.method.nameExact("method").l
       method.signature shouldBe "int(int)"
       method.fullName shouldBe "method"
+    }
+
+    "be correct for C++ method with long int types" in {
+      val cpg = code(
+        """
+          |long methodA(long int a, long int b) { return a *  b; }
+          |long int methodB(long a, long b) { return a *  b; }
+          |int main() {
+          |  methodA(1.9, 2.9);
+          |  methodB(1.9, 2.9);
+          |  return 0;
+          |}
+          |""".stripMargin,
+        "test.cpp"
+      )
+      val List(methodA) = cpg.method.nameExact("methodA").l
+      methodA.signature shouldBe "long(long,long)"
+      methodA.fullName shouldBe "methodA:long(long,long)"
+      val List(methodB) = cpg.method.nameExact("methodB").l
+      methodB.signature shouldBe "long(long,long)"
+      methodB.fullName shouldBe "methodB:long(long,long)"
+    }
+
+    "be correct for C++ method with long long int types" in {
+      val cpg = code(
+        """
+          |long long methodA(long long int a, long long int b) { return a *  b; }
+          |long long int methodB(long long a, long long b) { return a *  b; }
+          |int main() {
+          |  methodA(1.9, 2.9);
+          |  methodB(1.9, 2.9);
+          |  return 0;
+          |}
+          |""".stripMargin,
+        "test.cpp"
+      )
+      val List(methodA) = cpg.method.nameExact("methodA").l
+      methodA.signature shouldBe "long long(long long,long long)"
+      methodA.fullName shouldBe "methodA:long long(long long,long long)"
+      val List(methodB) = cpg.method.nameExact("methodB").l
+      methodB.signature shouldBe "long long(long long,long long)"
+      methodB.fullName shouldBe "methodB:long long(long long,long long)"
+    }
+
+    "be correct for C++ method with short int types" in {
+      val cpg = code(
+        """
+          |short methodA(short int a, short int b) { return a *  b; }
+          |short int methodB(short a, short b) { return a *  b; }
+          |int main() {
+          |  methodA(1, 2);
+          |  methodB(1, 2);
+          |  return 0;
+          |}
+          |""".stripMargin,
+        "test.cpp"
+      )
+      val List(methodA) = cpg.method.nameExact("methodA").l
+      methodA.signature shouldBe "short(short,short)"
+      methodA.fullName shouldBe "methodA:short(short,short)"
+      val List(methodB) = cpg.method.nameExact("methodB").l
+      methodB.signature shouldBe "short(short,short)"
+      methodB.fullName shouldBe "methodB:short(short,short)"
+    }
+
+    "be correct for C++ method in class" in {
+      val cpg = code(
+        """
+          |#include <vector>
+          |
+          |class A {
+          |  public:
+          |    int foo1(void) { return 0; }
+          |    std::vector<int> foo2(void) {
+          |      std::vector<int> v;
+          |      return v;
+          |    }
+          |}
+          |
+          |std::vector<int> foo3(void) {
+          |  std::vector<int> v;
+          |  return v;
+          |}
+          |""".stripMargin,
+        "test.cpp"
+      )
+      cpg.method.filter(_.name.contains("foo")).methodReturn.typeFullName.l shouldBe List("int", "vector", "vector")
     }
 
     "be correct for C function pointer" in {
@@ -406,13 +619,13 @@ class MethodTests extends C2CpgSuite {
         "test.cpp"
       )
       val List(implicitThisParam) = cpg.method.name("meth").parameter.l
-      implicitThisParam.name shouldBe "this"
-      implicitThisParam.typeFullName shouldBe "A"
+      implicitThisParam.name shouldBe Defines.This
+      implicitThisParam.typeFullName shouldBe "A*"
       val List(trueVarAccess) = cpg.call.name(Operators.equals).argument.argumentIndex(1).isCall.l
       trueVarAccess.code shouldBe "this->var"
       trueVarAccess.name shouldBe Operators.indirectFieldAccess
       val List(trueThisId, trueVarFieldIdent) = trueVarAccess.argument.l
-      trueThisId.code shouldBe "this"
+      trueThisId.code shouldBe Defines.This
       trueThisId.isIdentifier shouldBe true
       trueThisId.asInstanceOf[Identifier].typeFullName shouldBe "A*"
       trueThisId._refOut.l shouldBe List(implicitThisParam)
@@ -423,7 +636,7 @@ class MethodTests extends C2CpgSuite {
       varAccess.code shouldBe "this->var"
       varAccess.name shouldBe Operators.indirectFieldAccess
       val List(thisId, varFieldIdent) = varAccess.argument.l
-      thisId.code shouldBe "this"
+      thisId.code shouldBe Defines.This
       thisId.isIdentifier shouldBe true
       thisId.asInstanceOf[Identifier].typeFullName shouldBe "A*"
       thisId._refOut.l shouldBe List(implicitThisParam)
@@ -450,6 +663,65 @@ class MethodTests extends C2CpgSuite {
       memberCall.name shouldBe Operators.indirectFieldAccess
       memberCall.argument.isIdentifier.typeFullName.l shouldBe List("Outer.Inner*")
       memberCall.argument.isFieldIdentifier.code.l shouldBe List("member")
+    }
+
+    "have distinct fullNames for extern C class operator overloads" in {
+      val cpg = code(
+        """extern "C" {
+          |  typedef struct _json_value {
+          |    int type;
+          |    inline const struct _json_value &operator [] (int index) const {
+          |      return *this;
+          |    }
+          |    inline const struct _json_value &operator [] (const char * index) const {
+          |      return *this;
+          |    }
+          |  } json_value;
+          |}
+          |""".stripMargin,
+        "test.cpp"
+      )
+      val ops = cpg.method.name("\\[\\].*").fullName.sorted.l
+      ops shouldBe List("_json_value.[]:_json_value&(char*)<const>", "_json_value.[]:_json_value&(int)<const>")
+    }
+
+    "not produce cross-method refs for static members with external definitions" in {
+      val cpg = code(
+        """namespace Opm {
+          |template <class S, unsigned d, unsigned t> class Geom;
+          |template <class S> class Geom<S, 1, 0> {
+          |  enum { numScv = 2 };
+          |public:
+          |  static void init() { for (unsigned i = 0; i < numScv; ++i) scvGeoms_[i] = 0; }
+          |private:
+          |  static int scvGeoms_[numScv];
+          |};
+          |template <class S> int Geom<S, 1, 0>::scvGeoms_[Geom<S, 1, 0>::numScv];
+          |template <class S> class Geom<S, 2, 0> {
+          |  enum { numScv = 3 };
+          |public:
+          |  static void init() { for (unsigned i = 0; i < numScv; ++i) scvGeoms_[i] = 0; }
+          |private:
+          |  static int scvGeoms_[numScv];
+          |};
+          |template <class S> int Geom<S, 2, 0>::scvGeoms_[Geom<S, 2, 0>::numScv];
+          |template <class S> class Geom<S, 3, 0> {
+          |  enum { numScv = 4 };
+          |public:
+          |  static void init() { for (unsigned i = 0; i < numScv; ++i) scvGeoms_[i] = 0; }
+          |private:
+          |  static int scvGeoms_[numScv];
+          |};
+          |template <class S> int Geom<S, 3, 0>::scvGeoms_[Geom<S, 3, 0>::numScv];
+          |}
+          |""".stripMargin,
+        "test.hh"
+      )
+      val initMethods = cpg.method.fullName(".*\\.init.*:void\\(\\)").l
+      initMethods.size shouldBe 3
+      initMethods.foreach { method =>
+        method.block.astChildren.isLocal.nameExact("scvGeoms_").size shouldBe 1
+      }
     }
   }
 }

@@ -4,7 +4,7 @@ import io.joern.rubysrc2cpg.deprecated.parser.DeprecatedRubyParser.*
 import io.joern.rubysrc2cpg.deprecated.passes.Defines as RubyDefines
 import io.joern.x2cpg.{Ast, ValidationMode}
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators, nodes}
+import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, DispatchTypes, Operators, nodes}
 import org.antlr.v4.runtime.misc.Interval
 import org.antlr.v4.runtime.tree.TerminalNode
 import org.antlr.v4.runtime.{ParserRuleContext, Token}
@@ -15,6 +15,55 @@ import scala.util.Try
 trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
   import io.joern.rubysrc2cpg.deprecated.astcreation.GlobalTypes.*
+
+  protected def controlStructureAst(
+    controlStructureNode: NewControlStructure,
+    condition: Option[Ast],
+    children: Seq[Ast] = Seq(),
+    placeConditionLast: Boolean = false
+  ): Ast = {
+    condition match {
+      case Some(conditionAst) =>
+        Ast(controlStructureNode)
+          .withChildren(if (placeConditionLast) children :+ conditionAst else conditionAst +: children)
+          .withConditionEdges(controlStructureNode, List(conditionAst.root).flatten)
+      case _ =>
+        Ast(controlStructureNode)
+          .withChildren(children)
+    }
+  }
+
+  protected def legacyWhileAst(
+    condition: Option[Ast],
+    body: Seq[Ast],
+    code: Option[String] = None,
+    lineNumber: Option[Int] = None,
+    columnNumber: Option[Int] = None
+  ): Ast = {
+    var whileNode = NewControlStructure()
+      .controlStructureType(ControlStructureTypes.WHILE)
+      .lineNumber(lineNumber)
+      .columnNumber(columnNumber)
+    if (code.isDefined) {
+      whileNode = whileNode.code(code.get)
+    }
+    controlStructureAst(whileNode, condition, body)
+  }
+
+  protected def tryCatchAstWithOrder(
+    tryNode: NewControlStructure,
+    tryBodyAst: Ast,
+    catchAsts: Seq[Ast],
+    finallyAst: Option[Ast]
+  ): Ast = {
+    tryBodyAst.root.collect { case expr: ExpressionNew => expr }.foreach(_.order = 1)
+    catchAsts.flatMap(_.root).collect { case expr: ExpressionNew => expr }.foreach(_.order = 2)
+    finallyAst.flatMap(_.root).collect { case expr: ExpressionNew => expr }.foreach(_.order = 3)
+    Ast(tryNode)
+      .withChild(tryBodyAst)
+      .withChildren(catchAsts)
+      .withChildren(finallyAst.toList)
+  }
 
   protected def line(ctx: ParserRuleContext): Option[Int] =
     Try(ctx.getStart.getLine).toOption
@@ -78,13 +127,14 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
     dynamicTypeHints: Seq[String] = Seq(),
     definitelyIdentifier: Boolean = false
   ): NewNode = {
-    methodsWithName(name) match
+    methodsWithName(name) match {
       case method :: _ if !definitelyIdentifier && isMethodCall(name) =>
         methodTableToCallNode(method, name, code, typeFullName, dynamicTypeHints, Option(ctx))
       case _ =>
         val newNode = identifierNode(ctx, name, code, typeFullName, dynamicTypeHints)
         scope.addToScope(name, newNode)
         newNode
+    }
   }
 
   protected def createIdentifierWithScope(
@@ -96,7 +146,7 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
     columnNumber: Option[Int],
     definitelyIdentifier: Boolean
   ): NewNode = {
-    methodsWithName(name) match
+    methodsWithName(name) match {
       case method :: _ if !definitelyIdentifier && isMethodCall(name) =>
         methodTableToCallNode(method, name, code, typeFullName, dynamicTypeHints, None)
       case _ =>
@@ -109,6 +159,7 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
           .columnNumber(columnNumber)
         scope.addToScope(name, newNode)
         newNode
+    }
   }
 
   protected def createOpCall(
@@ -149,7 +200,7 @@ trait AstCreatorHelper(implicit withSchemaValidation: ValidationMode) { this: As
     lineNumber: Option[Int] = None,
     colNumber: Option[Int] = None
   ): Ast = {
-    val code = Seq(lhs, rhs).collect { case x: AstNodeNew => x.code }.mkString(" = ")
+    val code       = Seq(lhs, rhs).collect { case x: AstNodeNew => x.code }.mkString(" = ")
     val assignment = NewCall()
       .name(Operators.assignment)
       .methodFullName(Operators.assignment)

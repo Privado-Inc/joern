@@ -1,6 +1,5 @@
 package io.joern.x2cpg.frontendspecific.php2cpg
 
-import better.files.File
 import io.joern.x2cpg.X2CpgConfig
 import io.joern.x2cpg.passes.frontend.{TypeStubsParserConfig, XTypeStubsParserConfig}
 import io.shiftleft.codepropertygraph.generated.{Cpg, Operators, PropertyNames}
@@ -11,8 +10,6 @@ import io.shiftleft.semanticcpg.language.operatorextension.OpNodes
 import org.slf4j.{Logger, LoggerFactory}
 import scopt.OParser
 
-import java.io.File as JFile
-import java.nio.file.Paths
 import scala.io.Source
 
 // Corresponds to a parsed row in the known functions file
@@ -36,7 +33,7 @@ class PhpTypeStubsParserPass(cpg: Cpg, config: XTypeStubsParserConfig = XTypeStu
   override def generateParts(): Array[KnownFunction] = {
     /* parse file and return each row as a KnownFunction object */
     val typeStubsFile = config.typeStubsFilePath
-    val source = typeStubsFile match {
+    val source        = typeStubsFile match {
       case Some(file) => Source.fromFile(file)
       case _          => Source.fromResource("php_known_function_signatures.txt")
     }
@@ -49,10 +46,10 @@ class PhpTypeStubsParserPass(cpg: Cpg, config: XTypeStubsParserConfig = XTypeStu
   override def runOnPart(builder: DiffGraphBuilder, part: KnownFunction): Unit = {
     /* calculate the result of this part - this is done as a concurrent task */
     val builtinMethod = cpg.method.fullNameExact(part.name).l
-    builtinMethod.foreach(mNode => {
+    builtinMethod.foreach { mNode =>
       setTypes(builder, mNode.methodReturn, part.rTypes)
       (mNode.parameter.l zip part.pTypes).map((p, pTypes) => setTypes(builder, p, pTypes))
-    })
+    }
   }
 
   def createKnownFunctionFromLine(line: String): Option[KnownFunction] = {
@@ -73,6 +70,6 @@ class PhpTypeStubsParserPass(cpg: Cpg, config: XTypeStubsParserConfig = XTypeStu
     pTypesRawArr.map(paramTypeRaw => paramTypeRaw.split(",").map(_.strip).toSeq).toSeq
 
   protected def setTypes(builder: DiffGraphBuilder, n: StoredNode, types: Seq[String]): Unit =
-    if (types.size == 1) builder.setNodeProperty(n, PropertyNames.TYPE_FULL_NAME, types.head)
-    else builder.setNodeProperty(n, PropertyNames.DYNAMIC_TYPE_HINT_FULL_NAME, types)
+    if (types.size == 1) builder.setNodeProperty(n, PropertyNames.TypeFullName, types.head)
+    else builder.setNodeProperty(n, PropertyNames.DynamicTypeHintFullName, types)
 }

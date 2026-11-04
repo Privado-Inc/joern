@@ -16,7 +16,7 @@ import scala.jdk.CollectionConverters.*
 class ContainsEdgePass(cpg: Cpg) extends ForkJoinParallelCpgPass[AstNode](cpg) {
   import ContainsEdgePass._
 
-  private val logger: Logger = LoggerFactory.getLogger(this.getClass)
+  private val logger: Logger                   = LoggerFactory.getLogger(this.getClass)
   override def generateParts(): Array[AstNode] =
     cpg.graph.nodes(sourceTypes*).cast[AstNode].toArray
 
@@ -34,7 +34,7 @@ class ContainsEdgePass(cpg: Cpg) extends ForkJoinParallelCpgPass[AstNode](cpg) {
     } catch {
       case ex: Exception =>
         logger.warn(
-          s"Error in ContainsEdgePass for node in file '${source.propertyOption(PropertyNames.FILENAME).toString}''",
+          s"Error in ContainsEdgePass for node in file '${source.propertyOption(PropertyNames.Filename).toString}''",
           ex
         )
     }

@@ -3,6 +3,7 @@ package io.joern.x2cpg.passes.controlflow.codepencegraph
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.EdgeTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{
+  Block,
   Call,
   ControlStructure,
   Identifier,
@@ -22,6 +23,9 @@ import org.slf4j.{Logger, LoggerFactory}
 class CdgPass(cpg: Cpg) extends ForkJoinParallelCpgPass[Method](cpg) {
   import CdgPass.logger
 
+  // 10 is just an arbitrary number - we merely want to log 'a few times' but no more than that
+  val hasLogged = java.util.concurrent.atomic.AtomicInteger(10)
+
   override def generateParts(): Array[Method] = cpg.method.toArray
 
   override def runOnPart(dstGraph: DiffGraphBuilder, method: Method): Unit = {
@@ -34,22 +38,24 @@ class CdgPass(cpg: Cpg) extends ForkJoinParallelCpgPass[Method](cpg) {
       postDomFrontiers.foreach { case (node, postDomFrontierNodes) =>
         postDomFrontierNodes.foreach {
           case postDomFrontierNode @ (_: Literal | _: Identifier | _: Call | _: MethodRef | _: Unknown |
-              _: ControlStructure | _: JumpTarget) =>
+              _: ControlStructure | _: JumpTarget | _: Block) =>
             dstGraph.addEdge(postDomFrontierNode, node, EdgeTypes.CDG)
           case postDomFrontierNode =>
             val nodeLabel  = postDomFrontierNode.label
             val containsIn = postDomFrontierNode._containsIn
-            if (containsIn == null || !containsIn.hasNext) {
-              logger.warn(s"Found CDG edge starting at $nodeLabel node. This is most likely caused by an invalid CFG.")
-            } else {
-              val method = containsIn.next()
+            // duplicate check looks (and is) superfluous, but it's a fastpath micro optimization
+            if (hasLogged.get() > 0 && hasLogged.decrementAndGet() > 0) {
+              val method = containsIn
+                .nextOption()
+                .map {
+                  case method: Method => method.fullName
+                  case other          => other.toString
+                }
+                .getOrElse("N/A")
               logger.warn(
-                s"Found CDG edge starting at $nodeLabel node. This is most likely caused by an invalid CFG." +
-                  s" Method: ${method match {
-                      case m: Method => m.fullName;
-                      case other     => other.label
-                    }}" +
-                  s" number of outgoing CFG edges from $nodeLabel node: ${postDomFrontierNode._cfgOut.size}"
+                s"""|Found CDG edge starting at $nodeLabel node $postDomFrontierNode -> $node.
+                  |This is most likely caused by an invalid CFG in method $method.
+                  |Number of outgoing CFG edges from $nodeLabel node: ${postDomFrontierNode._cfgOut.size}""".stripMargin
               )
             }
         }

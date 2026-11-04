@@ -1,8 +1,8 @@
 package io.joern.php2cpg.passes
 
-import better.files.File
 import io.joern.php2cpg.parser.ClassParser
 import io.joern.php2cpg.parser.ClassParser.*
+import io.joern.php2cpg.parser.Domain.MethodDelimiter
 import io.joern.x2cpg.ValidationMode.Disabled
 import io.joern.x2cpg.passes.base.MethodStubCreator
 import io.joern.x2cpg.{Ast, ValidationMode}
@@ -12,6 +12,7 @@ import io.shiftleft.passes.ForkJoinParallelCpgPass
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import org.slf4j.LoggerFactory
 
+import java.nio.file.Path
 import scala.util.{Failure, Success}
 
 /** This pass parses the high-level symbols of the dependencies to include their types to the CPG.
@@ -20,13 +21,13 @@ import scala.util.{Failure, Success}
   * @param dependencyDir
   *   the directory holding the downloaded dependencies.
   */
-class DependencySymbolsPass(cpg: Cpg, dependencyDir: File) extends ForkJoinParallelCpgPass[ClassParserClass](cpg) {
+class DependencySymbolsPass(cpg: Cpg, dependencyDir: Path) extends ForkJoinParallelCpgPass[ClassParserClass](cpg) {
 
   private val logger                          = LoggerFactory.getLogger(this.getClass)
   implicit val validationMode: ValidationMode = ValidationMode.Disabled
 
   override def generateParts(): Array[ClassParserClass] = new ClassParser(dependencyDir).parse() match {
-    case Success(classes) => classes.toArray
+    case Success(classes)   => classes.toArray
     case Failure(exception) =>
       logger.error("Exception encountered while parsing symbols from dependencies", exception)
       Array.empty
@@ -35,7 +36,7 @@ class DependencySymbolsPass(cpg: Cpg, dependencyDir: File) extends ForkJoinParal
   override def runOnPart(builder: DiffGraphBuilder, clazz: ClassParserClass): Unit = {
     val className     = clazz.name
     val classFullName = s"${clazz.namespace}\\$className"
-    val typeDecl = NewTypeDecl()
+    val typeDecl      = NewTypeDecl()
       .name(clazz.name)
       .fullName(classFullName)
       .isExternal(true)
@@ -46,7 +47,7 @@ class DependencySymbolsPass(cpg: Cpg, dependencyDir: File) extends ForkJoinParal
       .map { case ClassParserFunction(name, modifiers) =>
         MethodStubCreator.createMethodStub(
           name = name,
-          fullName = s"$classFullName->$name",
+          fullName = s"$classFullName$MethodDelimiter$name",
           signature = "<empty>",
           dispatchType = DispatchTypes.DYNAMIC_DISPATCH,
           parameterCount = 0,

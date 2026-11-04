@@ -9,5 +9,7 @@ object Crew {
   val malte    = "@maltek"
   val dave     = "@DavidBakerEffendi"
   val SJ1iu    = "@piggyctf"
+  val yichao   = "@yichaoxu"
+  val penghui  = "@peng-hui"
 
 }

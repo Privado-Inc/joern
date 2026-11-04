@@ -4,12 +4,13 @@ import io.joern.jssrc2cpg.parser.BabelNodeInfo
 import io.joern.x2cpg.{Ast, ValidationMode}
 import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
+import io.shiftleft.codepropertygraph.generated.EvaluationStrategies
 
 trait AstForPrimitivesCreator(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
   protected def astForIdentifier(ident: BabelNodeInfo, maybePossibleType: Option[String] = None): Ast = {
-    val name      = ident.json("name").str
-    val identNode = identifierNode(ident, name)
+    val name         = ejsOutputCallName(ident).getOrElse(ident.json("name").str)
+    val identNode    = identifierNode(ident, name)
     val possibleType = maybePossibleType match {
       case None              => typeFor(ident)
       case Some(Defines.Any) => typeFor(ident)
@@ -18,7 +19,7 @@ trait AstForPrimitivesCreator(implicit withSchemaValidation: ValidationMode) { t
     val typeFullName = if (Defines.isBuiltinType(possibleType)) possibleType else Defines.Any
     identNode.typeFullName(typeFullName)
     identNode.possibleTypes(Seq(possibleType))
-    scope.addVariableReference(name, identNode)
+    scope.addVariableReference(name, identNode, typeFullName, EvaluationStrategies.BY_REFERENCE)
     Ast(identNode)
   }
 
@@ -40,7 +41,7 @@ trait AstForPrimitivesCreator(implicit withSchemaValidation: ValidationMode) { t
     astForIdentifier(createBabelNodeInfo(privateName.json("id")))
 
   protected def astForSpreadOrRestElement(spreadElement: BabelNodeInfo, arg1Ast: Option[Ast] = None): Ast = {
-    val ast = astForNodeWithFunctionReference(spreadElement.json("argument"))
+    val ast       = astForNodeWithFunctionReference(spreadElement.json("argument"))
     val callNode_ =
       callNode(spreadElement, spreadElement.code, "<operator>.spread", DispatchTypes.STATIC_DISPATCH)
     callAst(callNode_, arg1Ast.toList :+ ast)
@@ -71,24 +72,25 @@ trait AstForPrimitivesCreator(implicit withSchemaValidation: ValidationMode) { t
     Ast(literalNode(booleanLiteral, booleanLiteral.code, Option(Defines.Boolean)))
 
   protected def astForTemplateLiteral(templateLiteral: BabelNodeInfo): Ast = {
-    val expressions = templateLiteral.json("expressions").arr.toList
-    val quasis      = templateLiteral.json("quasis").arr.toList.filterNot(_("tail").bool)
-    val quasisTail  = templateLiteral.json("quasis").arr.toList.filter(_("tail").bool).head
+    val expressions           = templateLiteral.json("expressions").arr
+    val (quasisTails, quasis) = templateLiteral.json("quasis").arr.partition(_("tail").bool)
+    val quasisTail            = quasisTails.head
 
     if (expressions.isEmpty && quasis.isEmpty) {
       astForTemplateElement(createBabelNodeInfo(quasisTail))
     } else {
-      val callName = Operators.formatString
-      val argsCodes = expressions.zip(quasis).flatMap { case (expression, quasi) =>
+      val callName        = Operators.formatString
+      val expressionQuasi = expressions.zip(quasis)
+      val argsCodes       = expressionQuasi.flatMap { case (expression, quasi) =>
         List(s"\"${quasi("value")("raw").str}\"", code(expression))
       }
-      val callCode = s"$callName${(argsCodes :+ s"\"${quasisTail("value")("raw").str}\"").mkString("(", ", ", ")")}"
+      val callCode     = s"$callName${(argsCodes :+ s"\"${quasisTail("value")("raw").str}\"").mkString("(", ", ", ")")}"
       val templateCall =
         callNode(templateLiteral, callCode, callName, DispatchTypes.STATIC_DISPATCH)
-      val argumentAsts = expressions.zip(quasis).flatMap { case (expression, quasi) =>
+      val argumentAsts = expressionQuasi.flatMap { case (expression, quasi) =>
         List(astForNodeWithFunctionReference(quasi), astForNodeWithFunctionReference(expression))
       }
-      val argAsts = argumentAsts :+ astForNodeWithFunctionReference(quasisTail)
+      val argAsts = (argumentAsts :+ astForNodeWithFunctionReference(quasisTail)).toSeq
       callAst(templateCall, argAsts)
     }
   }

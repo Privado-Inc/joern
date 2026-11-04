@@ -6,10 +6,11 @@ import io.joern.php2cpg.testfixtures.PhpCode2CpgFixture
 import io.joern.x2cpg.Defines
 import io.joern.x2cpg.utils.IntervalKeyPool
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, NodeTypes, Operators}
-import io.shiftleft.codepropertygraph.generated.nodes.{Block, Call, Identifier, Literal, TypeRef}
+import io.shiftleft.codepropertygraph.generated.nodes.{Block, Call, ClosureBinding, Identifier, Literal, TypeRef}
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 
+@scala.annotation.nowarn("cat=deprecation")
 class OperatorTests extends PhpCode2CpgFixture {
 
   val filenameKeyPool = new IntervalKeyPool(first = 0, last = Long.MaxValue)
@@ -680,25 +681,25 @@ class OperatorTests extends PhpCode2CpgFixture {
     }
   }
 
-  "global calls should handle simple and non-simple args" in {
+  // TODO: Add handling for non-simple args ($$ variables)
+  "global calls should handle simple args" in {
     val cpg = code("""<?php
-      |global $a, $$b;
+      |$a = "b"
+      |$$a = 10
+      |function foo() {
+      | global $a, $$a;
+      |}
       |""".stripMargin)
-
-    inside(cpg.call.l) { case List(globalCall) =>
-      globalCall.name shouldBe "global"
-      globalCall.methodFullName shouldBe "global"
-      globalCall.code shouldBe "global $a, $$b"
-      globalCall.lineNumber shouldBe Some(2)
-
-      inside(globalCall.argument.l) { case List(aArg: Identifier, bArg: Identifier) =>
-        aArg.name shouldBe "a"
-        bArg.name shouldBe "b"
-      }
+    inside(cpg.method.name("foo").local.l) { case memA :: Nil =>
+      memA.name shouldBe "a"
+    }
+    inside(cpg.all.collectAll[ClosureBinding].l) { case bindA :: Nil =>
+      bindA.closureBindingId shouldBe Some("Test0.php:foo:a")
+      bindA._localViaRefOut.name.l shouldBe List("a")
     }
   }
 
-  "calls to builtins defined in resources/builtin_functions.txt should be handled correctly" in {
+  "calls to builtins defined in resources/php_builtin_functions.txt should be handled correctly" in {
     val cpg = code("""<?php
       |abs($a);
       |""".stripMargin)
@@ -707,7 +708,7 @@ class OperatorTests extends PhpCode2CpgFixture {
       absCall.name shouldBe "abs"
       absCall.methodFullName shouldBe "abs"
       absCall.code shouldBe "abs($a)"
-      absCall.signature shouldBe s"${Defines.UnresolvedSignature}(1)"
+      absCall.signature shouldBe ""
     }
   }
 
@@ -718,50 +719,50 @@ class OperatorTests extends PhpCode2CpgFixture {
     // finds the block containing the assignments
     val block = cpg.all.collect { case block: Block if block.lineNumber.contains(2) => block }.head
     inside(block.astChildren.assignment.l) { case tmp0 :: tmp1 :: tmp2 :: a :: b :: c :: d :: Nil =>
-      tmp0.code shouldBe "$tmp0 = $arr"
+      tmp0.code shouldBe "$Test0.php:<global>@tmp-0 = $arr"
       tmp0.source.label shouldBe NodeTypes.IDENTIFIER
       tmp0.source.code shouldBe "$arr"
       tmp0.target.label shouldBe NodeTypes.IDENTIFIER
-      tmp0.target.code shouldBe "$tmp0"
+      tmp0.target.code shouldBe "$Test0.php:<global>@tmp-0"
 
-      tmp1.code shouldBe "$tmp1 = $tmp0[0]"
+      tmp1.code shouldBe "$Test0.php:<global>@tmp-1 = $Test0.php:<global>@tmp-0[0]"
       tmp1.source.label shouldBe NodeTypes.CALL
       tmp1.source.asInstanceOf[Call].name shouldBe Operators.indexAccess
-      tmp1.source.code shouldBe "$tmp0[0]"
+      tmp1.source.code shouldBe "$Test0.php:<global>@tmp-0[0]"
       tmp1.target.label shouldBe NodeTypes.IDENTIFIER
-      tmp1.target.code shouldBe "$tmp1"
+      tmp1.target.code shouldBe "$Test0.php:<global>@tmp-1"
 
-      tmp2.code shouldBe "$tmp2 = $tmp1"
+      tmp2.code shouldBe "$Test0.php:<global>@tmp-2 = $Test0.php:<global>@tmp-1"
       tmp2.source.label shouldBe NodeTypes.IDENTIFIER
-      tmp2.source.code shouldBe "$tmp1"
+      tmp2.source.code shouldBe "$Test0.php:<global>@tmp-1"
       tmp2.target.label shouldBe NodeTypes.IDENTIFIER
-      tmp2.target.code shouldBe "$tmp2"
+      tmp2.target.code shouldBe "$Test0.php:<global>@tmp-2"
 
-      a.code shouldBe "$a = $tmp2[0]"
+      a.code shouldBe "$a = $Test0.php:<global>@tmp-2[0]"
       a.source.label shouldBe NodeTypes.CALL
       a.source.asInstanceOf[Call].name shouldBe Operators.indexAccess
-      a.source.code shouldBe "$tmp2[0]"
+      a.source.code shouldBe "$Test0.php:<global>@tmp-2[0]"
       a.target.label shouldBe NodeTypes.IDENTIFIER
       a.target.code shouldBe "$a"
 
-      b.code shouldBe "$b = $tmp2[1]"
+      b.code shouldBe "$b = $Test0.php:<global>@tmp-2[1]"
       b.source.label shouldBe NodeTypes.CALL
       b.source.asInstanceOf[Call].name shouldBe Operators.indexAccess
-      b.source.code shouldBe "$tmp2[1]"
+      b.source.code shouldBe "$Test0.php:<global>@tmp-2[1]"
       b.target.label shouldBe NodeTypes.IDENTIFIER
       b.target.code shouldBe "$b"
 
-      c.code shouldBe "$c = $tmp0[1]"
+      c.code shouldBe "$c = $Test0.php:<global>@tmp-0[1]"
       c.source.label shouldBe NodeTypes.CALL
       c.source.asInstanceOf[Call].name shouldBe Operators.indexAccess
-      c.source.code shouldBe "$tmp0[1]"
+      c.source.code shouldBe "$Test0.php:<global>@tmp-0[1]"
       c.target.label shouldBe NodeTypes.IDENTIFIER
       c.target.code shouldBe "$c"
 
-      d.code shouldBe "$d = $tmp0[\"d\"]"
+      d.code shouldBe "$d = $Test0.php:<global>@tmp-0[\"d\"]"
       d.source.label shouldBe NodeTypes.CALL
       d.source.asInstanceOf[Call].name shouldBe Operators.indexAccess
-      d.source.code shouldBe "$tmp0[\"d\"]"
+      d.source.code shouldBe "$Test0.php:<global>@tmp-0[\"d\"]"
       d.target.label shouldBe NodeTypes.IDENTIFIER
       d.target.code shouldBe "$d"
     }

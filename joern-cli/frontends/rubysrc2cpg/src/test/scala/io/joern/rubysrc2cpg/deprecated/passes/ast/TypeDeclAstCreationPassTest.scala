@@ -6,6 +6,9 @@ import io.shiftleft.semanticcpg.language.*
 import io.joern.x2cpg.Defines as XDefines
 import io.shiftleft.codepropertygraph.generated.Operators
 
+import scala.annotation.nowarn
+
+@nowarn("cat=deprecation")
 class TypeDeclAstCreationPassTest extends RubyCode2CpgFixture(useDeprecatedFrontend = true) {
 
   "AST generation for simple classes declarations" should {

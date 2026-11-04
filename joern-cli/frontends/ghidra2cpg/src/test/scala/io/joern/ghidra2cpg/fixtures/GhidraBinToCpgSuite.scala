@@ -8,10 +8,12 @@ import org.apache.commons.io.FileUtils
 import io.shiftleft.codepropertygraph.generated.nodes
 import io.joern.dataflowengineoss.language.*
 import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.validation.{PostFrontendValidator, ValidationLevel}
 
 import java.nio.file.Files
 
 class GhidraFrontend extends LanguageFrontend {
+  override type ConfigType = Config
   override val fileSuffix: String = ""
 
   override def execute(inputFile: java.io.File): Cpg = {
@@ -25,9 +27,11 @@ class GhidraFrontend extends LanguageFrontend {
       override def run(): Unit = FileUtils.deleteQuietly(tempDir)
     }))
 
-    val cpgBin                         = dir.getAbsolutePath
-    implicit val defaultConfig: Config = Config()
-    new Ghidra2Cpg().createCpg(inputFile.getAbsolutePath, Some(cpgBin)).get
+    val cpgBin = dir.getAbsolutePath
+    val config = Config().withInputPath(inputFile.getAbsolutePath).withOutputPath(cpgBin)
+    val cpg    = new Ghidra2Cpg().createCpg(config).get
+    new PostFrontendValidator(cpg, ValidationLevel.V0).run()
+    cpg
   }
 
 }

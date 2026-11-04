@@ -1,64 +1,29 @@
 package io.joern.php2cpg.passes
 
-import better.files.File
 import io.joern.php2cpg.Config
 import io.joern.php2cpg.astcreation.AstCreator
-import io.joern.php2cpg.parser.PhpParser
-import io.joern.x2cpg.{SourceFiles, ValidationMode}
+import io.joern.php2cpg.parser.{Domain, PhpParser}
+import io.joern.php2cpg.passes.SymbolSummaryPass.SymbolSummary
+import io.joern.x2cpg.ValidationMode
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.passes.ForkJoinParallelCpgPass
-import org.slf4j.LoggerFactory
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 
-import scala.jdk.CollectionConverters.*
+import java.nio.file.Paths
 
-class AstCreationPass(config: Config, cpg: Cpg, parser: PhpParser)(implicit withSchemaValidation: ValidationMode)
-    extends ForkJoinParallelCpgPass[Array[String]](cpg) {
+class AstCreationPass(config: Config, cpg: Cpg, parser: PhpParser, summary: Map[String, Seq[SymbolSummary]])
+    extends ForkJoinParallelCpgPass[Array[String]](cpg)
+    with AstParsingPass(config, parser) {
 
-  private val logger = LoggerFactory.getLogger(this.getClass)
-
-  var PhpSourceFileExtensions: Set[String] = if config.phpExtensions.nonEmpty then config.phpExtensions else Set(".php")
-
-  override def generateParts(): Array[Array[String]] = {
-    val sourceFiles = SourceFiles
-      .determine(
-        config.inputPath,
-        PhpSourceFileExtensions,
-        ignoredFilesRegex = Option(config.ignoredFilesRegex),
-        ignoredFilesPath = Option(config.ignoredFiles)
-      )
-      .toArray
-
-    // We need to feed the php parser big groups of file in order
-    // to speed up the parsing. Apparently it is some sort of slow
-    // startup phase which makes single file processing prohibitively
-    // slow.
-    // On the other hand we need to be careful to not choose too big
-    // chunks because:
-    //   1. The argument length to the php executable has system
-    //      dependent limits
-    //   2. We want to make use of multiple CPU cores for the rest
-    //      of the CPG creation.
-    //
-    val parts = sourceFiles.grouped(20).toArray
-    parts
-  }
-
-  override def runOnPart(diffGraph: DiffGraphBuilder, filenames: Array[String]): Unit = {
-    parser.parseFiles(filenames).foreach { case (filename, parseResult, infoLines) =>
-      parseResult match {
-        case Some(parseResult) =>
-          val relativeFilename = if (filename == config.inputPath) {
-            File(filename).name
-          } else {
-            File(config.inputPath).relativize(File(filename)).toString
-          }
-          diffGraph.absorb(
-            new AstCreator(relativeFilename, filename, parseResult, config.disableFileContent)(config.schemaValidation)
-              .createAst()
-          )
-        case None =>
-          logger.warn(s"Could not parse file $filename. Results will be missing!")
-      }
+  override protected def processPart(builder: DiffGraphBuilder, fileName: String, result: Domain.PhpFile): Unit = {
+    val relativeFilename = if (fileName == config.inputPath) {
+      Paths.get(fileName).fileName
+    } else {
+      Paths.get(config.inputPath).relativize(Paths.get(fileName)).toString
     }
+    builder.absorb(
+      new AstCreator(relativeFilename, fileName, result, config.disableFileContent, summary)(config.schemaValidation)
+        .createAst()
+    )
   }
 }

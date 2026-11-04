@@ -1,8 +1,6 @@
 package io.joern.x2cpg.testfixtures
 
 import flatgraph.Graph
-import io.joern.x2cpg.X2CpgConfig
-import io.joern.x2cpg.utils.TestCodeWriter
 import io.shiftleft.codepropertygraph.generated.Cpg
 
 import java.nio.file.{Files, Path}
@@ -24,7 +22,7 @@ abstract class TestCpg extends Cpg(Cpg.empty.graph) with LanguageFrontend with T
     super.moreCode(code, fileName)
   }
 
-  def withConfig(config: X2CpgConfig[?]): this.type = {
+  def withConfig(config: ConfigType): this.type = {
     setConfig(config)
     this
   }

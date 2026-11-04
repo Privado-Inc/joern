@@ -3,7 +3,7 @@ package io.joern.javasrc2cpg.querying
 import io.joern.javasrc2cpg.Config
 import io.joern.javasrc2cpg.testfixtures.JavaSrcCode2CpgFixture
 import io.shiftleft.semanticcpg.language.*
-import io.joern.x2cpg.utils.ExternalCommand
+import io.shiftleft.semanticcpg.utils.ExternalCommand
 
 class ClassLoaderTypeTests extends JavaSrcCode2CpgFixture {
   private lazy val jdk17Home = sys.env.get("JAVA_17_HOME").get
@@ -95,7 +95,7 @@ class ClassLoaderTypeTests extends JavaSrcCode2CpgFixture {
 
   "types with java 8 features should be resolved with a jdk path override" in {
     val config = Config().withJdkPath(System.getProperty("java.home"))
-    val cpg = code("""
+    val cpg    = code("""
      |public class Test {
      |    public static void foo(String s) {
      |        s.trim().isEmpty();

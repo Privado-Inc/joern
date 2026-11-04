@@ -78,12 +78,9 @@ class TaskCreator(context: EngineContext) {
     }
   }
 
-  private def paramToArgsOfCallers(param: MethodParameterIn): List[Expression] =
-    NoResolve
-      .getMethodCallsites(param.method)
-      .collectAll[Call]
-      .argument(param.index)
-      .l
+  private def paramToArgsOfCallers(param: MethodParameterIn): List[Expression] = {
+    param.argument(NoResolve).l
+  }
 
   /** Expand to receiver objects of calls that reference the method of the parameter, e.g., if `param` is a parameter of
     * `m`, return `foo` in `foo.bar(m)` TODO: I'm not sure whether `methodRef.methodFullNameExact(...)` uses an index.
@@ -126,7 +123,7 @@ class TaskCreator(context: EngineContext) {
               }
             } else {
               returnStatements.map { returnStatement =>
-                val newPath = Vector(PathElement(methodReturn, result.callSiteStack)) ++ path
+                val newPath   = Vector(PathElement(methodReturn, result.callSiteStack)) ++ path
                 val taskStack =
                   result.taskStack :+ TaskFingerprint(returnStatement, call :: result.callSiteStack, callDepth + 1)
                 ReachableByTask(taskStack, newPath)
@@ -163,7 +160,7 @@ class TaskCreator(context: EngineContext) {
           methodReturns.flatMap { methodReturn =>
             val returnStatements = methodReturn._reachingDefIn.toList.collect { case r: Return => r }
             returnStatements.map { returnStatement =>
-              val newPath = Vector(PathElement(methodReturn, result.callSiteStack)) ++ path
+              val newPath   = Vector(PathElement(methodReturn, result.callSiteStack)) ++ path
               val taskStack =
                 result.taskStack :+ TaskFingerprint(returnStatement, result.callSiteStack, callDepth + 1)
               ReachableByTask(taskStack, newPath)

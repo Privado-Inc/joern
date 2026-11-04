@@ -1,46 +1,46 @@
 package io.joern.c2cpg.parser
 
+import io.joern.c2cpg.parser.CdtParser.HeaderFileParserLanguage
+import io.joern.c2cpg.passes.AstCreationPass
 import io.shiftleft.utils.IOUtils
 import org.eclipse.cdt.core.index.IIndexFileLocation
 import org.eclipse.cdt.core.parser.FileContent
 import org.eclipse.cdt.internal.core.parser.IMacroDictionary
 import org.eclipse.cdt.internal.core.parser.scanner.InternalFileContent
 import org.eclipse.cdt.internal.core.parser.scanner.InternalFileContentProvider
-import org.slf4j.LoggerFactory
 
 import java.nio.file.Paths
-import java.util.concurrent.ConcurrentHashMap
 
-object CustomFileContentProvider {
-  private val headerContentCache: ConcurrentHashMap[String, Array[Char]] = new ConcurrentHashMap()
-}
+class CustomFileContentProvider(
+  headerFileFinder: HeaderFileFinder,
+  sourceFile: String,
+  accumulator: AstCreationPass.Accumulator
+) extends InternalFileContentProvider {
 
-class CustomFileContentProvider(headerFileFinder: HeaderFileFinder) extends InternalFileContentProvider {
+  override def getContentForInclusion(path: String, macroDictionary: IMacroDictionary): InternalFileContent = {
+    loadContent(path)
+  }
 
-  import CustomFileContentProvider.headerContentCache
-
-  private val logger = LoggerFactory.getLogger(classOf[CustomFileContentProvider])
+  override def getContentForInclusion(ifl: IIndexFileLocation, astPath: String): InternalFileContent = {
+    loadContent(astPath)
+  }
 
   private def loadContent(path: String): InternalFileContent = {
     val maybeFullPath = if (!getInclusionExists(path)) { headerFileFinder.find(path) }
     else { Option(path) }
     maybeFullPath.map { foundPath =>
-      val path = Paths.get(foundPath)
-      val content = headerContentCache.computeIfAbsent(
-        foundPath,
-        _ => {
-          logger.debug(s"Loading header file '$foundPath'")
-          IOUtils.readLinesInFile(path).mkString("\n").toArray
-        }
-      )
-      FileContent.create(path.toString, false, content).asInstanceOf[InternalFileContent]
+      updateHeaderFileParserLanguage(foundPath)
+      val content = IOUtils.readLinesInFile(Paths.get(foundPath)).mkString("\n").toArray
+      FileContent.create(path, false, content).asInstanceOf[InternalFileContent]
     }.orNull
   }
 
-  override def getContentForInclusion(path: String, macroDictionary: IMacroDictionary): InternalFileContent =
-    loadContent(path)
-
-  override def getContentForInclusion(ifl: IIndexFileLocation, astPath: String): InternalFileContent =
-    loadContent(astPath)
+  private def updateHeaderFileParserLanguage(foundPath: String): Unit = {
+    if (FileDefaults.hasCHeaderFileExtension(foundPath)) {
+      val currentLanguage = if (FileDefaults.hasCFileExtension(sourceFile)) { HeaderFileParserLanguage.C }
+      else { HeaderFileParserLanguage.Cpp }
+      accumulator.updateHeaderFileParserLanguage(foundPath, currentLanguage)
+    }
+  }
 
 }

@@ -37,7 +37,7 @@ private class RecoverForKotlinFile(cpg: Cpg, cu: File, builder: DiffGraphBuilder
   }
 
   override protected def importNodes: Iterator[Import] = cu.ast.isImport
-  override protected def visitImport(i: Import): Unit = {
+  override protected def visitImport(i: Import): Unit  = {
 
     val alias    = i.importedAs.getOrElse("")
     val fullName = i.importedEntity.getOrElse("")
@@ -73,7 +73,7 @@ private class RecoverForKotlinFile(cpg: Cpg, cu: File, builder: DiffGraphBuilder
         case t if t.endsWith(c.signature) => t
         case t                            => s"$t:${c.signature}"
       }
-      builder.setNodeProperty(c, PropertyNames.DYNAMIC_TYPE_HINT_FULL_NAME, signedTypes)
+      builder.setNodeProperty(c, PropertyNames.DynamicTypeHintFullName, signedTypes)
     }
 
 }

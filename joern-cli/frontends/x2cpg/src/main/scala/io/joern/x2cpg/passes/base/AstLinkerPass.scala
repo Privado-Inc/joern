@@ -8,7 +8,7 @@ import io.shiftleft.semanticcpg.language.*
 import org.slf4j.{Logger, LoggerFactory}
 
 class AstLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
-  private val logger: Logger = LoggerFactory.getLogger(this.getClass)
+  private val logger: Logger                         = LoggerFactory.getLogger(this.getClass)
   override def run(dstGraph: DiffGraphBuilder): Unit = {
     try {
       cpg.method.whereNot(_.astParent).foreach { method =>
@@ -49,7 +49,7 @@ class AstLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
           case NodeTypes.METHOD          => methodFullNameToNode(cpg, astParentFullName)
           case NodeTypes.TYPE_DECL       => typeDeclFullNameToNode(cpg, astParentFullName)
           case NodeTypes.NAMESPACE_BLOCK => namespaceBlockFullNameToNode(cpg, astParentFullName)
-          case _ =>
+          case _                         =>
             logger.warn(
               s"Invalid AST_PARENT_TYPE=$astParentFullName;" +
                 s" astChild LABEL=${astChild.label};" +
@@ -67,7 +67,7 @@ class AstLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
     } catch {
       case ex: Exception =>
         logger.warn(
-          s"Error in AstLinkerPass for node in file '${astChild.propertyOption(PropertyNames.FILENAME).toString}''",
+          s"Error in AstLinkerPass for node in file '${astChild.propertyOption(PropertyNames.Filename).toString}''",
           ex
         )
     }

@@ -8,21 +8,38 @@ import io.joern.javasrc2cpg.{Config, JavaSrc2Cpg}
 import io.joern.x2cpg.frontendspecific.javasrc2cpg
 import io.joern.x2cpg.passes.frontend.XTypeRecoveryConfig
 import io.joern.x2cpg.testfixtures.{Code2CpgFixture, DefaultTestCpg, LanguageFrontend}
+import io.joern.x2cpg.utils.{ArtifactFetcher, HttpArtifact}
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.{Expression, Literal}
 import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.layers.LayerCreatorContext
+import io.shiftleft.semanticcpg.utils.FileUtil
+import io.shiftleft.semanticcpg.validation.{PostFrontendValidator, ValidationLevel}
 
 import java.io.File
+import java.nio.file.Path as JavaPath
 
 trait JavaSrcFrontend extends LanguageFrontend {
+  final override type ConfigType = Config
   override val fileSuffix: String = ".java"
+
+  def withRemoteInferenceJars(artifacts: HttpArtifact*): this.type = {
+    artifacts.foreach { artifact =>
+      ArtifactFetcher.fetch(artifact).foreach { jarPath =>
+        val currentConfig = getConfig().getOrElse(JavaSrc2Cpg.DefaultConfig.withDelombokMode("no-delombok"))
+        setConfig(currentConfig.withInferenceJarPaths(currentConfig.inferenceJarPaths + jarPath.toString))
+      }
+    }
+    this
+  }
 
   override def execute(sourceCodeFile: File): Cpg = {
     val config = getConfig()
-      .map(_.asInstanceOf[Config])
       .getOrElse(JavaSrc2Cpg.DefaultConfig.withDelombokMode("no-delombok"))
       .withCacheJdkTypeSolver(true)
-    new JavaSrc2Cpg().createCpg(sourceCodeFile.getAbsolutePath)(config).get
+    val res = new JavaSrc2Cpg().createCpg(config.withInputPath(sourceCodeFile.getAbsolutePath)).get
+    new PostFrontendValidator(res, ValidationLevel.V0).run()
+    res
   }
 }
 
@@ -34,7 +51,8 @@ class JavaSrcTestCpg(enableTypeRecovery: Boolean = false)
   override protected def applyPasses(): Unit = {
     super.applyPasses()
     if (enableTypeRecovery)
-      javasrc2cpg.typeRecoveryPasses(this, XTypeRecoveryConfig(enabledDummyTypes = true)).foreach(_.createAndApply())
+      new javasrc2cpg.JavaPostProcessing(XTypeRecoveryConfig(enabledDummyTypes = true))
+        .run(new LayerCreatorContext(this))
     applyOssDataFlow()
   }
 

@@ -1,12 +1,12 @@
 package io.joern.console.cpgcreation
 
-import better.files.Dsl.*
-import better.files.File
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.codepropertygraph.cpgloading.CpgLoader
 import io.shiftleft.codepropertygraph.generated.Languages
 import io.joern.console.{ConsoleConfig, CpgConverter}
+import io.shiftleft.semanticcpg.utils.FileUtil
 
-import java.nio.file.Path
+import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import scala.util.Try
 
 object CpgGeneratorFactory {
@@ -25,43 +25,45 @@ object CpgGeneratorFactory {
     Languages.KOTLIN,
     Languages.NEWC,
     Languages.JAVASRC,
-    Languages.SWIFTSRC
+    Languages.SWIFTSRC,
+    Languages.RUST,
+    Languages.ABAP
   )
 }
 
 class CpgGeneratorFactory(config: ConsoleConfig) {
 
-  /** For a given input path, try to guess a suitable generator and return it
-    */
+  /** For a given input path, try to guess a suitable generator and return it if it is available */
   def forCodeAt(inputPath: String): Option[CpgGenerator] =
     for {
       language     <- guessLanguage(inputPath)
-      cpgGenerator <- cpgGeneratorForLanguage(language, config.frontend, config.install.rootPath.path, args = Nil)
+      cpgGenerator <- cpgGeneratorForLanguage(language, config.frontend, config.install.rootPath, args = Nil)
+      if cpgGenerator.isAvailable
     } yield {
       report(s"Using generator for language: $language: ${cpgGenerator.getClass.getSimpleName}")
       cpgGenerator
     }
 
-  /** For a language, return the generator
-    */
+  /** For a language, return the generator if it is available */
   def forLanguage(language: String): Option[CpgGenerator] = {
-    Option(language)
-      .filter(languageIsKnown)
-      .flatMap { lang =>
-        cpgGeneratorForLanguage(lang, config.frontend, config.install.rootPath.path, args = Nil)
-      }
+    for {
+      lang <- Option(language)
+      if languageIsKnown(lang)
+      generator <- cpgGeneratorForLanguage(lang, config.frontend, config.install.rootPath, args = Nil)
+      if generator.isAvailable
+    } yield generator
   }
 
   def languageIsKnown(language: String): Boolean = CpgGeneratorFactory.KNOWN_LANGUAGES.contains(language)
 
   def runGenerator(generator: CpgGenerator, inputPath: String, outputPath: String): Try[Path] = {
-    val outputFileOpt: Try[File] =
-      generator.generate(inputPath, outputPath).map(File(_))
+    val outputFileOpt: Try[Path] =
+      generator.generate(inputPath, outputPath).map(Paths.get(_))
     outputFileOpt.map { outFile =>
-      val parentPath = outFile.parent.path.toAbsolutePath
-      if (CpgLoader.isProtoFormat(outFile.path)) {
+      val parentPath = outFile.getParent.toAbsolutePath
+      if (CpgLoader.isProtoFormat(outFile)) {
         report("Creating database from bin.zip")
-        val srcFilename = outFile.path.toAbsolutePath.toString
+        val srcFilename = outFile.absolutePathAsString
         val dstFilename = parentPath.resolve("cpg.bin").toAbsolutePath.toString
         // MemoryHelper.hintForInsufficientMemory(srcFilename).map(report)
         convertProtoCpgToFlatgraph(srcFilename, dstFilename)
@@ -69,7 +71,12 @@ class CpgGeneratorFactory(config: ConsoleConfig) {
         report("moving cpg.bin.zip to cpg.bin because it is already a database file")
         val srcPath = parentPath.resolve("cpg.bin.zip")
         if (srcPath.toFile.exists()) {
-          mv(srcPath, parentPath.resolve("cpg.bin"))
+          val cpgBinPath = parentPath.resolve("cpg.bin")
+          if (Files.isDirectory(cpgBinPath)) {
+            Files.move(srcPath, cpgBinPath)
+          } else {
+            Files.move(srcPath, cpgBinPath, StandardCopyOption.REPLACE_EXISTING)
+          }
         }
       }
       parentPath
@@ -82,7 +89,7 @@ class CpgGeneratorFactory(config: ConsoleConfig) {
 
   def convertProtoCpgToFlatgraph(srcFilename: String, dstFilename: String): Unit = {
     CpgConverter.convertProtoCpgToFlatgraph(srcFilename, dstFilename)
-    File(srcFilename).delete()
+    FileUtil.delete(Paths.get(srcFilename))
   }
 
   private def report(str: String): Unit = System.err.println(str)

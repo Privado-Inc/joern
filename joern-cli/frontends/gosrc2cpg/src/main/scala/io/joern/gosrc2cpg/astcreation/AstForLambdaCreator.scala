@@ -3,7 +3,6 @@ package io.joern.gosrc2cpg.astcreation
 import io.joern.gosrc2cpg.datastructures.{LambdaTypeInfo, MethodCacheMetaData}
 import io.joern.gosrc2cpg.parser.{ParserKeys, ParserNodeInfo}
 import io.joern.x2cpg.datastructures.Stack.StackWrapper
-import io.joern.x2cpg.utils.NodeBuilders.newModifierNode
 import io.joern.x2cpg.{Ast, ValidationMode, Defines as XDefines}
 import io.shiftleft.codepropertygraph.generated.nodes.{NewMethod, NewMethodReturn}
 import io.shiftleft.codepropertygraph.generated.{ModifierTypes, NodeTypes}
@@ -31,14 +30,14 @@ trait AstForLambdaCreator(implicit withSchemaValidation: ValidationMode) { this:
         astForMethodParameter(params, genericTypeMethodMap),
         astForMethodBody(funcLiteral.json(ParserKeys.Body)),
         methodReturn,
-        newModifierNode(ModifierTypes.LAMBDA) :: Nil
+        modifierNode(funcLiteral, ModifierTypes.LAMBDA) :: Nil
       )
     scope.popScope()
     methodAstParentStack.pop()
     if (!goGlobal.processingDependencies) {
       // Create these lambda AST nodes only for main source code and ignore it while processing dependencies code.
       val typeDeclNode_ = typeDeclNode(funcLiteral, lambdaName, fullName, relPathFileName, lambdaName)
-      if baseFullName == fullyQualifiedPackage then
+      if (baseFullName == fullyQualifiedPackage)
         typeDeclNode_.astParentType(NodeTypes.TYPE_DECL).astParentFullName(fullyQualifiedPackage)
       else typeDeclNode_.astParentType(NodeTypes.METHOD).astParentFullName(baseFullName)
       val structTypes = Option(goGlobal.lambdaSignatureToLambdaTypeMap.get(signature)) match {
@@ -66,7 +65,7 @@ trait AstForLambdaCreator(implicit withSchemaValidation: ValidationMode) { this:
 
     val params         = funcType.json(ParserKeys.Params)(ParserKeys.List)
     val paramSignature = parameterSignature(params, genericTypeMethodMap)
-    val signature =
+    val signature      =
       s"${XDefines.ClosurePrefix}($paramSignature)$returnTypeStr"
     LambdaFunctionMetaData(signature, returnTypeStr, methodReturn, params, genericTypeMethodMap)
   }

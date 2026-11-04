@@ -44,7 +44,7 @@ private class RecoverForPythonFile(cpg: Cpg, cu: File, builder: DiffGraphBuilder
       i.call.tag.flatMap(EvaluatedImport.tagToEvaluatedImport).foreach {
         case ResolvedMethod(fullName, alias, receiver, _) => symbolTable.put(CallAlias(alias, receiver), fullName)
         case ResolvedTypeDecl(fullName, _)                => symbolTable.put(LocalVar(entityName), fullName)
-        case ResolvedMember(basePath, memberName, _) =>
+        case ResolvedMember(basePath, memberName, _)      =>
           val memberTypes = cpg.typeDecl
             .fullNameExact(basePath)
             .member
@@ -53,6 +53,11 @@ private class RecoverForPythonFile(cpg: Cpg, cu: File, builder: DiffGraphBuilder
             .filterNot(_ == Defines.Any)
             .toSet
           symbolTable.put(LocalVar(entityName), memberTypes)
+          // If the imported member is called, seed the call type directly.
+          val fullName = createCallFromIdentifierTypeFullName(basePath, memberName)
+          i.call.inAst.collectAll[Method].headOption.foreach { method =>
+            method.ast.isCall.nameExact(entityName).foreach(call => symbolTable.append(call, Set(fullName)))
+          }
         case UnknownMethod(fullName, alias, receiver, _) =>
           symbolTable.put(CallAlias(alias, receiver), fullName)
         case UnknownTypeDecl(fullName, _) =>
@@ -97,7 +102,7 @@ private class RecoverForPythonFile(cpg: Cpg, cu: File, builder: DiffGraphBuilder
       case "<operator>.dictLiteral"  => associateTypes(i, Set(s"${Constants.builtinPrefix}dict"))
       case "<operator>.setLiteral"   => associateTypes(i, Set(s"${Constants.builtinPrefix}set"))
       case Operators.conditional     => associateTypes(i, Set(s"${Constants.builtinPrefix}bool"))
-      case Operators.indexAccess =>
+      case Operators.indexAccess     =>
         c.argument.argumentIndex(1).isCall.foreach(setCallMethodFullNameFromBase)
         visitIdentifierAssignedToIndexAccess(i, c)
       case _ => super.visitIdentifierAssignedToOperator(i, c, operation)
@@ -110,22 +115,23 @@ private class RecoverForPythonFile(cpg: Cpg, cu: File, builder: DiffGraphBuilder
   }
 
   override def visitIdentifierAssignedToCall(i: Identifier, c: Call): Set[String] = {
-    // Ignore legacy import representation
-    if (c.name.equals("import")) Set.empty
+    // Ignore the import call representation
+    if (c.name.equals(Operators.importCall)) Set.empty
     // Stop custom annotation representation from hitting superclass
     else if (c.name.isBlank) Set.empty
     else super.visitIdentifierAssignedToCall(i, c)
   }
 
-  override def visitIdentifierAssignedToFieldLoad(i: Identifier, fa: FieldAccess): Set[String] = {
+  override def getFieldLoadTypes(fa: FieldAccess): Set[String] = {
     val fieldParents = getFieldParents(fa)
     fa.astChildren.l match {
       case List(base: Identifier, fi: FieldIdentifier) if base.name.equals("self") && fieldParents.nonEmpty =>
         val referencedFields = cpg.typeDecl.fullNameExact(fieldParents.toSeq*).member.nameExact(fi.canonicalName)
-        val globalTypes =
-          referencedFields.flatMap(m => m.typeFullName +: m.dynamicTypeHintFullName).filterNot(_ == Constants.ANY).toSet
-        associateTypes(i, globalTypes)
-      case _ => super.visitIdentifierAssignedToFieldLoad(i, fa)
+        referencedFields
+          .flatMap(field => field.typeFullName +: field.dynamicTypeHintFullName)
+          .filterNot(_ == Constants.ANY)
+          .toSet
+      case _ => super.getFieldLoadTypes(fa)
     }
   }
 
@@ -185,7 +191,7 @@ private class RecoverForPythonFile(cpg: Cpg, cu: File, builder: DiffGraphBuilder
         val existingTypes = (identifierTypes ++ otherTypes).distinct
         val resolvedTypes = identifierTypes.map(LocalVar.apply).flatMap(symbolTable.get)
         if (existingTypes != resolvedTypes && resolvedTypes.nonEmpty) {
-          builder.setNodeProperty(t, PropertyNames.INHERITS_FROM_TYPE_FULL_NAME, resolvedTypes)
+          builder.setNodeProperty(t, PropertyNames.InheritsFromTypeFullName, resolvedTypes)
         }
       }
   }
@@ -199,7 +205,7 @@ private class RecoverForPythonFile(cpg: Cpg, cu: File, builder: DiffGraphBuilder
             val clsPath = classMethod.typeDecl.fullName.toSet
             symbolTable.put(LocalVar(cls.name), clsPath)
             if (cls.typeFullName == Defines.Any)
-              builder.setNodeProperty(cls, PropertyNames.DYNAMIC_TYPE_HINT_FULL_NAME, clsPath.toSeq)
+              builder.setNodeProperty(cls, PropertyNames.DynamicTypeHintFullName, clsPath.toSeq)
           }
     }
     super.prepopulateSymbolTable()

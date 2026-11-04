@@ -889,7 +889,7 @@ class DataFlowTests
     "find flows to the sink" in {
       val source = cpg.identifier.name("x").l
       val sink   = cpg.call.name("puts").l
-      sink.reachableByFlows(source).l.size shouldBe 2
+      sink.reachableByFlows(source).l.size shouldBe 1
     }
   }
 
@@ -1559,10 +1559,11 @@ class DataFlowTests
           |
           |""".stripMargin)
 
+    // Since upstream #5494, arguments after the variadic parameter index also flow into `*arg`
     "find flows to the sink" in {
       val source = cpg.identifier.name("x").l
       val sink   = cpg.call.name("puts").l
-      sink.reachableByFlows(source).size shouldBe 2
+      sink.reachableByFlows(source).size shouldBe 4
     }
   }
 

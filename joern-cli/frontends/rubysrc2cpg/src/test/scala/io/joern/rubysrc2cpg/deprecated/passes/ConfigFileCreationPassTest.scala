@@ -1,6 +1,5 @@
 package io.joern.rubysrc2cpg.deprecated.passes
 
-import better.files.File
 import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.joern.x2cpg.passes.frontend.MetaDataPass
 import io.shiftleft.codepropertygraph.generated.Cpg

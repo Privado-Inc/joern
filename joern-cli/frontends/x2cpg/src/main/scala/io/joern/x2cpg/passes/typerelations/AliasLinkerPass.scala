@@ -9,7 +9,7 @@ import io.joern.x2cpg.utils.LinkingUtil
 import org.slf4j.{Logger, LoggerFactory}
 
 class AliasLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
-  private val logger: Logger = LoggerFactory.getLogger(this.getClass)
+  private val logger: Logger                         = LoggerFactory.getLogger(this.getClass)
   override def run(dstGraph: DiffGraphBuilder): Unit = {
     // Create ALIAS_OF edges from TYPE_DECL nodes to TYPE
     try {
@@ -22,7 +22,7 @@ class AliasLinkerPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
         getDstFullNames = (srcNode: TypeDecl) => {
           srcNode.aliasTypeFullName
         },
-        dstFullNameKey = PropertyNames.ALIAS_TYPE_FULL_NAME,
+        dstFullNameKey = PropertyNames.AliasTypeFullName,
         dstGraph
       )
     } catch {

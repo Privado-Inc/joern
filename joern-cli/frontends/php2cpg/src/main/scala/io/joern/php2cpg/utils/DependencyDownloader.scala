@@ -1,22 +1,24 @@
 package io.joern.php2cpg.utils
 
-import better.files.File
 import com.github.sh4869.semver_parser.{Range, SemVer}
 import io.joern.php2cpg.Config
 import io.joern.php2cpg.parser.Domain.PhpOperators
-import io.joern.php2cpg.passes.{Composer, PsrArray, PsrString}
-import io.joern.x2cpg.utils.FileUtil.*
+import io.joern.php2cpg.passes.Composer
+import io.joern.php2cpg.passes.PsrStringOrArray.{PsrArray, PsrString}
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.Dependency
 import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.utils.FileUtil
 import org.slf4j.LoggerFactory
 import upickle.default.*
 
 import java.io.{FileOutputStream, IOException}
+import java.nio.file.{CopyOption, Files, Path, StandardCopyOption}
 import java.net.{HttpURLConnection, URI, URL, URLConnection}
 import java.util.zip.ZipEntry
-import javax.json.JsonException
 import scala.util.{Failure, Success, Try, Using}
+import scala.jdk.CollectionConverters.*
 
 /** Queries <a href="https://packagist.org">Packgist</a> for dependencies and downloads them.
   */
@@ -27,13 +29,14 @@ class DependencyDownloader(cpg: Cpg, config: Config) {
   private val PACKAGIST_API = "repo.packagist.org/p2"
 
   /** Downloads dependencies and places them in a temporary directory.
+    * @param outputDir
+    *   the directory where downloaded dependencies should be placed. Must exist.
     * @return
-    *   the path to the directory of downloaded dependencies. This directory is deleted on exit.
+    *   the path to the output directory containing downloaded dependencies.
     */
-  def download(): File = {
-    val dir = File.newTemporaryDirectory("joern-php2cpg").deleteOnExit(swallowIOExceptions = true)
-    cpg.dependency.filterNot(isAutoloadedDependency).foreach(downloadDependency(dir, _))
-    dir
+  def download(outputDir: Path): Path = {
+    cpg.dependency.filterNot(isAutoloadedDependency).foreach(downloadDependency(outputDir, _))
+    outputDir
   }
 
   private def isAutoloadedDependency(dependency: Dependency): Boolean = {
@@ -47,7 +50,7 @@ class DependencyDownloader(cpg: Cpg, config: Config) {
     * @param dependency
     *   the dependency to download.
     */
-  private def downloadDependency(targetDir: File, dependency: Dependency): Unit = {
+  private def downloadDependency(targetDir: Path, dependency: Dependency): Unit = {
     Thread.sleep(100) // throttling
 
     val dependencyName = dependency.name.strip()
@@ -109,7 +112,7 @@ class DependencyDownloader(cpg: Cpg, config: Config) {
     * @return
     *   success if package was successfully downloaded, a failure if otherwise.
     */
-  private def downloadPackage(targetDir: File, dependency: Dependency, pack: Package): Try[Unit] = Try {
+  private def downloadPackage(targetDir: Path, dependency: Dependency, pack: Package): Try[Unit] = Try {
     var connection: Option[HttpURLConnection] = None
     val url                                   = pack.dist.url
     try {
@@ -122,7 +125,7 @@ class DependencyDownloader(cpg: Cpg, config: Config) {
           val inputStream = conn.getInputStream
 
           Try {
-            Using.resources(inputStream, new FileOutputStream(fileName.pathAsString)) { (is, fos) =>
+            Using.resources(inputStream, new FileOutputStream(fileName.toString)) { (is, fos) =>
               val buffer = new Array[Byte](4096)
               Iterator
                 .continually(is.read(buffer))
@@ -160,8 +163,7 @@ class DependencyDownloader(cpg: Cpg, config: Config) {
     * @param targetDir
     *   the temporary directory containing all of the successfully downloaded dependencies.
     */
-  private def unzipDependency(targetDir: File, pack: Package, vendor: String): Unit = {
-
+  private def unzipDependency(targetDir: Path, pack: Package, vendor: String): Unit = {
     def zipFilter(zipEntry: ZipEntry) = {
       val isZipSlip = zipEntry.getName.contains("..")
       !isZipSlip && (zipEntry.isDirectory || zipEntry.getName.matches(".*\\.(php|json)$"))
@@ -170,31 +172,35 @@ class DependencyDownloader(cpg: Cpg, config: Config) {
     def moveDir(targetNamespace: String, pathPrefix: String): Unit = {
       val fullTargetNamespace = (targetDir / targetNamespace
         .replace("\\", java.io.File.separator))
-        .createDirectoryIfNotExists(createParents = true)
+        .createWithParentsIfNotExists(asDirectory = true, createParents = true)
       val fullPathPrefix = targetDir / pathPrefix.replace("/", java.io.File.separator)
-      fullPathPrefix.list.foreach(_.moveToDirectory(fullTargetNamespace))
-      fullPathPrefix.delete(swallowIOExceptions = true)
+
+      Files.list(fullPathPrefix).forEach { x =>
+        Files.move(x, fullTargetNamespace / x.fileName)
+      }
+      FileUtil.delete(fullPathPrefix, swallowIoExceptions = true)
     }
 
-    targetDir.list.filterNot(_.isDirectory).foreach { pkg =>
+    targetDir.listFiles().filterNot(Files.isDirectory(_)).foreach { pkg =>
       pkg.unzipTo(targetDir, zipFilter)
-      pkg.delete(swallowIOExceptions = true)
-      // This is usually unpacked to some dir and not directly
-      targetDir.list
-        .filter(f => f.isDirectory && f.name.startsWith(vendor.replace("\\", "-")))
+      FileUtil.delete(pkg, swallowIoExceptions = true)
+
+      targetDir
+        .listFiles()
+        .filter(f => Files.isDirectory(f) && f.fileName.startsWith(vendor.replace("\\", "-")))
         .foreach { unpackedDest =>
-          unpackedDest.mergeDirectory(targetDir)(copyOptions = File.CopyOptions(overwrite = true))
-          unpackedDest.delete(swallowIOExceptions = true)
+          unpackedDest.mergeDirectory(targetDir, copyOptions = StandardCopyOption.REPLACE_EXISTING)
+          FileUtil.delete(unpackedDest, swallowIoExceptions = true)
         }
     }
 
-    // Move and merge files according to `composer.json`
-    // TODO: This should probably happen as we unzip/unpack
     targetDir
       .walk()
       .collectFirst {
-        case x if x.name == "composer.json" =>
-          Using.resource(x.newInputStream) { is => read[Composer](ujson.Readable.fromByteArray(is.readAllBytes())) }
+        case x if x.fileName == "composer.json" =>
+          Using.resource(Files.newInputStream(x)) { is =>
+            read[Composer](ujson.Readable.fromByteArray(is.readAllBytes()))
+          }
       }
       .foreach { composer =>
         composer.autoload.`psr-0`.foreach {
@@ -206,8 +212,12 @@ class DependencyDownloader(cpg: Cpg, config: Config) {
           case (targetNamespace, PsrArray(pathPrefixes)) => pathPrefixes.foreach(moveDir(targetNamespace, _))
         }
       }
+
     // Clean up `.json` files
-    targetDir.walk().filter(_.`extension`.contains(".json")).foreach(_.delete(swallowIOExceptions = true))
+    targetDir
+      .listFiles()
+      .filter(_.toString.endsWith(".json"))
+      .foreach(FileUtil.delete(_, swallowIoExceptions = true))
   }
 
 }
@@ -217,7 +227,7 @@ implicit val urlRw: ReadWriter[URL] = readwriter[ujson.Value]
     x => ujson.Str(x.toString),
     {
       case json @ (j: ujson.Str) => URI(json.str).toURL
-      case x                     => throw JsonException(s"Unexpected value type for URL strings: ${x.getClass}")
+      case x                     => throw RuntimeException(s"Unexpected value type for URL strings: ${x.getClass}")
     }
   )
 
@@ -226,7 +236,7 @@ implicit val semverRw: ReadWriter[SemVer] = readwriter[ujson.Value]
     x => ujson.Str(x.toString),
     {
       case json @ (j: ujson.Str) => json.str.asSemver
-      case x                     => throw JsonException(s"Unexpected value type for URL strings: ${x.getClass}")
+      case x                     => throw RuntimeException(s"Unexpected value type for URL strings: ${x.getClass}")
     }
   )
 
@@ -236,11 +246,12 @@ private case class Package(dist: Dist, @upickle.implicits.key("version_normalize
 
 implicit val packageRw: ReadWriter[PackageReleases] = readwriter[ujson.Value].bimap[PackageReleases](
   x => ujson.Obj("packages" -> write(x.packages)),
-  json =>
+  json => {
     val packagesWithDist = json("packages").obj.map { case (packName, packages) =>
       packName -> packages.arr.filter(_.obj.keySet.contains("dist"))
     }
     PackageReleases(read[Map[String, List[Package]]](packagesWithDist))
+  }
 )
 
 private case class PackageReleases(packages: Map[String, List[Package]])

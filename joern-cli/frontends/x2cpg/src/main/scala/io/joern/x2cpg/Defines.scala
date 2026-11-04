@@ -14,7 +14,7 @@ object Defines {
   // resolved. The METHOD_FULL_NAME should be given as
   // "<unresolvedNamespace>.foo:<unresolvedSignature>(1)". If the namespace is known
   // the METHOD_FULL_NAME should be given as
-  // "some.namespace.foo:<unresolvedSignature>(1)". Thereby the number in parenthesis
+  // "some.namespace.foo:<unresolvedSignature>(1)". Thereby the number in parentheses
   // is the number of call arguments.
   // Note that this schema and thus the defines only makes sense for statically
   // typed languages with a package/namespace structure like Java, CSharp, etc..
@@ -36,4 +36,9 @@ object Defines {
 
   val LeftAngularBracket = "<"
   val Unknown            = "<unknown>"
+
+  // Used for field access calls in the lowering of pattern extractors where the field name
+  // may not be known. As an example in javasrc2cpg, the assignment for `o instanceof Foo(Bar b))` could
+  // be lowered to `Bar b = (Bar) (((Foo) o).<unknownField>)`
+  val UnknownField = "<unknownField>"
 }

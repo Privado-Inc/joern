@@ -39,7 +39,7 @@ class MethodTests extends JavaSrcCode2CpgFixture {
     x.filename shouldBe "Foo.java"
     x.lineNumber shouldBe Some(2)
     x.lineNumberEnd shouldBe Some(4)
-    x.columnNumber shouldBe Some(4)
+    x.columnNumber shouldBe Some(8)
     x.columnNumberEnd shouldBe Some(4)
   }
 
@@ -186,12 +186,11 @@ class MethodTests4 extends JavaSrcCode2CpgFixture {
         |""".stripMargin)
 
     "have correct `code` fields" in {
-      cpg.method("run").parameter.indexFrom(1).l match
-        case List(arg1, arg2, arg3) =>
-          arg1.code shouldBe "int arg1"
-          arg2.code shouldBe "int arg2"
-          arg3.code shouldBe "int arg3"
-        case result => fail(s"Expected 3 parameters but got $result")
+      inside(cpg.method("run").parameter.indexFrom(1).l) { case List(arg1, arg2, arg3) =>
+        arg1.code shouldBe "int arg1"
+        arg2.code shouldBe "int arg2"
+        arg3.code shouldBe "int arg3"
+      }
     }
   }
 

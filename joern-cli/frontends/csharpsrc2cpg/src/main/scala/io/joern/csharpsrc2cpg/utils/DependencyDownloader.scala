@@ -1,17 +1,18 @@
 package io.joern.csharpsrc2cpg.utils
 
-import better.files.File
 import io.joern.csharpsrc2cpg.Config
 import io.joern.csharpsrc2cpg.datastructures.CSharpProgramSummary
-import io.joern.x2cpg.astgen.AstGenRunner.DefaultAstGenRunnerResult
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.Dependency
 import io.shiftleft.semanticcpg.language.*
+import io.shiftleft.semanticcpg.utils.FileUtil
 import org.slf4j.LoggerFactory
 import upickle.default.*
 
 import java.io.FileOutputStream
 import java.net.{HttpURLConnection, URI, URL, URLConnection}
+import java.nio.file.{Files, Paths, Path}
 import java.util.zip.{GZIPInputStream, InflaterInputStream, ZipEntry}
 import scala.util.{Failure, Success, Try, Using}
 
@@ -39,7 +40,7 @@ class DependencyDownloader(
     *   the dependencies' summary combined with the given internal program summary.
     */
   def download(): CSharpProgramSummary = {
-    File.temporaryDirectory("joern-csharpsrc2cpg").apply { dir =>
+    FileUtil.usingTemporaryDirectory("joern-csharpsrc2cpg") { dir =>
       cpg.dependency.filterNot(isAlreadySummarized).foreach(downloadDependency(dir, _))
       unzipDependencies(dir)
       summarizeDependencies(dir) ++= internalProgramSummary
@@ -72,9 +73,9 @@ class DependencyDownloader(
     * @return
     *   a disposable version of the directory where the dependencies live.
     */
-  private def downloadDependency(targetDir: File, dependency: Dependency): Unit = {
+  private def downloadDependency(targetDir: Path, dependency: Dependency): Unit = {
 
-    val dependencyName = dependency.name.strip()
+    val dependencyName                                  = dependency.name.strip()
     def getVersion(packageName: String): Option[String] = Try {
       Using.resource(URI(s"https://$NUGET_BASE_API_V3/${packageName.toLowerCase}/index.json").toURL.openStream()) {
         is =>
@@ -91,7 +92,7 @@ class DependencyDownloader(
     def createUrl(packageType: String, version: String): Option[URL] = {
       Try(new URI(s"https://$NUGET_BASE_API_V2/$packageType/${dependencyName}/$version").toURL) match {
         case Success(url) => Some(url)
-        case Failure(e) =>
+        case Failure(e)   =>
           logger.debug(s"Failed to create URL for packageType: $packageType, version: $version. Error: ${e.getMessage}")
           None
       }
@@ -99,7 +100,7 @@ class DependencyDownloader(
 
     // If dependency version is not specified, latest is returned
     val versionOpt =
-      if dependency.version.isBlank then getVersion(dependencyName) else Option(dependency.version)
+      if (dependency.version.isBlank) getVersion(dependencyName) else Option(dependency.version)
 
     versionOpt match {
       case Some(version) =>
@@ -120,7 +121,7 @@ class DependencyDownloader(
     * @return
     *   the package version.
     */
-  private def downloadPackage(targetDir: File, dependency: Dependency, url: Option[URL]): Unit = {
+  private def downloadPackage(targetDir: Path, dependency: Dependency, url: Option[URL]): Unit = {
     var connection: Option[HttpURLConnection] = None
     url.foreach { validUrl =>
       {
@@ -130,7 +131,7 @@ class DependencyDownloader(
           connection.foreach(_.setRequestProperty("Accept-Encoding", "gzip, deflate"))
           connection match {
             case Some(conn: HttpURLConnection) if conn.getResponseCode == HttpURLConnection.HTTP_OK =>
-              val ext      = if url.toString.contains("/package/") then "nupkg" else "snupkg"
+              val ext      = if (url.toString.contains("/package/")) "nupkg" else "snupkg"
               val fileName = targetDir / s"${dependency.name}.$ext"
 
               val inputStream = Option(conn.getContentEncoding) match {
@@ -140,7 +141,7 @@ class DependencyDownloader(
               }
 
               Try {
-                Using.resources(inputStream, new FileOutputStream(fileName.pathAsString)) { (is, fos) =>
+                Using.resources(inputStream, new FileOutputStream(fileName.toString)) { (is, fos) =>
                   val buffer = new Array[Byte](4096)
                   Iterator
                     .continually(is.read(buffer))
@@ -176,28 +177,28 @@ class DependencyDownloader(
     * @param targetDir
     *   the temporary directory containing all of the successfully downloaded dependencies.
     */
-  private def unzipDependencies(targetDir: File): Unit = {
+  private def unzipDependencies(targetDir: Path): Unit = {
 
     def zipFilter(zipEntry: ZipEntry): Boolean = {
       val isZipSlip = zipEntry.getName.contains("..")
       !isZipSlip && (zipEntry.isDirectory || zipEntry.getName.matches(".*lib.*\\.(dll|xml|pdb)$"))
     }
 
-    targetDir.list.foreach { pkg =>
+    targetDir.listFiles().foreach { pkg =>
       // Will unzip to `targetDir/lib` and clean-up
       pkg.unzipTo(targetDir, zipFilter)
-      pkg.delete(swallowIOExceptions = true)
+      FileUtil.delete(pkg, swallowIoExceptions = true)
     }
 
     // Move and merge files
     val libDir = targetDir / "lib"
-    if (libDir.isDirectory) {
+    if (Files.isDirectory(libDir)) {
       // Sometimes these dependencies will include DLLs for multiple version of dotnet, we only want one
-      libDir.listRecursively.filterNot(_.isDirectory).distinctBy(_.name).foreach { f =>
-        f.copyTo(targetDir / f.name)
+      libDir.walk().filterNot(_ == libDir).filterNot(Files.isDirectory(_)).distinctBy(_.fileName).foreach { f =>
+        f.copyTo(targetDir / f.fileName)
       }
       // Clean-up lib dir
-      libDir.delete(swallowIOExceptions = true)
+      FileUtil.delete(libDir, swallowIoExceptions = true)
     }
   }
 
@@ -207,16 +208,16 @@ class DependencyDownloader(
     * @return
     *   a summary of all the dependencies.
     */
-  private def summarizeDependencies(targetDir: File): CSharpProgramSummary = {
-    val astGenRunner       = new DotNetAstGenRunner(config.withInputPath(targetDir.pathAsString))
+  private def summarizeDependencies(targetDir: Path): CSharpProgramSummary = {
+    val astGenRunner       = new DotNetAstGenRunner(config.withInputPath(targetDir.toString))
     val astGenRunnerResult = astGenRunner.execute(targetDir)
-    val summaries = astGenRunnerResult.parsedFiles
-      .map(x => File(x))
-      .flatMap { f =>
-        Using.resource(f.newFileInputStream) { fis =>
+    val summaries          = astGenRunnerResult.parsedFiles
+      .map(path => Paths.get(path))
+      .flatMap { file =>
+        Using.resource(Files.newInputStream(file)) { fis =>
           CSharpProgramSummary.jsonToInitialMapping(fis) match {
             case Failure(exception) =>
-              logger.error(s"Unable to parse JSON program summary at $f", exception)
+              logger.error(s"Unable to parse JSON program summary at $file", exception)
               None
             case Success(parsedJson) =>
               Option(parsedJson)

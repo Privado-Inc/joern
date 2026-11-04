@@ -1,22 +1,12 @@
 package io.joern.swiftsrc2cpg.astcreation
 
-import io.joern.swiftsrc2cpg.datastructures.BlockScope
-import io.joern.swiftsrc2cpg.datastructures.MethodScope
 import io.joern.swiftsrc2cpg.parser.SwiftNodeSyntax.*
-import io.joern.x2cpg.Ast
 import io.joern.x2cpg.datastructures.Stack.*
-import io.joern.x2cpg.ValidationMode
+import io.joern.x2cpg.datastructures.VariableScopeManager
 import io.joern.x2cpg.frontendspecific.swiftsrc2cpg.Defines
-import io.shiftleft.codepropertygraph.generated.EvaluationStrategies
-import io.shiftleft.codepropertygraph.generated.nodes.NewModifier
-import io.shiftleft.codepropertygraph.generated.ModifierTypes
-import io.shiftleft.codepropertygraph.generated.nodes.NewAnnotationParameter
-import io.shiftleft.codepropertygraph.generated.nodes.NewAnnotationParameterAssign
-import io.shiftleft.codepropertygraph.generated.EdgeTypes
-import io.shiftleft.codepropertygraph.generated.nodes.NewIdentifier
-import io.shiftleft.codepropertygraph.generated.DispatchTypes
-import io.shiftleft.codepropertygraph.generated.Operators
-import io.shiftleft.codepropertygraph.generated.nodes.File.PropertyDefaults
+import io.joern.x2cpg.{Ast, ValidationMode}
+import io.shiftleft.codepropertygraph.generated.*
+import io.shiftleft.codepropertygraph.generated.nodes.*
 
 import scala.annotation.unused
 
@@ -29,7 +19,7 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
   private def astForAccessorEffectSpecifiersSyntax(node: AccessorEffectSpecifiersSyntax): Ast = notHandledYet(node)
 
   private def astForAccessorParametersSyntax(node: AccessorParametersSyntax): Ast = {
-    val name = code(node.name).stripSuffix(",")
+    val name          = code(node.name).stripSuffix(",")
     val parameterNode =
       parameterInNode(
         node,
@@ -39,28 +29,20 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
         false,
         EvaluationStrategies.BY_VALUE
       )
-    scope.addVariable(name, parameterNode, MethodScope)
+    scope.addVariable(name, parameterNode, Defines.Any, VariableScopeManager.ScopeType.MethodScope)
     Ast(parameterNode)
   }
 
   private def astForArrayElementSyntax(node: ArrayElementSyntax): Ast = {
-    astForNodeWithFunctionReference(node.expression)
+    astForNode(node.expression)
   }
 
   private def astForAttributeSyntax(node: AttributeSyntax): Ast = {
-    val argumentAsts = node.arguments match {
-      case Some(argument) =>
-        val argumentAst    = astForNodeWithFunctionReference(argument)
-        val parameter      = NewAnnotationParameter().code("argument")
-        val assign         = NewAnnotationParameterAssign().code(code(argument))
-        val assignChildren = List(Ast(parameter), argumentAst)
-        setArgumentIndices(assignChildren)
-        List(Ast(assign).withChild(Ast(parameter)).withChild(argumentAst))
-      case None => Nil
-    }
+    // TODO: find a way to represent arbitrary attribute arguments in the CPG.
+    //  For now, we just create an AnnotationNode for the annotation itself.
     val attributeCode = code(node)
     val name          = code(node.attributeName)
-    annotationAst(annotationNode(node, attributeCode, name, name), argumentAsts)
+    Ast(annotationNode(node, attributeCode, name, name))
   }
 
   private def astForAvailabilityArgumentSyntax(node: AvailabilityArgumentSyntax): Ast = {
@@ -69,9 +51,10 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
 
   private def astForAvailabilityConditionSyntax(node: AvailabilityConditionSyntax): Ast = {
     val callName = code(node.availabilityKeyword)
-    val callNode = createStaticCallNode(code(node), callName, callName, line(node), column(node))
-    val argAsts = node.availabilityArguments.children.map { c =>
-      Ast(literalNode(c, code(c).stripSuffix(","), Option(Defines.String)))
+
+    val callNode = createStaticCallNode(node, code(node), callName, callName, Defines.Bool)
+    val argAsts  = node.availabilityArguments.children.map { child =>
+      Ast(literalNode(child, code(child).stripSuffix(","), Option(Defines.String)))
     }
     callAst(callNode, argAsts)
   }
@@ -97,8 +80,10 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
   private def astForClosureParameterClauseSyntax(node: ClosureParameterClauseSyntax): Ast   = notHandledYet(node)
 
   private def astForClosureParameterSyntax(node: ClosureParameterSyntax): Ast = {
-    val name = node.secondName.fold(code(node.firstName))(code)
-    val tpe  = node.`type`.fold(Defines.Any)(code)
+    val name           = node.secondName.fold(code(node.firstName))(code)
+    val tpeFromTypeMap = fullnameProvider.typeFullname(node)
+    val tpe        = tpeFromTypeMap.getOrElse(node.`type`.fold(Defines.Any)(t => AstCreatorHelper.cleanType(code(t))))
+    val isVariadic = node.ellipsis.isDefined
     registerType(tpe)
     val parameterNode =
       parameterInNode(
@@ -106,17 +91,17 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
         name,
         code(node).stripSuffix(","),
         node.json("index").num.toInt + 1,
-        false,
+        isVariadic,
         EvaluationStrategies.BY_VALUE,
         Option(tpe)
       )
-    scope.addVariable(name, parameterNode, MethodScope)
+    scope.addVariable(name, parameterNode, tpe, VariableScopeManager.ScopeType.MethodScope)
     Ast(parameterNode)
   }
 
   private def astForClosureShorthandParameterSyntax(node: ClosureShorthandParameterSyntax): Ast = {
     val name = code(node.name)
-    val tpe  = Defines.Any
+    val tpe  = fullnameProvider.typeFullname(node).getOrElse(Defines.Any)
     registerType(tpe)
     val parameterNode =
       parameterInNode(
@@ -128,17 +113,19 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
         EvaluationStrategies.BY_VALUE,
         Option(tpe)
       )
-    scope.addVariable(name, parameterNode, MethodScope)
+    scope.addVariable(name, parameterNode, Defines.Any, VariableScopeManager.ScopeType.MethodScope)
     Ast(parameterNode)
   }
 
   private def astForClosureSignatureSyntax(node: ClosureSignatureSyntax): Ast = notHandledYet(node)
+
   private def astForCodeBlockItemSyntax(node: CodeBlockItemSyntax): Ast = {
-    astForNodeWithFunctionReferenceAndCall(node.item)
+    astForNode(node.item)
   }
   private def astForCodeBlockSyntax(node: CodeBlockSyntax): Ast = {
     astForNode(node.statements)
   }
+
   private def astForCompositionTypeElementSyntax(node: CompositionTypeElementSyntax): Ast = notHandledYet(node)
 
   private def astForConditionElementSyntax(node: ConditionElementSyntax): Ast = {
@@ -146,13 +133,7 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
   }
 
   private def astForConformanceRequirementSyntax(node: ConformanceRequirementSyntax): Ast = notHandledYet(node)
-  private def astForConventionAttributeArgumentsSyntax(node: ConventionAttributeArgumentsSyntax): Ast = notHandledYet(
-    node
-  )
-  private def astForConventionWitnessMethodAttributeArgumentsSyntax(
-    node: ConventionWitnessMethodAttributeArgumentsSyntax
-  ): Ast = notHandledYet(node)
-  private def astForDeclModifierDetailSyntax(node: DeclModifierDetailSyntax): Ast = notHandledYet(node)
+  private def astForDeclModifierDetailSyntax(node: DeclModifierDetailSyntax): Ast         = notHandledYet(node)
 
   private def astForDeclModifierSyntax(node: DeclModifierSyntax): Ast = {
     val modifierType = code(node.name) match {
@@ -178,12 +159,8 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
 
   private def astForDesignatedTypeSyntax(node: DesignatedTypeSyntax): Ast = notHandledYet(node)
 
-  private def astForDictionaryElementSyntax(node: DictionaryElementSyntax): Ast = {
-    // TODO: check if handling Labels like that fits the Swift semantics:
-    val dstAst = astForNode(node.key)
-    val srcAst = astForNodeWithFunctionReference(node.value)
-    createAssignmentCallAst(dstAst, srcAst, code(node), line(node), column(node))
-  }
+  private def astForDictionaryElementSyntax(node: DictionaryElementSyntax): Ast =
+    Ast() // we handle dictionary elements in astForDictionaryExprSyntax
 
   private def astForDifferentiabilityArgumentSyntax(node: DifferentiabilityArgumentSyntax): Ast   = notHandledYet(node)
   private def astForDifferentiabilityArgumentsSyntax(node: DifferentiabilityArgumentsSyntax): Ast = notHandledYet(node)
@@ -199,10 +176,9 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
     notHandledYet(node)
   private def astForDynamicReplacementAttributeArgumentsSyntax(node: DynamicReplacementAttributeArgumentsSyntax): Ast =
     notHandledYet(node)
-  private def astForEnumCaseElementSyntax(node: EnumCaseElementSyntax): Ast                   = notHandledYet(node)
-  private def astForEnumCaseParameterClauseSyntax(node: EnumCaseParameterClauseSyntax): Ast   = notHandledYet(node)
-  private def astForEnumCaseParameterSyntax(node: EnumCaseParameterSyntax): Ast               = notHandledYet(node)
-  private def astForExposeAttributeArgumentsSyntax(node: ExposeAttributeArgumentsSyntax): Ast = notHandledYet(node)
+  private def astForEnumCaseElementSyntax(node: EnumCaseElementSyntax): Ast                 = notHandledYet(node)
+  private def astForEnumCaseParameterClauseSyntax(node: EnumCaseParameterClauseSyntax): Ast = notHandledYet(node)
+  private def astForEnumCaseParameterSyntax(node: EnumCaseParameterSyntax): Ast             = notHandledYet(node)
 
   private def astForExpressionSegmentSyntax(node: ExpressionSegmentSyntax): Ast = {
     astForNode(node.expressions)
@@ -214,21 +190,28 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
   private def astForFunctionParameterSyntax(node: FunctionParameterSyntax): Ast = {
     // TODO: handle attributes
     // TODO: handle modifiers
-    // TODO: handle ellipsis
     // TODO: handle defaultValue
-    val name = node.secondName.fold(code(node.firstName))(code)
-    val tpe  = handleTypeAliasInitializer(node.`type`)
+
+    val parameterName = node.secondName match {
+      case Some(name) => code(name)
+      case None       => code(node.firstName)
+    }
+    val tpe = fullnameProvider.typeFullname(node).getOrElse(AstCreatorHelper.cleanType(code(node.`type`)))
+    registerType(tpe)
+
+    val isVariadic    = node.ellipsis.isDefined
     val parameterNode =
       parameterInNode(
         node,
-        name,
+        parameterName,
         code(node).stripSuffix(","),
         node.json("index").num.toInt + 1,
-        false,
+        isVariadic,
         EvaluationStrategies.BY_VALUE,
         Option(tpe)
       )
-    scope.addVariable(name, parameterNode, MethodScope)
+
+    scope.addVariable(parameterName, parameterNode, tpe, VariableScopeManager.ScopeType.MethodScope)
     Ast(parameterNode)
   }
 
@@ -250,7 +233,7 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
   private def astForInheritedTypeSyntax(node: InheritedTypeSyntax): Ast             = notHandledYet(node)
 
   private def astForInitializerClauseSyntax(node: InitializerClauseSyntax): Ast = {
-    astForNodeWithFunctionReference(node.value)
+    astForNode(node.value)
   }
 
   private def astForKeyPathComponentSyntax(node: KeyPathComponentSyntax): Ast                   = notHandledYet(node)
@@ -259,13 +242,13 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
   private def astForKeyPathSubscriptComponentSyntax(node: KeyPathSubscriptComponentSyntax): Ast = notHandledYet(node)
 
   private def astForLabeledExprSyntax(node: LabeledExprSyntax): Ast = {
-    // TODO: check if handling Labels like that fits the Swift semantics:
     node.label match {
       case Some(label) =>
-        val dstAst = astForNode(label)
-        val srcAst = astForNodeWithFunctionReference(node.expression)
-        createAssignmentCallAst(dstAst, srcAst, code(node), line(node), column(node))
-      case None => astForNodeWithFunctionReference(node.expression)
+        val labelName = code(label)
+        val ast       = astForNode(node.expression)
+        ast.root.collect { case i: ExpressionNew => i.argumentLabel(labelName) }
+        ast
+      case None => astForNode(node.expression)
     }
   }
 
@@ -273,21 +256,142 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
   private def astForLayoutRequirementSyntax(node: LayoutRequirementSyntax): Ast                 = notHandledYet(node)
 
   private def astForMatchingPatternConditionSyntax(node: MatchingPatternConditionSyntax): Ast = {
-    val lhsAst    = astForNode(node.pattern)
-    val rhsAst    = astForNode(node.initializer.value)
-    val callNode_ = callNode(node, code(node), Operators.equals, DispatchTypes.STATIC_DISPATCH)
-    val argAsts   = List(lhsAst, rhsAst)
-    callAst(callNode_, argAsts)
+    val initValue = node.initializer.value
+
+    // Detect tuple pattern variants
+    val maybeTuplePattern: Option[TuplePatternSyntax] = node.pattern match {
+      case tp: TuplePatternSyntax        => Some(tp)
+      case vb: ValueBindingPatternSyntax =>
+        vb.pattern match {
+          case tp: TuplePatternSyntax => Some(tp)
+          case _                      => None
+        }
+      case _ => None
+    }
+
+    val maybeTupleExpr: Option[TupleExprSyntax] = node.pattern match {
+      case ep: ExpressionPatternSyntax =>
+        ep.expression match {
+          case te: TupleExprSyntax => Some(te)
+          case _                   => None
+        }
+      case vb: ValueBindingPatternSyntax =>
+        vb.pattern match {
+          case ep: ExpressionPatternSyntax =>
+            ep.expression match {
+              case te: TupleExprSyntax => Some(te)
+              case _                   => None
+            }
+          case _ => None
+        }
+      case _ => None
+    }
+
+    (maybeTuplePattern, maybeTupleExpr) match {
+      case (Some(tuplePat), _) =>
+        astForTuplePatternInConditionContext(node, tuplePat, initValue)
+      case (_, Some(tupleExpr)) =>
+        astForTupleExprInConditionContext(node, tupleExpr, initValue)
+      case _ =>
+        // Original behavior for non-tuple patterns
+        val lhsAst    = astForNode(node.pattern)
+        val rhsAst    = astForNode(initValue)
+        val tpe       = Defines.Bool
+        val op        = Operators.equals
+        val callNode_ = createStaticCallNode(node, code(node), op, op, tpe)
+        val argAsts   = List(lhsAst, rhsAst)
+        callAst(callNode_, argAsts)
+    }
+  }
+
+  /** De-sugars a tuple in an if-case / guard-case condition.
+    *
+    * Creates a block: { <tmp> = initValue; ...desugarAsts... } where the de-sugaring is provided by `desugarFn`.
+    *
+    * Locals are added to `localAstParentStack.head`. For `if` conditions this is the IF control structure node. For
+    * `guard` conditions this is the enclosing method/block scope (matching existing `guard let` behavior).
+    */
+  private def astForTupleInConditionContext(
+    node: SwiftNode,
+    initValue: SwiftNode,
+    arity: Int,
+    desugarFn: String => List[Ast]
+  ): Ast = {
+    val blockNode_ = blockNode(node)
+    scope.pushNewBlockScope(blockNode_)
+    localAstParentStack.push(blockNode_)
+
+    val tmpName      = scopeLocalUniqueName("tmp")
+    val tmpType      = registerTupleSubject(tmpName, initValue, Defines.Any)
+    val tmpLocalNode = localNode(node, tmpName, tmpName, tmpType).order(0)
+    diffGraph.addEdge(localAstParentStack.head, tmpLocalNode, EdgeTypes.AST)
+    scope.addVariable(tmpName, tmpLocalNode, tmpType, VariableScopeManager.ScopeType.BlockScope)
+
+    val tmpIdentNode = identifierNode(node, tmpName, tmpName, tmpType)
+    scope.addVariableReference(tmpName, tmpIdentNode, tmpType, EvaluationStrategies.BY_REFERENCE)
+    val initAst   = astForNode(initValue)
+    val assignAst = createAssignmentCallAst(node, Ast(tmpIdentNode), initAst, s"$tmpName = ${code(initValue)}")
+
+    val desugarAsts = desugarFn(tmpName)
+
+    // Emit an isTupleN check as the final expression in the condition block
+    val op               = Defines.createIsTupleOperator(arity)
+    val isTupleCode      = s"$op($tmpName)"
+    val isTupleNode      = createStaticCallNode(node, isTupleCode, op, op, Defines.Bool)
+    val tmpIdentForCheck = identifierNode(node, tmpName, tmpName, tmpType)
+    scope.addVariableReference(tmpName, tmpIdentForCheck, tmpType, EvaluationStrategies.BY_REFERENCE)
+    val isTupleAst = callAst(isTupleNode, List(Ast(tmpIdentForCheck)))
+
+    scope.popScope()
+    localAstParentStack.pop()
+
+    blockAst(blockNode_, (assignAst +: desugarAsts) :+ isTupleAst)
+  }
+
+  private def astForTuplePatternInConditionContext(
+    node: SwiftNode,
+    tuplePat: TuplePatternSyntax,
+    initValue: SwiftNode
+  ): Ast = {
+    val arity = tuplePat.elements.children.size
+    astForTupleInConditionContext(
+      node,
+      initValue,
+      arity,
+      tmpName => astsForBindingTuplePattern(tuplePat, tmpName, List.empty, node)
+    )
+  }
+
+  private def astForTupleExprInConditionContext(
+    node: SwiftNode,
+    tupleExpr: TupleExprSyntax,
+    initValue: SwiftNode
+  ): Ast = {
+    val arity = tupleExpr.elements.children.size
+    astForTupleInConditionContext(
+      node,
+      initValue,
+      arity,
+      tmpName =>
+        if (isBindingTupleExpr(tupleExpr)) {
+          astsForBindingTupleExpr(tupleExpr, tmpName, List.empty, node)
+        } else {
+          List(astForExpressionTuplePattern(tupleExpr, tmpName, List.empty, node))
+        }
+    )
   }
 
   private def astForMemberBlockItemSyntax(node: MemberBlockItemSyntax): Ast = notHandledYet(node)
   private def astForMemberBlockSyntax(node: MemberBlockSyntax): Ast         = notHandledYet(node)
-  private def astForMissingSyntax(node: MissingSyntax): Ast                 = notHandledYet(node)
+
+  private def astForMissingSyntax(@unused node: MissingSyntax): Ast = Ast()
+
   private def astForMultipleTrailingClosureElementSyntax(node: MultipleTrailingClosureElementSyntax): Ast =
     notHandledYet(node)
-  private def astForObjCSelectorPieceSyntax(node: ObjCSelectorPieceSyntax): Ast = notHandledYet(node)
-  private def astForOpaqueReturnTypeOfAttributeArgumentsSyntax(node: OpaqueReturnTypeOfAttributeArgumentsSyntax): Ast =
-    notHandledYet(node)
+
+  private def astForObjCSelectorPieceSyntax(node: ObjCSelectorPieceSyntax): Ast =
+    Ast(literalNode(node, code(node), Option(Defines.String)))
+
   private def astForOperatorPrecedenceAndTypesSyntax(node: OperatorPrecedenceAndTypesSyntax): Ast = notHandledYet(node)
 
   private def localForOptionalBindingConditionSyntax(
@@ -295,40 +399,68 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
     name: String,
     typeFullName: String
   ): Unit = {
-    val kind = code(node.bindingSpecifier)
-    val scopeType = if (kind == "let") {
-      BlockScope
-    } else {
-      MethodScope
-    }
+    val kind      = code(node.bindingSpecifier)
+    val scopeType = if (kind == "let") { VariableScopeManager.ScopeType.BlockScope }
+    else { VariableScopeManager.ScopeType.MethodScope }
     val nLocalNode = localNode(node, name, name, typeFullName).order(0)
     registerType(typeFullName)
-    scope.addVariable(name, nLocalNode, scopeType)
+    scope.addVariable(name, nLocalNode, typeFullName, scopeType)
     diffGraph.addEdge(localAstParentStack.head, nLocalNode, EdgeTypes.AST)
   }
 
   private def astForOptionalBindingConditionSyntax(node: OptionalBindingConditionSyntax): Ast = {
-    val typeFullName = node.typeAnnotation.fold(Defines.Any)(t => code(t.`type`))
+    val typeFullName = node.typeAnnotation.fold(Defines.Any)(t => AstCreatorHelper.cleanType(code(t.`type`)))
 
-    node.pattern match {
-      case ident: IdentifierPatternSyntax =>
-        localForOptionalBindingConditionSyntax(node, code(ident.identifier), typeFullName)
-      case _ => // do nothing
+    // Detect tuple pattern: Swift parser may produce TuplePatternSyntax or
+    // ExpressionPatternSyntax wrapping TupleExprSyntax for `if let (a, b) = x`
+    val maybeTupleExpr: Option[TupleExprSyntax] = node.pattern match {
+      case tp: TuplePatternSyntax =>
+        // Direct tuple pattern — use TuplePatternInConditionContext
+        return node.initializer match {
+          case Some(init) => astForTuplePatternInConditionContext(node, tp, init.value)
+          case None       => Ast()
+        }
+      case ep: ExpressionPatternSyntax =>
+        ep.expression match {
+          case te: TupleExprSyntax => Some(te)
+          case _                   => None
+        }
+      case _ => None
     }
 
-    val initAst = node.initializer.map(astForNode)
-    if (initAst.isEmpty) {
-      Ast()
-    } else {
-      val patternAst = astForNode(node.pattern)
-      patternAst.root.collect { case i: NewIdentifier => i }.foreach(_.typeFullName(typeFullName))
-      createAssignmentCallAst(patternAst, initAst.head, code(node), line = line(node), column = column(node))
+    maybeTupleExpr match {
+      case Some(tupleExpr) =>
+        node.initializer match {
+          case Some(init) => astForTupleExprInConditionContext(node, tupleExpr, init.value)
+          case None       => Ast()
+        }
+      case None =>
+        // Original behavior for non-tuple patterns
+        node.pattern match {
+          case ident: IdentifierPatternSyntax =>
+            val tpeFromTypeMap = fullnameProvider.typeFullname(ident)
+            localForOptionalBindingConditionSyntax(node, code(ident.identifier), tpeFromTypeMap.getOrElse(typeFullName))
+          case _ => // do nothing
+        }
+
+        val initAst = node.initializer.map(astForNode)
+        if (initAst.isEmpty) {
+          Ast()
+        } else {
+          val patternAst = astForNode(node.pattern)
+          val tpe        = fullnameProvider.typeFullname(node.pattern).getOrElse(typeFullName)
+          registerType(tpe)
+          patternAst.root
+            .collect { case i: NewIdentifier => i }
+            .foreach(_.typeFullName(tpe))
+          createAssignmentCallAst(node, patternAst, initAst.head, code(node))
+        }
     }
   }
 
   private def astForOriginallyDefinedInAttributeArgumentsSyntax(
     node: OriginallyDefinedInAttributeArgumentsSyntax
-  ): Ast = notHandledYet(node)
+  ): Ast                                                                            = notHandledYet(node)
   private def astForPatternBindingSyntax(node: PatternBindingSyntax): Ast           = notHandledYet(node)
   private def astForPlatformVersionItemSyntax(node: PlatformVersionItemSyntax): Ast = notHandledYet(node)
   private def astForPlatformVersionSyntax(node: PlatformVersionSyntax): Ast         = notHandledYet(node)
@@ -357,7 +489,7 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
         val blockNode_ = blockNode(node, PropertyDefaults.Code, Defines.Any)
         scope.pushNewBlockScope(blockNode_)
         localAstParentStack.push(blockNode_)
-        val childrenAst = astForNodeWithFunctionReference(head)
+        val childrenAst = astForNode(head)
         localAstParentStack.pop()
         scope.popScope()
         blockAst(blockNode_, List(childrenAst))
@@ -380,57 +512,49 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
 
   private def astForSwitchDefaultLabelSyntax(@unused node: SwitchDefaultLabelSyntax): Ast = Ast()
 
-  private def astForTuplePatternElementSyntax(node: TuplePatternElementSyntax): Ast     = notHandledYet(node)
-  private def astForTupleTypeElementSyntax(node: TupleTypeElementSyntax): Ast           = notHandledYet(node)
-  private def astForTypeAnnotationSyntax(node: TypeAnnotationSyntax): Ast               = notHandledYet(node)
-  private def astForTypeEffectSpecifiersSyntax(node: TypeEffectSpecifiersSyntax): Ast   = notHandledYet(node)
-  private def astForTypeInitializerClauseSyntax(node: TypeInitializerClauseSyntax): Ast = notHandledYet(node)
+  private def astForTuplePatternElementSyntax(node: TuplePatternElementSyntax): Ast   = notHandledYet(node)
+  private def astForTupleTypeElementSyntax(node: TupleTypeElementSyntax): Ast         = notHandledYet(node)
+  private def astForTypeAnnotationSyntax(node: TypeAnnotationSyntax): Ast             = notHandledYet(node)
+  private def astForTypeEffectSpecifiersSyntax(node: TypeEffectSpecifiersSyntax): Ast = notHandledYet(node)
 
-  private def astForUnavailableFromAsyncAttributeArgumentsSyntax(
-    node: UnavailableFromAsyncAttributeArgumentsSyntax
-  ): Ast = {
-    Ast(literalNode(node, code(node.message), Option(Defines.String)))
+  private def astForTypeInitializerClauseSyntax(node: TypeInitializerClauseSyntax): Ast = {
+    astForTypeSyntax(node.value)
   }
 
-  private def astForUnderscorePrivateAttributeArgumentsSyntax(node: UnderscorePrivateAttributeArgumentsSyntax): Ast =
-    notHandledYet(node)
   private def astForVersionComponentSyntax(node: VersionComponentSyntax): Ast = notHandledYet(node)
   private def astForVersionTupleSyntax(node: VersionTupleSyntax): Ast         = notHandledYet(node)
 
   private def astForWhereClauseSyntax(node: WhereClauseSyntax): Ast = {
-    astForNodeWithFunctionReference(node.condition)
+    astForNode(node.condition)
   }
 
   private def astForYieldedExpressionSyntax(node: YieldedExpressionSyntax): Ast               = notHandledYet(node)
   private def astForYieldedExpressionsClauseSyntax(node: YieldedExpressionsClauseSyntax): Ast = notHandledYet(node)
 
   protected def astForSyntax(syntax: Syntax): Ast = syntax match {
-    case node: AccessorBlockSyntax                  => astForAccessorBlockSyntax(node)
-    case node: AccessorEffectSpecifiersSyntax       => astForAccessorEffectSpecifiersSyntax(node)
-    case node: AccessorParametersSyntax             => astForAccessorParametersSyntax(node)
-    case node: ArrayElementSyntax                   => astForArrayElementSyntax(node)
-    case node: AttributeSyntax                      => astForAttributeSyntax(node)
-    case node: AvailabilityArgumentSyntax           => astForAvailabilityArgumentSyntax(node)
-    case node: AvailabilityConditionSyntax          => astForAvailabilityConditionSyntax(node)
-    case node: AvailabilityLabeledArgumentSyntax    => astForAvailabilityLabeledArgumentSyntax(node)
-    case node: BackDeployedAttributeArgumentsSyntax => astForBackDeployedAttributeArgumentsSyntax(node)
-    case node: CatchClauseSyntax                    => astForCatchClauseSyntax(node)
-    case node: CatchItemSyntax                      => astForCatchItemSyntax(node)
-    case node: ClosureCaptureClauseSyntax           => astForClosureCaptureClauseSyntax(node)
-    case node: ClosureCaptureSpecifierSyntax        => astForClosureCaptureSpecifierSyntax(node)
-    case node: ClosureCaptureSyntax                 => astForClosureCaptureSyntax(node)
-    case node: ClosureParameterClauseSyntax         => astForClosureParameterClauseSyntax(node)
-    case node: ClosureParameterSyntax               => astForClosureParameterSyntax(node)
-    case node: ClosureShorthandParameterSyntax      => astForClosureShorthandParameterSyntax(node)
-    case node: ClosureSignatureSyntax               => astForClosureSignatureSyntax(node)
-    case node: CodeBlockItemSyntax                  => astForCodeBlockItemSyntax(node)
-    case node: CodeBlockSyntax                      => astForCodeBlockSyntax(node)
-    case node: CompositionTypeElementSyntax         => astForCompositionTypeElementSyntax(node)
-    case node: ConditionElementSyntax               => astForConditionElementSyntax(node)
-    case node: ConformanceRequirementSyntax         => astForConformanceRequirementSyntax(node)
-    case node: ConventionAttributeArgumentsSyntax   => astForConventionAttributeArgumentsSyntax(node)
-    case node: ConventionWitnessMethodAttributeArgumentsSyntax =>
-      astForConventionWitnessMethodAttributeArgumentsSyntax(node)
+    case node: AccessorBlockSyntax                          => astForAccessorBlockSyntax(node)
+    case node: AccessorEffectSpecifiersSyntax               => astForAccessorEffectSpecifiersSyntax(node)
+    case node: AccessorParametersSyntax                     => astForAccessorParametersSyntax(node)
+    case node: ArrayElementSyntax                           => astForArrayElementSyntax(node)
+    case node: AttributeSyntax                              => astForAttributeSyntax(node)
+    case node: AvailabilityArgumentSyntax                   => astForAvailabilityArgumentSyntax(node)
+    case node: AvailabilityConditionSyntax                  => astForAvailabilityConditionSyntax(node)
+    case node: AvailabilityLabeledArgumentSyntax            => astForAvailabilityLabeledArgumentSyntax(node)
+    case node: BackDeployedAttributeArgumentsSyntax         => astForBackDeployedAttributeArgumentsSyntax(node)
+    case node: CatchClauseSyntax                            => astForCatchClauseSyntax(node)
+    case node: CatchItemSyntax                              => astForCatchItemSyntax(node)
+    case node: ClosureCaptureClauseSyntax                   => astForClosureCaptureClauseSyntax(node)
+    case node: ClosureCaptureSpecifierSyntax                => astForClosureCaptureSpecifierSyntax(node)
+    case node: ClosureCaptureSyntax                         => astForClosureCaptureSyntax(node)
+    case node: ClosureParameterClauseSyntax                 => astForClosureParameterClauseSyntax(node)
+    case node: ClosureParameterSyntax                       => astForClosureParameterSyntax(node)
+    case node: ClosureShorthandParameterSyntax              => astForClosureShorthandParameterSyntax(node)
+    case node: ClosureSignatureSyntax                       => astForClosureSignatureSyntax(node)
+    case node: CodeBlockItemSyntax                          => astForCodeBlockItemSyntax(node)
+    case node: CodeBlockSyntax                              => astForCodeBlockSyntax(node)
+    case node: CompositionTypeElementSyntax                 => astForCompositionTypeElementSyntax(node)
+    case node: ConditionElementSyntax                       => astForConditionElementSyntax(node)
+    case node: ConformanceRequirementSyntax                 => astForConformanceRequirementSyntax(node)
     case node: DeclModifierDetailSyntax                     => astForDeclModifierDetailSyntax(node)
     case node: DeclModifierSyntax                           => astForDeclModifierSyntax(node)
     case node: DeclNameArgumentSyntax                       => astForDeclNameArgumentSyntax(node)
@@ -448,7 +572,6 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
     case node: EnumCaseElementSyntax                        => astForEnumCaseElementSyntax(node)
     case node: EnumCaseParameterClauseSyntax                => astForEnumCaseParameterClauseSyntax(node)
     case node: EnumCaseParameterSyntax                      => astForEnumCaseParameterSyntax(node)
-    case node: ExposeAttributeArgumentsSyntax               => astForExposeAttributeArgumentsSyntax(node)
     case node: ExpressionSegmentSyntax                      => astForExpressionSegmentSyntax(node)
     case node: FunctionEffectSpecifiersSyntax               => astForFunctionEffectSpecifiersSyntax(node)
     case node: FunctionParameterClauseSyntax                => astForFunctionParameterClauseSyntax(node)
@@ -479,7 +602,6 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
     case node: MissingSyntax                                => astForMissingSyntax(node)
     case node: MultipleTrailingClosureElementSyntax         => astForMultipleTrailingClosureElementSyntax(node)
     case node: ObjCSelectorPieceSyntax                      => astForObjCSelectorPieceSyntax(node)
-    case node: OpaqueReturnTypeOfAttributeArgumentsSyntax   => astForOpaqueReturnTypeOfAttributeArgumentsSyntax(node)
     case node: OperatorPrecedenceAndTypesSyntax             => astForOperatorPrecedenceAndTypesSyntax(node)
     case node: OptionalBindingConditionSyntax               => astForOptionalBindingConditionSyntax(node)
     case node: OriginallyDefinedInAttributeArgumentsSyntax  => astForOriginallyDefinedInAttributeArgumentsSyntax(node)
@@ -508,8 +630,6 @@ trait AstForSyntaxCreator(implicit withSchemaValidation: ValidationMode) { this:
     case node: TypeAnnotationSyntax                         => astForTypeAnnotationSyntax(node)
     case node: TypeEffectSpecifiersSyntax                   => astForTypeEffectSpecifiersSyntax(node)
     case node: TypeInitializerClauseSyntax                  => astForTypeInitializerClauseSyntax(node)
-    case node: UnavailableFromAsyncAttributeArgumentsSyntax => astForUnavailableFromAsyncAttributeArgumentsSyntax(node)
-    case node: UnderscorePrivateAttributeArgumentsSyntax    => astForUnderscorePrivateAttributeArgumentsSyntax(node)
     case node: VersionComponentSyntax                       => astForVersionComponentSyntax(node)
     case node: VersionTupleSyntax                           => astForVersionTupleSyntax(node)
     case node: WhereClauseSyntax                            => astForWhereClauseSyntax(node)

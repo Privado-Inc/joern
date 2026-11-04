@@ -1,6 +1,5 @@
 package io.joern.csharpsrc2cpg.datastructures
 
-import better.files.File.VisitOptions
 import io.joern.csharpsrc2cpg.Constants
 import io.joern.x2cpg.SourceFiles
 import io.joern.x2cpg.datastructures.{FieldLike, MethodLike, OverloadableMethod, ProgramSummary, TypeLike}
@@ -40,6 +39,36 @@ case class CSharpProgramSummary(namespaceToType: NamespaceToTypeMap, imports: Se
     )
   }
 
+  private def allImports: Set[String] = imports ++ globalImports
+
+  def appendImported(other: CSharpProgramSummary): CSharpProgramSummary =
+    this ++= other.filter(namespacePred = (ns, _) => allImports.contains(ns))
+
+  /** Builds a new `CSharpProgramSummary` by filtering the current one's fields.
+    *
+    * @param namespacePred
+    *   filtering predicate for `namespaceToType`
+    *
+    * @param importsPred
+    *   filtering predicate for `imports`
+    *
+    * @param globalImportsPred
+    *   filtering predicate for `globalImports`
+    */
+  def filter(
+    namespacePred: (String, mutable.Set[CSharpType]) => Boolean = (_, _) => true,
+    importsPred: String => Boolean = _ => true,
+    globalImportsPred: String => Boolean = _ => true
+  ): CSharpProgramSummary =
+    copy(
+      namespaceToType = mutable.Map.fromSpecific(namespaceToType.view.filter(namespacePred(_, _))),
+      imports = imports.filter(importsPred),
+      globalImports = globalImports.filter(globalImportsPred)
+    )
+
+  def addGlobalImports(imports: Set[String]): CSharpProgramSummary =
+    copy(globalImports = globalImports ++ imports)
+
 }
 
 object CSharpProgramSummary {
@@ -63,7 +92,7 @@ object CSharpProgramSummary {
   /** @return
     *   a mapping of the `System` package types.
     */
-  def BuiltinTypes: NamespaceToTypeMap = {
+  private def BuiltinTypes: NamespaceToTypeMap = {
     jsonToInitialMapping(mergeBuiltInTypesJson) match {
       case Failure(exception) =>
         logger.warn("Unable to parse JSON type entry from builtin types", exception); mutable.Map.empty
@@ -71,12 +100,25 @@ object CSharpProgramSummary {
     }
   }
 
-  def fromExternalJsons(paths: Set[String]): NamespaceToTypeMap = {
-    val jsonFiles = paths.flatMap(SourceFiles.determine(_, Set(".json"))(VisitOptions.default)).toList
+  /** Returns the `CSharpProgramSummary` for the builtin types bundle.
+    */
+  def builtinTypesSummary: CSharpProgramSummary =
+    CSharpProgramSummary(BuiltinTypes)
+
+  /** Returns the `CSharpProgramSummary` for the given JSON file paths.
+    *
+    * @param paths
+    *   the JSON file paths to load types from
+    */
+  def externalTypesSummary(paths: Set[String]): CSharpProgramSummary =
+    CSharpProgramSummary(fromExternalJsons(paths))
+
+  private def fromExternalJsons(paths: Set[String]): NamespaceToTypeMap = {
+    val jsonFiles    = paths.flatMap(SourceFiles.determine(_, Set(".json"))(Seq.empty)).toList
     val inputStreams = jsonFiles.flatMap { path =>
       Try(java.io.FileInputStream(path)) match {
         case Success(stream) => Some(stream)
-        case Failure(exc) =>
+        case Failure(exc)    =>
           logger.warn(s"Unable to open file: $path", exc)
           None
       }
@@ -87,7 +129,7 @@ object CSharpProgramSummary {
       mutable.Map.empty
     } else {
       jsonToInitialMapping(loadAndMergeJsonStreams(inputStreams)) match {
-        case Success(mapping) => mapping
+        case Success(mapping)   => mapping
         case Failure(exception) =>
           logger.warn("Failed to parsed merged JSON streams", exception)
           mutable.Map.empty
@@ -113,14 +155,14 @@ object CSharpProgramSummary {
 
     val mergedJson = jsonObjects
       .reduceOption((prev, curr) => {
-        curr.keys.foreach(key => {
+        curr.keys.foreach { key =>
           prev.updateWith(key) {
             case Some(x) =>
               Option(x.arr.addAll(curr.get(key).get.arr))
             case None =>
               Option(curr.get(key).get.arr)
           }
-        })
+        }
         prev
       })
       .getOrElse(LinkedHashMap[String, ujson.Value]())
@@ -156,16 +198,16 @@ object CSharpProgramSummary {
           .fromResource(builtinDirectory)
           .getLines()
           .toList
-          .flatMap(u => {
+          .flatMap { u =>
             val basePath = s"$builtinDirectory/$u"
             Source
               .fromResource(basePath)
               .getLines()
               .toList
-              .map(p => {
+              .map { p =>
                 s"$basePath/$p"
-              })
-          })
+              }
+          }
     }
     if (resourcePaths.isEmpty) {
       logger.warn("No JSON files found.")

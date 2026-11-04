@@ -1,47 +1,11 @@
 package io.joern.rubysrc2cpg.astcreation
 
-import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.{
-  ArrayPattern,
-  BinaryExpression,
-  BreakExpression,
-  CaseExpression,
-  ControlFlowStatement,
-  DoWhileExpression,
-  ElseClause,
-  ForExpression,
-  IfExpression,
-  InClause,
-  MatchVariable,
-  MemberCall,
-  NextExpression,
-  OperatorAssignment,
-  RescueExpression,
-  ReturnExpression,
-  RubyExpression,
-  SimpleCall,
-  SimpleIdentifier,
-  SingleAssignment,
-  SplattingRubyNode,
-  StatementList,
-  UnaryExpression,
-  Unknown,
-  UnlessExpression,
-  UntilExpression,
-  WhenClause,
-  WhileExpression
-}
-import io.joern.rubysrc2cpg.parser.RubyJsonHelpers
+import io.joern.rubysrc2cpg.astcreation.RubyIntermediateAst.*
 import io.joern.rubysrc2cpg.passes.Defines
 import io.joern.rubysrc2cpg.passes.Defines.RubyOperators
 import io.joern.x2cpg.{Ast, ValidationMode}
-import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, DispatchTypes, Operators}
-import io.shiftleft.codepropertygraph.generated.nodes.{
-  NewBlock,
-  NewFieldIdentifier,
-  NewIdentifier,
-  NewLiteral,
-  NewLocal
-}
+import io.shiftleft.codepropertygraph.generated.nodes.NewBlock
+import io.shiftleft.codepropertygraph.generated.{DispatchTypes, Operators}
 
 trait AstForControlStructuresCreator(implicit withSchemaValidation: ValidationMode) { this: AstCreator =>
 
@@ -62,186 +26,81 @@ trait AstForControlStructuresCreator(implicit withSchemaValidation: ValidationMo
   private def astForWhileStatement(node: WhileExpression): Ast = {
     val conditionAst = astForExpression(node.condition)
     val bodyAsts     = astsForStatement(node.body)
-    whileAst(Some(conditionAst), bodyAsts, Option(code(node)), line(node), column(node))
+    whileAst(node, Some(conditionAst), bodyAsts)
   }
 
   private def astForDoWhileStatement(node: DoWhileExpression): Ast = {
     val conditionAst = astForExpression(node.condition)
     val bodyAsts     = astsForStatement(node.body)
-    doWhileAst(Some(conditionAst), bodyAsts, Option(code(node)), line(node), column(node))
+    doWhileAst(node, Some(conditionAst), bodyAsts)
   }
 
   // `until T do B` is lowered as `while !T do B`
   private def astForUntilStatement(node: UntilExpression): Ast = {
     val notCondition = astForExpression(UnaryExpression("!", node.condition)(node.condition.span))
     val bodyAsts     = astsForStatement(node.body)
-    whileAst(Some(notCondition), bodyAsts, Option(code(node)), line(node), column(node))
+    whileAst(node, Some(notCondition), bodyAsts)
   }
 
   // Recursively lowers into a ternary conditional call
   private def astForIfExpression(node: IfExpression): Ast = {
-    def builder(node: IfExpression, conditionAst: Ast, thenAst: Ast, elseAsts: List[Ast]): Ast = {
+    def builder(node: IfExpression, conditionAst: Ast, thenAst: Ast, elseAst: Option[Ast]): Ast = {
       // We want to make sure there's always an «else» clause in a ternary operator.
       // The default value is a `nil` literal.
-      val elseAsts_ = if (elseAsts.isEmpty) {
-        List(astForNilBlock)
-      } else {
-        elseAsts
-      }
+      val elseAst_ = elseAst.getOrElse(astForNilBlock)
 
       val call = callNode(node, code(node), Operators.conditional, Operators.conditional, DispatchTypes.STATIC_DISPATCH)
-      callAst(call, conditionAst :: thenAst :: elseAsts_)
+      callAst(call, conditionAst :: thenAst :: elseAst_ :: Nil)
     }
 
-    // TODO: Remove or modify the builder pattern when we are no longer using ANTLR
-    node.elseClause match {
-      case Some(elseClause) =>
-        elseClause match {
-          case _: IfExpression => astForJsonIfStatement(node)
-          case _               => foldIfExpression(builder)(node)
-        }
-      case None =>
-        foldIfExpression(builder)(node)
-    }
-  }
-
-  private def astForJsonIfStatement(node: IfExpression): Ast = {
-    val conditionAst = astForExpression(node.condition)
-    val thenAst      = astForThenClause(node.thenClause)
-    val elseAsts = node.elseClause
-      .map {
-        case x: IfExpression =>
-          val wrappedBlock = blockNode(x)
-          Ast(wrappedBlock).withChild(astForJsonIfStatement(x))
-        case x =>
-          astForElseClause(x)
-      }
-      .getOrElse(Ast())
-
-    val ifNode = controlStructureNode(node, ControlStructureTypes.IF, code(node))
-    controlStructureAst(ifNode, Some(conditionAst), thenAst :: elseAsts :: Nil)
+    astForIfStatement(builder)(node)
   }
 
   // `unless T do B` is lowered as `if !T then B`
   private def astForUnlessStatement(node: UnlessExpression): Ast = {
     val notConditionAst = astForExpression(UnaryExpression("!", node.condition)(node.condition.span))
-    val thenAst = node.trueBranch match
+    val thenAst         = node.trueBranch match {
       case stmtList: StatementList => astForStatementList(stmtList)
       case _                       => astForStatementList(StatementList(List(node.trueBranch))(node.trueBranch.span))
-    val elseAsts = node.falseBranch.map(astForElseClause).toList
-    val ifNode   = controlStructureNode(node, ControlStructureTypes.IF, code(node))
-    controlStructureAst(ifNode, Some(notConditionAst), thenAst :: elseAsts)
+    }
+    val elseAst = node.falseBranch.map(astForElseClause)
+
+    conditionalStatementBuilder(node, notConditionAst, thenAst, elseAst)
   }
 
   protected def astForElseClause(node: RubyExpression): Ast = {
-    node match
+    node match {
       case elseNode: ElseClause =>
-        elseNode.thenClause match
+        elseNode.thenClause match {
           case stmtList: StatementList => astForStatementList(stmtList)
-          case node =>
+          case node                    =>
             logger.warn(s"Expecting statement list in ${code(node)} ($relativeFileName), skipping")
             astForUnknown(node)
+        }
       case elseNode =>
         logger.warn(s"Expecting else clause in ${code(elseNode)} ($relativeFileName), skipping")
         astForUnknown(elseNode)
+    }
   }
 
   private def astForForExpression(node: ForExpression): Ast = {
-    val forEachNode = controlStructureNode(node, ControlStructureTypes.FOR, code(node))
+    val blockParam   = MandatoryParameter(node.forVariable.span.text)(node.forVariable.span)
+    val closureBlock = Block(parameters = List(blockParam), body = node.doBlock)(node.span)
+    val typeRefAst   = astForDoBlock(closureBlock).typeRef
 
-    def collectionAst  = astForExpression(node.iterableVariable)
-    val collectionNode = node.iterableVariable
+    val baseForReceiver = astForExpression(node.iterableVariable)
+    val fieldAccessCode = s"${code(node.iterableVariable)}.each"
+    val fieldAccess     =
+      callNode(node, fieldAccessCode, Operators.fieldAccess, Operators.fieldAccess, DispatchTypes.STATIC_DISPATCH)
+    val eachFieldIdent = fieldIdentifierNode(node, "each", "each")
+    val receiverAst    = callAst(fieldAccess, List(baseForReceiver, Ast(eachFieldIdent)))
 
-    val iterIdentifier =
-      identifierNode(
-        node = node.forVariable,
-        name = node.forVariable.span.text,
-        code = node.forVariable.span.text,
-        typeFullName = Defines.Any
-      )
-    val iterVarLocal = NewLocal().name(node.forVariable.span.text).code(node.forVariable.span.text)
-    scope.addToScope(node.forVariable.span.text, iterVarLocal)
+    val baseForCall    = astForExpression(node.iterableVariable)
+    val methodFullName = s"${Defines.prefixAsCoreType(Defines.Array)}.each"
+    val eachCall       =
+      callNode(node, code(node), "each", methodFullName, DispatchTypes.STATIC_DISPATCH)
 
-    val idxName  = "_idx_"
-    val idxLocal = NewLocal().name(idxName).code(idxName).typeFullName(Defines.getBuiltInType(Defines.Integer))
-    val idxIdenAtAssign = identifierNode(
-      node = collectionNode,
-      name = idxName,
-      code = idxName,
-      typeFullName = Defines.getBuiltInType(Defines.Integer)
-    )
-
-    val idxAssignment =
-      callNode(node, s"$idxName = 0", Operators.assignment, Operators.assignment, DispatchTypes.STATIC_DISPATCH)
-    val idxAssignmentArgs =
-      List(Ast(idxIdenAtAssign), Ast(NewLiteral().code("0").typeFullName(Defines.getBuiltInType(Defines.Integer))))
-    val idxAssignmentAst = callAst(idxAssignment, idxAssignmentArgs)
-
-    val idxIdAtCond = idxIdenAtAssign.copy
-    val collectionCountAccess = callNode(
-      node,
-      s"${node.iterableVariable.span.text}.length",
-      Operators.fieldAccess,
-      Operators.fieldAccess,
-      DispatchTypes.STATIC_DISPATCH
-    )
-    val fieldAccessAst = callAst(
-      collectionCountAccess,
-      collectionAst :: Ast(NewFieldIdentifier().canonicalName("length").code("length")) :: Nil
-    )
-
-    val idxLt = callNode(
-      node,
-      s"$idxName < ${node.iterableVariable.span.text}.length",
-      Operators.lessThan,
-      Operators.lessThan,
-      DispatchTypes.STATIC_DISPATCH
-    )
-    val idxLtArgs  = List(Ast(idxIdAtCond), fieldAccessAst)
-    val ltCallCond = callAst(idxLt, idxLtArgs)
-
-    val idxIdAtCollAccess = idxIdenAtAssign.copy
-    val collectionIdxAccess = callNode(
-      node,
-      s"${node.iterableVariable.span.text}[$idxName++]",
-      Operators.indexAccess,
-      Operators.indexAccess,
-      DispatchTypes.STATIC_DISPATCH
-    )
-    val postIncrAst = callAst(
-      callNode(node, s"$idxName++", Operators.postIncrement, Operators.postIncrement, DispatchTypes.STATIC_DISPATCH),
-      Ast(idxIdAtCollAccess) :: Nil
-    )
-
-    val indexAccessAst = callAst(collectionIdxAccess, collectionAst :: postIncrAst :: Nil)
-    val iteratorAssignmentNode = callNode(
-      node,
-      s"${node.forVariable.span.text} = ${node.iterableVariable.span.text}[$idxName++]",
-      Operators.assignment,
-      Operators.assignment,
-      DispatchTypes.STATIC_DISPATCH
-    )
-    val iteratorAssignmentArgs = List(Ast(iterIdentifier), indexAccessAst)
-    val iteratorAssignmentAst  = callAst(iteratorAssignmentNode, iteratorAssignmentArgs)
-    val doBodyAst              = astsForStatement(node.doBlock)
-
-    val locals = Ast(idxLocal)
-      .withRefEdge(idxIdenAtAssign, idxLocal)
-      .withRefEdge(idxIdAtCond, idxLocal)
-      .withRefEdge(idxIdAtCollAccess, idxLocal) :: Ast(iterVarLocal).withRefEdge(iterIdentifier, iterVarLocal) :: Nil
-
-    val conditionAsts = ltCallCond :: Nil
-    val initAsts      = idxAssignmentAst :: Nil
-    val updateAsts    = iteratorAssignmentAst :: Nil
-
-    forAst(
-      forNode = forEachNode,
-      locals = locals,
-      initAsts = initAsts,
-      conditionAsts = conditionAsts,
-      updateAsts = updateAsts,
-      bodyAsts = doBodyAst
-    )
+    callAst(eachCall, List(typeRefAst), base = Some(baseForCall), receiver = Some(receiverAst))
   }
 
   protected def astsForCaseExpression(node: CaseExpression): Seq[Ast] = {
@@ -264,8 +123,13 @@ trait AstForControlStructuresCreator(implicit withSchemaValidation: ValidationMo
             // `case when *x then c end`
             // which is translated to `x.include? y` and `x.any?` conditions respectively
 
-            val conditions = whenClause.matchExpressions.map { mExpr =>
-              expr.map(e => BinaryExpression(mExpr, "===", e)(mExpr.span)).getOrElse(mExpr)
+            val conditions = whenClause.matchExpressions.map {
+              case regex: StaticLiteral if regex.typeFullName == prefixAsCoreType(Defines.Regexp) =>
+                expr
+                  .map(e => RegexMatchMemberCall(regex, ".", RubyOperators.regexpMatch, e :: Nil)(regex.span))
+                  .getOrElse(regex)
+              case mExpr =>
+                expr.map(e => BinaryExpression(mExpr, "===", e)(mExpr.span)).getOrElse(mExpr)
             } ++ whenClause.matchSplatExpression.iterator.flatMap {
               case splat @ SplattingRubyNode(exprList) =>
                 expr
@@ -300,24 +164,27 @@ trait AstForControlStructuresCreator(implicit withSchemaValidation: ValidationMo
                 val condition = expr.map(e => BinaryExpression(x, "===", e)(x.span)).getOrElse(inClause.pattern)
                 val body      = inClause.body
 
-                val variables = x.children.collect { case x: MatchVariable =>
-                  x
-                }
-
-                val conditionBody = if (variables.nonEmpty) {
-                  StatementList(variables.map { x =>
-                    val lhs = SimpleIdentifier()(x.span)
-                    SingleAssignment(lhs, "=", x)(
-                      inClause.span
-                        .spanStart(s"${lhs.span.text} = ${RubyOperators.arrayPatternMatch}(${lhs.span.text})")
+                val stmts = x.children.zipWithIndex.flatMap {
+                  case (lhs: MatchVariable, idx) if expr.isDefined =>
+                    val arrAccess = {
+                      val code_   = s"${code(expr.get)}[$idx]"
+                      val base    = expr.get.copy()(expr.get.span.spanStart(code(expr.get)))
+                      val indices = StaticLiteral(Defines.prefixAsCoreType(Defines.Integer))(
+                        expr.get.span.spanStart(idx.toString)
+                      ) :: Nil
+                      IndexAccess(base, indices)(lhs.span.spanStart(code_))
+                    }
+                    val asgn = SingleAssignment(lhs, "=", arrAccess)(
+                      inClause.span.spanStart(s"${lhs.span.text} = ${code(expr.get)}[$idx]")
                     )
-                  } :+ body)(body.span)
-                } else {
-                  body
-                }
+                    Option(asgn)
+                  case _ => None
+                } :+ body
+                val conditionBody = StatementList(stmts)(body.span)
 
                 (condition, conditionBody)
-              case x => (x, inClause.body)
+              case x =>
+                (x, inClause.body)
             }
 
             val conditional = IfExpression(
@@ -332,16 +199,23 @@ trait AstForControlStructuresCreator(implicit withSchemaValidation: ValidationMo
       ifElseChain.iterator.toList
     }
 
-    def generatedNode: StatementList = node.expression
-      .map { e =>
-        val tmp = SimpleIdentifier(None)(e.span.spanStart(this.tmpGen.fresh))
-        StatementList(
-          List(SingleAssignment(tmp, "=", e)(e.span)) ++
-            goCase(Some(tmp))
-        )(node.span)
+    val caseExpr = node.expression
+      .map { expr =>
+        val tmpName = createScopedTmpLocal()
+        expr match {
+          case arrayLiteral: ArrayLiteral =>
+            val tmp             = SimpleIdentifier(None)(arrayLiteral.span.spanStart(tmpName))
+            val arrayLiteralAst = DummyAst(astForArrayLiteral(arrayLiteral))(arrayLiteral.span)
+            (tmp, arrayLiteralAst)
+          case el =>
+            val tmp = SimpleIdentifier(None)(el.span.spanStart(tmpName))
+            (tmp, el)
+        }
       }
+      .map((tmp, e) => StatementList(List(SingleAssignment(tmp, "=", e)(e.span)) ++ goCase(Some(tmp)))(node.span))
       .getOrElse(StatementList(goCase(None))(node.span))
-    astsForStatement(generatedNode)
+
+    astsForStatement(caseExpr)
   }
 
   private def astForOperatorAssignmentExpression(node: OperatorAssignment): Ast = {

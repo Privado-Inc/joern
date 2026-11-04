@@ -1,19 +1,24 @@
 package io.joern.javasrc2cpg
 
-import io.joern.javasrc2cpg.passes.{AstCreationPass, TypeInferencePass}
+import io.joern.javasrc2cpg.passes.{AstCreationPass, OuterClassRefPass, TypeInferencePass}
+import io.joern.x2cpg.SourceFiles
 import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
 import io.joern.x2cpg.passes.frontend.{JavaConfigFileCreationPass, MetaDataPass, TypeNodePass}
 import io.joern.x2cpg.X2CpgFrontend
+import io.joern.x2cpg.frontendspecific.javasrc2cpg.JvmDefaultIgnoredFolders
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.Languages
 import org.slf4j.LoggerFactory
 
-import scala.jdk.CollectionConverters.*
+import java.util.regex.Pattern
 import scala.util.Try
 import scala.util.matching.Regex
 
-class JavaSrc2Cpg extends X2CpgFrontend[Config] {
+class JavaSrc2Cpg extends X2CpgFrontend {
   import JavaSrc2Cpg._
+
+  override type ConfigType = Config
+  override val defaultConfig = DefaultConfig
 
   override def createCpg(config: Config): Try[Cpg] = {
     withNewEmptyCpg(config.outputPath, config: Config) { (cpg, config) =>
@@ -22,9 +27,11 @@ class JavaSrc2Cpg extends X2CpgFrontend[Config] {
       astCreationPass.createAndApply()
       astCreationPass.sourceParser.cleanupDelombokOutput()
       astCreationPass.clearJavaParserCaches()
-      JavaConfigFileCreationPass(cpg).createAndApply()
+      astCreationPass.closeTypeSolvers()
+      new OuterClassRefPass(cpg).createAndApply()
+      JavaConfigFileCreationPass(cpg, config = config).createAndApply()
       if (!config.skipTypeInfPass) {
-        TypeNodePass.withRegisteredTypes(astCreationPass.global.usedTypes.keys().asScala.toList, cpg).createAndApply()
+        TypeNodePass.withRegisteredTypes(astCreationPass.usedTypes(), cpg).createAndApply()
         new TypeInferencePass(cpg).createAndApply()
       }
     }
@@ -36,13 +43,8 @@ object JavaSrc2Cpg {
   val language: String                  = Languages.JAVASRC
   val sourceFileExtensions: Set[String] = Set(".java")
 
-  val DefaultIgnoredFilesRegex: List[Regex] = List(".git", ".mvn", "test").flatMap { directory =>
-    List(s"(^|\\\\)$directory($$|\\\\)".r.unanchored, s"(^|/)$directory($$|/)".r.unanchored)
-  }
-  val DefaultConfig: Config =
-    Config().withDefaultIgnoredFilesRegex(DefaultIgnoredFilesRegex)
-
-  def apply(): JavaSrc2Cpg = new JavaSrc2Cpg()
+  val DefaultIgnoredFilesRegex: List[Regex] = JvmDefaultIgnoredFolders
+  val DefaultConfig: Config                 = Config()
 
   def showEnv(): Unit = {
     JavaSrcEnvVar.values.foreach { envVar =>
@@ -63,6 +65,11 @@ object JavaSrc2Cpg {
         extends JavaSrcEnvVar(
           "JAVASRC_FETCH_DEPENDENCIES",
           "If set, javasrc2cpg will fetch dependencies regardless of the --fetch-dependencies flag."
+        )
+    case EnableVerboseTypeLogging
+        extends JavaSrcEnvVar(
+          "JAVASRC_ENABLE_VERBOSE_TYPE_LOGGING",
+          "If set, javasrc2cpg will log all types found across JarTypeSolvers. THIS WILL IMPACT PERFORMANCE AND LOG SIZE AND SHOULD ONLY BE USED FOR DEBUGGING SPECIFIC ISSUES!"
         )
   }
 }

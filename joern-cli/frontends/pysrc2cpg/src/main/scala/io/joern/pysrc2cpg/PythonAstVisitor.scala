@@ -1,16 +1,21 @@
 package io.joern.pysrc2cpg
 
-import PythonAstVisitor.{logger, metaClassSuffix, noLineAndColumn}
+import PythonAstVisitor.{keywordDictArgName, logger, metaClassSuffix, noLineAndColumn, redefinedSuffix}
 import io.joern.pysrc2cpg.memop.*
+import io.joern.pysrc2cpg.memop.MemoryOperation.{Del, Load, Store}
 import io.joern.x2cpg.frontendspecific.pysrc2cpg.Constants.builtinPrefix
-import io.joern.pythonparser.ast
+import io.joern.pythonparser.{AstPrinter, ast}
+import io.joern.pythonparser.ast.{Arguments, AsyncFunctionDef, FunctionDef, MatchAs, iast, iexpr, istmt}
 import io.joern.x2cpg.frontendspecific.pysrc2cpg.Constants
 import io.joern.x2cpg.{AstCreatorBase, ValidationMode}
+import io.joern.x2cpg.utils.OffsetUtils
 import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.codepropertygraph.generated.nodes.{NewCall, NewIdentifier, NewNode, NewTypeDecl}
 import org.slf4j.LoggerFactory
 import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
+import PythonVersion.*
 
+import scala.annotation.tailrec
 import scala.collection.mutable
 
 object MethodParameters {
@@ -20,10 +25,9 @@ object MethodParameters {
 }
 case class MethodParameters(posStartIndex: Int, positionalParams: Iterable[nodes.NewMethodParameterIn])
 
-sealed trait PythonVersion
-object PythonV2      extends PythonVersion
-object PythonV3      extends PythonVersion
-object PythonV2AndV3 extends PythonVersion
+enum PythonVersion {
+  case PythonV2, PythonV3, PythonV2AndV3
+}
 
 class PythonAstVisitor(
   relFileName: String,
@@ -31,7 +35,7 @@ class PythonAstVisitor(
   version: PythonVersion,
   enableFileContent: Boolean
 )(implicit withSchemaValidation: ValidationMode)
-    extends AstCreatorBase(relFileName)
+    extends AstCreatorBase[ast.iast, PythonAstVisitor](relFileName)
     with PythonAstVisitorHelpers {
 
   private val diffGraph     = Cpg.newDiffGraphBuilder
@@ -41,6 +45,9 @@ class PythonAstVisitor(
   protected val contextStack = new ContextStack()
 
   private var memOpMap: AstNodeToMemoryOperationMap = scala.compiletime.uninitialized
+  private var scopeNames: ScopeNameCollection       = scala.compiletime.uninitialized
+
+  private val defToRedefinedIndex = mutable.Map.empty[ClassOrFunctionDef, Int]
 
   private val members = mutable.Map.empty[NewTypeDecl, List[String]]
 
@@ -77,13 +84,12 @@ class PythonAstVisitor(
     val memOpCalculator = new MemoryOperationCalculator()
     module.accept(memOpCalculator)
     memOpMap = memOpCalculator.astNodeToMemOp
+    scopeNames = memOpCalculator.scopeNames
 
-    val contentOption = if (enableFileContent) {
-      Some(nodeToCode.content)
-    } else {
-      None
-    }
-    val fileNode = nodeBuilder.fileNode(relFileName, contentOption)
+    defToRedefinedIndex ++= new RedefinitionCalculator().calculate(module)
+
+    val contentOption      = if (enableFileContent) Some(nodeToCode.content) else None
+    val fileNode           = nodeBuilder.fileNode(relFileName, contentOption)
     val namespaceBlockNode =
       nodeBuilder.namespaceBlockNode(
         Constants.GLOBAL_NAMESPACE,
@@ -116,7 +122,8 @@ class PythonAstVisitor(
         isAsync = false,
         methodRefNode = None,
         returnTypeHint = None,
-        LineAndColumn(line, column, endLine, endColumn, offset, endOffset)
+        LineAndColumn(line, column, endLine, endColumn, offset, endOffset),
+        reservedNames = scopeNames.namesInScope(module)
       )
 
     createIdentifierLinks()
@@ -182,12 +189,18 @@ class PythonAstVisitor(
   }
 
   private def unhandled(node: ast.iast & ast.iattributes): NewNode = {
-    val unhandledAsUnknown = true
-    if (unhandledAsUnknown) {
-      nodeBuilder.unknownNode(node.toString, node.getClass.getName, lineAndColOf(node))
-    } else {
-      throw new NotImplementedError()
-    }
+    val pos          = lineAndColOf(node)
+    val lineNumber   = pos.line
+    val columnNumber = pos.column
+    val text         =
+      s"""Node type '${node.getClass.getName}' not handled yet!
+         |  Code: '${node.toString}'
+         |  File: '$relFileName'
+         |  Line: $lineNumber
+         |  Column: $columnNumber
+         |  """.stripMargin
+    logger.debug(text)
+    nodeBuilder.unknownNode(node.toString, node.getClass.getName, pos)
   }
 
   def convert(stmt: ast.istmt): NewNode = {
@@ -224,26 +237,6 @@ class PythonAstVisitor(
     }
   }
 
-  def convert(functionDef: ast.FunctionDef): NewNode = {
-    val methodIdentifierNode =
-      createIdentifierNode(functionDef.name, Store, lineAndColOf(functionDef))
-    val (methodNode, methodRefNode) = createMethodAndMethodRef(
-      functionDef.name,
-      Some(functionDef.name),
-      createParameterProcessingFunction(functionDef.args, isStaticMethod(functionDef.decorator_list)),
-      () => functionDef.body.map(convert),
-      functionDef.returns,
-      isAsync = false,
-      lineAndColOf(functionDef)
-    )
-    functionDefToMethod.put(functionDef, methodNode)
-
-    val wrappedMethodRefNode =
-      wrapMethodRefWithDecorators(methodRefNode, functionDef.decorator_list)
-
-    createAssignment(methodIdentifierNode, wrappedMethodRefNode, lineAndColOf(functionDef))
-  }
-
   /*
    * For a decorated function like:
    * @f1(arg)
@@ -257,34 +250,72 @@ class PythonAstVisitor(
    * In the example case this is:
    * f1(arg)(f2(func))
    */
-  def wrapMethodRefWithDecorators(methodRefNode: nodes.NewNode, decoratorList: Iterable[ast.iexpr]): nodes.NewNode = {
-    decoratorList.foldRight(methodRefNode)((decorator: ast.iexpr, wrappedMethodRef: nodes.NewNode) =>
+  private def wrapMethodRefWithDecorators(
+    methodRefNode: nodes.NewNode,
+    decoratorList: Iterable[ast.iexpr]
+  ): nodes.NewNode = {
+    decoratorList.foldRight(methodRefNode)((decorator: ast.iexpr, wrappedMethodRef: nodes.NewNode) => {
       val (decoratorNode, decoratorName) = convert(decorator) match {
         case decoratorNode: NewIdentifier => decoratorNode -> decoratorNode.name
         case decoratorNode                => decoratorNode -> "" // other decorators are dynamic so we leave this blank
       }
-      createCall(decoratorNode, decoratorName, lineAndColOf(decorator), wrappedMethodRef :: Nil, Nil)
-    )
+      createCall(decoratorNode, decoratorName, lineAndColOf(decorator), wrappedMethodRef :: Nil, Nil, None)
+    })
   }
 
-  def convert(functionDef: ast.AsyncFunctionDef): NewNode = {
+  private def convertFunctionInternal(
+    name: String,
+    args: Arguments,
+    decoratorList: ast.CollType[iexpr],
+    body: ast.CollType[istmt],
+    returns: Option[iexpr],
+    isAsync: Boolean,
+    functionDef: FunctionDef | AsyncFunctionDef
+  ): NewNode = {
     val methodIdentifierNode =
-      createIdentifierNode(functionDef.name, Store, lineAndColOf(functionDef))
+      createIdentifierNode(name, Store, lineAndColOf(functionDef))
+    val suffix                      = redefinedSuffixFor(functionDef)
     val (methodNode, methodRefNode) = createMethodAndMethodRef(
-      functionDef.name,
-      Some(functionDef.name),
-      createParameterProcessingFunction(functionDef.args, isStaticMethod(functionDef.decorator_list)),
-      () => functionDef.body.map(convert),
-      functionDef.returns,
-      isAsync = true,
-      lineAndColOf(functionDef)
+      name,
+      Some(name + suffix),
+      createParameterProcessingFunction(args, isStaticMethod(decoratorList)),
+      () => body.map(convert),
+      returns,
+      isAsync,
+      lineAndColOf(functionDef),
+      reservedNames = scopeNames.namesInScope(functionDef),
+      redefinedSuffix = suffix
     )
     functionDefToMethod.put(functionDef, methodNode)
 
     val wrappedMethodRefNode =
-      wrapMethodRefWithDecorators(methodRefNode, functionDef.decorator_list)
+      wrapMethodRefWithDecorators(methodRefNode, decoratorList)
 
     createAssignment(methodIdentifierNode, wrappedMethodRefNode, lineAndColOf(functionDef))
+  }
+
+  def convert(functionDef: ast.FunctionDef): NewNode = {
+    convertFunctionInternal(
+      functionDef.name,
+      functionDef.args,
+      functionDef.decorator_list,
+      functionDef.body,
+      functionDef.returns,
+      isAsync = false,
+      functionDef
+    )
+  }
+
+  def convert(functionDef: ast.AsyncFunctionDef): NewNode = {
+    convertFunctionInternal(
+      functionDef.name,
+      functionDef.args,
+      functionDef.decorator_list,
+      functionDef.body,
+      functionDef.returns,
+      isAsync = true,
+      functionDef
+    )
   }
 
   private def isStaticMethod(decoratorList: Iterable[ast.iexpr]): Boolean = {
@@ -305,11 +336,7 @@ class PythonAstVisitor(
     parameters: ast.Arguments,
     isStatic: Boolean
   ): () => MethodParameters = {
-    val startIndex =
-      if (contextStack.isClassContext && !isStatic)
-        0
-      else
-        1
+    val startIndex = if (contextStack.isClassContext && !isStatic) 0 else 1
 
     () => new MethodParameters(startIndex, convert(parameters, startIndex))
   }
@@ -323,9 +350,11 @@ class PythonAstVisitor(
     returns: Option[ast.iexpr],
     isAsync: Boolean,
     lineAndColumn: LineAndColumn,
-    additionalModifiers: List[String] = List.empty
+    additionalModifiers: List[String] = List.empty,
+    reservedNames: Iterable[String],
+    redefinedSuffix: String = ""
   ): (nodes.NewMethod, nodes.NewMethodRef) = {
-    val methodFullName = calculateFullNameFromContext(methodName)
+    val methodFullName = calculateFullNameFromContext(methodName) + redefinedSuffix
 
     val methodRefNode =
       nodeBuilder.methodRefNode("def " + methodName + "(...)", methodFullName, lineAndColumn)
@@ -342,7 +371,8 @@ class PythonAstVisitor(
         isAsync = true,
         Some(methodRefNode),
         returnTypeHint = None,
-        lineAndColumn
+        lineAndColumn,
+        reservedNames
       )
 
     (methodNode, methodRefNode)
@@ -362,7 +392,8 @@ class PythonAstVisitor(
     isAsync: Boolean,
     methodRefNode: Option[nodes.NewMethodRef],
     returnTypeHint: Option[String],
-    lineAndColumn: LineAndColumn
+    lineAndColumn: LineAndColumn,
+    reservedNames: Iterable[String]
   ): nodes.NewMethod = {
     val methodNode = nodeBuilder.methodNode(name, fullName, relFileName, lineAndColumn)
     edgeBuilder.astEdge(methodNode, contextStack.astParent, contextStack.order.getAndInc)
@@ -370,7 +401,7 @@ class PythonAstVisitor(
     val blockNode = nodeBuilder.blockNode("", lineAndColumn)
     edgeBuilder.astEdge(blockNode, methodNode, 1)
 
-    contextStack.pushMethod(scopeName, methodNode, blockNode, methodRefNode)
+    contextStack.pushMethod(scopeName, methodNode, blockNode, methodRefNode, reservedNames)
 
     var order = 0
     for (modifier <- modifiers) {
@@ -408,6 +439,11 @@ class PythonAstVisitor(
     contextStack.pop()
     edgeBuilder.astEdge(typeDeclNode, contextStack.astParent, contextStack.order.getAndInc)
     createBinding(methodNode, typeDeclNode)
+    if (name == Constants.callName) {
+      contextStack.findEnclosingTypeDecl().foreach { enclosingTypeDecl =>
+        createBinding(methodNode, enclosingTypeDecl)
+      }
+    }
 
     methodNode
   }
@@ -422,9 +458,9 @@ class PythonAstVisitor(
   def convert(classDef: ast.ClassDef): NewNode = {
     // Create type for the meta class object
     val metaTypeDeclName     = classDef.name + metaClassSuffix
-    val metaTypeDeclFullName = calculateFullNameFromContext(metaTypeDeclName)
+    val metaTypeDeclFullName = classFullNameWithRedefinedSuffix(classDef, metaTypeDeclName)
 
-    val metaTypeNode = nodeBuilder.typeNode(metaTypeDeclName, metaTypeDeclFullName)
+    val metaTypeNode     = nodeBuilder.typeNode(metaTypeDeclName, metaTypeDeclFullName)
     val metaTypeDeclNode =
       nodeBuilder.typeDeclNode(
         metaTypeDeclName,
@@ -437,7 +473,7 @@ class PythonAstVisitor(
 
     // Create type for class instances
     val instanceTypeDeclName     = classDef.name
-    val instanceTypeDeclFullName = calculateFullNameFromContext(instanceTypeDeclName)
+    val instanceTypeDeclFullName = classFullNameWithRedefinedSuffix(classDef, instanceTypeDeclName)
 
     // TODO for now we just take the code of the base expression and pretend they are full names, converting special
     //  nodes as we go.
@@ -456,7 +492,7 @@ class PythonAstVisitor(
 
     val inheritsFrom = handleInheritance(classDef.bases.toList)
 
-    val instanceType = nodeBuilder.typeNode(instanceTypeDeclName, instanceTypeDeclFullName)
+    val instanceType     = nodeBuilder.typeNode(instanceTypeDeclName, instanceTypeDeclFullName)
     val instanceTypeDecl =
       nodeBuilder.typeDeclNode(
         instanceTypeDeclName,
@@ -468,25 +504,27 @@ class PythonAstVisitor(
     edgeBuilder.astEdge(instanceTypeDecl, contextStack.astParent, contextStack.order.getAndInc)
 
     // Create <body> function which contains the code defining the class
-    contextStack.pushClass(Some(classDef.name), instanceTypeDecl)
+    val className = classDef.name + redefinedSuffixFor(classDef)
+    contextStack.pushClass(Some(className), instanceTypeDecl, scopeNames.namesInScope(classDef))
     val classBodyFunctionName = "<body>"
-    val (_, methodRefNode) = createMethodAndMethodRef(
+    val (_, methodRefNode)    = createMethodAndMethodRef(
       classBodyFunctionName,
       scopeName = None,
       parameterProvider = () =>
         MethodParameters(
           0,
-          nodeBuilder.methodParameterNode("cls", isVariadic = false, lineAndColOf(classDef), Option(0)) :: Nil
+          nodeBuilder.methodParameterNode("cls", isVariadic = false, lineAndColOf(classDef), 0) :: Nil
         ),
       bodyProvider = () => classDef.body.map(convert),
       None,
       isAsync = false,
-      lineAndColOf(classDef)
+      lineAndColOf(classDef),
+      reservedNames = scopeNames.namesInScope(classDef)
     )
 
     contextStack.pop()
 
-    contextStack.pushClass(Some(classDef.name), metaTypeDeclNode)
+    contextStack.pushClass(Some(className), metaTypeDeclNode, scopeNames.namesInScope(classDef))
 
     // Create meta class call handling method and bind it to meta class type.
     val functions = classDef.body.collect { case func: ast.FunctionDef => func }
@@ -516,7 +554,7 @@ class PythonAstVisitor(
     // We do this to model the __init__ call in a visible way for the data flow tracker.
     // This is done because very often the __init__ call is hidden in a super().__new__ call
     // and we cant yet handle super().
-    val fakeNewMethod = createFakeNewMethod(initParameters)
+    val fakeNewMethod = createFakeNewMethod(initParameters, instanceTypeDeclFullName)
 
     val fakeNewMember = nodeBuilder.memberNode("<fakeNew>", fakeNewMethod.fullName)
     edgeBuilder.astEdge(fakeNewMember, metaTypeDeclNode, contextStack.order.getAndInc)
@@ -526,28 +564,44 @@ class PythonAstVisitor(
     // For non static methods we create an adapter method which basically only shifts the parameters
     // one to the left and makes sure that the meta class object is not passed to func as instance
     // parameter.
-    classDef.body.foreach {
-      case func: ast.FunctionDef =>
-        createMemberBindingsAndAdapter(
-          func,
-          func.name,
-          func.args,
-          func.decorator_list,
-          instanceTypeDecl,
-          metaTypeDeclNode
-        )
-      case func: ast.AsyncFunctionDef =>
-        createMemberBindingsAndAdapter(
-          func,
-          func.name,
-          func.args,
-          func.decorator_list,
-          instanceTypeDecl,
-          metaTypeDeclNode
-        )
-      case _ =>
-      // All other body statements are currently ignored.
-    }
+    classDef.body
+      // Filter for functions and build tuples with their name
+      .flatMap {
+        case func: ast.FunctionDef =>
+          Some((func.name, func))
+        case func: ast.AsyncFunctionDef =>
+          Some((func.name, func))
+        case _ =>
+          None
+      }
+      // Group by name and remove name from value
+      .groupMap(_._1)(_._2)
+      // Sort by name to get a stable output
+      .toBuffer
+      .sortBy(_._1)
+      // Take the last function. We only create member/binding
+      // for the last definition as it overwrites the previous ones.
+      .map { case (_, functions) => functions.last }
+      .foreach {
+        case func: ast.FunctionDef =>
+          createMemberBindingsAndAdapter(
+            func,
+            func.name,
+            func.args,
+            func.decorator_list,
+            instanceTypeDecl,
+            metaTypeDeclNode
+          )
+        case func: ast.AsyncFunctionDef =>
+          createMemberBindingsAndAdapter(
+            func,
+            func.name,
+            func.args,
+            func.decorator_list,
+            instanceTypeDecl,
+            metaTypeDeclNode
+          )
+      }
 
     contextStack.pop()
 
@@ -557,9 +611,9 @@ class PythonAstVisitor(
       createAssignmentToIdentifier(classDef.name, metaTypeRefNode, lineAndColOf(classDef))
     // Create call to <body> function and assignment of the meta class object to a identifier named
     // like the class.
-    val classIdentifierForCall = createIdentifierNode(classDef.name, Load, lineAndColOf(classDef))
+    val classIdentifierForCall  = createIdentifierNode(classDef.name, Load, lineAndColOf(classDef))
     val callToClassBodyFunction =
-      createInstanceCall(methodRefNode, classIdentifierForCall, "", lineAndColOf(classDef), Nil, Nil)
+      createInstanceCall(methodRefNode, classIdentifierForCall, "", lineAndColOf(classDef), Nil, Nil, None)
 
     val classBlock = createBlock(classIdentifierAssignNode :: callToClassBodyFunction :: Nil, lineAndColOf(classDef))
 
@@ -620,13 +674,13 @@ class PythonAstVisitor(
       parameterProvider = () => {
         MethodParameters(
           0,
-          nodeBuilder.methodParameterNode("cls", isVariadic = false, lineAndColumn, Option(0)) :: Nil ++
+          nodeBuilder.methodParameterNode("cls", isVariadic = false, lineAndColumn, 0) :: Nil ++
             convert(parameters, 1)
         )
       },
       bodyProvider = () => {
         val (arguments, keywordArguments) = createArguments(parameters, lineAndColumn)
-        val staticCall =
+        val staticCall                    =
           createStaticCall(adaptedMethodName, adaptedMethodFullName, lineAndColumn, arguments, keywordArguments)
         val returnNode = createReturn(Some(staticCall), None, lineAndColumn)
         returnNode :: Nil
@@ -635,11 +689,12 @@ class PythonAstVisitor(
       isAsync = false,
       methodRefNode = None,
       returnTypeHint = None,
-      lineAndColumn
+      lineAndColumn,
+      reservedNames = Nil
     )
   }
 
-  def createArguments(
+  private def createArguments(
     arguments: ast.Arguments,
     lineAndColumn: LineAndColumn
   ): (Iterable[nodes.NewNode], Iterable[(String, nodes.NewNode)]) = {
@@ -684,11 +739,10 @@ class PythonAstVisitor(
   }
 
   /** Creates the method which handles a call to the meta class object. This process is also known as creating a new
-    * instance object, e.g. obj = MyClass(p1). The purpose of the generated function is to adapt between the special
-    * cased instance creation call and a normal call to __new__ (for now <fakeNew>). The adaption is required to in
-    * order to provide TYPE_REF(meta class) as instance argument to __new__/<fakeNew>. So the <metaClassCallHandler>
-    * looks like: def <metaClassCallHandler>(p1): return DYNAMIC_CALL(receiver=TYPE_REF(meta class).<fakeNew>, instance
-    * \= TYPE_REF(meta class), p1)
+    * instance object, e.g. obj = MyClass(p1). This method mimics the semantically relevant parts of the CPython default
+    * implementation of __call__ which is a call to __new__(for now <fakeNew>) and a call to __init__. So the
+    * <metaClassCallHandler> looks like: def <metaClassCallHandler>(arguments): __newInstance =
+    * metaClassTypeRef.<fakeNew>(arguments) __newInstance.<init>(arguments) return __newInstance
     */
   // TODO handle kwArg
   private def createMetaClassCallHandlerMethod(
@@ -725,29 +779,51 @@ class PythonAstVisitor(
           "",
           lineAndColumn,
           arguments,
-          keywordArguments
+          keywordArguments,
+          None
         )
 
-        val returnNode = createReturn(Some(fakeNewCall), None, lineAndColumn)
+        val assignmentToNewInstance =
+          createAssignment(createIdentifierNode("__newInstance", Store, lineAndColumn), fakeNewCall, lineAndColumn)
 
-        returnNode :: Nil
+        val (initArguments, initKeywordArguments) = createArguments(parametersWithoutSelf, lineAndColumn)
+
+        val initCall = createInstanceCall(
+          createFieldAccess(
+            createIdentifierNode("__newInstance", Load, lineAndColumn),
+            Constants.initName,
+            lineAndColumn
+          ),
+          createIdentifierNode("__newInstance", Load, lineAndColumn),
+          "",
+          lineAndColumn,
+          initArguments,
+          initKeywordArguments,
+          None
+        )
+
+        val returnNode =
+          createReturn(Some(createIdentifierNode("__newInstance", Load, lineAndColumn)), None, lineAndColumn)
+
+        assignmentToNewInstance :: initCall :: returnNode :: Nil
       },
       returns = None,
       isAsync = false,
       methodRefNode = None,
       returnTypeHint = Some(instanceTypeDeclFullName),
-      lineAndColumn
+      lineAndColumn,
+      reservedNames = Nil
     )
   }
 
   /** Creates a <fakeNew> method which mimics the behaviour of a default __new__ method (the one you would get if no
     * implementation is present). The reason we use a fake version of the __new__ method it that we wont be able to
     * correctly track through most custom __new__ implementations as they usually call "super.__init__()" and we cannot
-    * yet handle "super". The fake __new__ looks like: def <fakeNew>(cls, p1): __newInstance =
-    * STATIC_CALL(<operator>.alloc) cls.__init__(__newIstance, p1) return __newInstance
+    * yet handle "super". The fake __new__ looks like: def <fakeNew>(cls, arguments): return
+    * STATIC_CALL(<operator>.alloc)
     */
   // TODO handle kwArg
-  private def createFakeNewMethod(initParameters: ast.Arguments): nodes.NewMethod = {
+  private def createFakeNewMethod(initParameters: ast.Arguments, instanceTypeDeclFullName: String): nodes.NewMethod = {
     val newMethodName         = "<fakeNew>"
     val newMethodStubFullName = calculateFullNameFromContext(newMethodName)
 
@@ -763,40 +839,24 @@ class PythonAstVisitor(
       parameterProvider = () => {
         MethodParameters(
           0,
-          nodeBuilder.methodParameterNode("cls", isVariadic = false, lineAndColumn, Some(0)) :: Nil ++
+          nodeBuilder.methodParameterNode("cls", isVariadic = false, lineAndColumn, 0) :: Nil ++
             convert(parametersWithoutSelf, 1)
         )
       },
       bodyProvider = () => {
         val allocatorCall =
           createNAryOperatorCall(() => ("<operator>.alloc", "<operator>.alloc"), Nil, lineAndColumn)
-        val assignmentToNewInstance =
-          createAssignment(createIdentifierNode("__newInstance", Store, lineAndColumn), allocatorCall, lineAndColumn)
 
-        val (arguments, keywordArguments) = createArguments(parametersWithoutSelf, lineAndColumn)
-        val argumentWithInstance          = mutable.ArrayBuffer.empty[nodes.NewNode]
-        argumentWithInstance.append(createIdentifierNode("__newInstance", Load, lineAndColumn))
-        argumentWithInstance.appendAll(arguments)
+        val returnNode = createReturn(Some(allocatorCall), None, lineAndColumn)
 
-        val initCall = createXDotYCall(
-          () => createIdentifierNode("cls", Load, lineAndColumn),
-          Constants.initName,
-          xMayHaveSideEffects = false,
-          lineAndColumn,
-          argumentWithInstance,
-          keywordArguments
-        )
-
-        val returnNode =
-          createReturn(Some(createIdentifierNode("__newInstance", Load, lineAndColumn)), None, lineAndColumn)
-
-        assignmentToNewInstance :: initCall :: returnNode :: Nil
+        returnNode :: Nil
       },
       returns = None,
       isAsync = false,
       methodRefNode = None,
-      returnTypeHint = None,
-      lineAndColumn
+      returnTypeHint = Some(instanceTypeDeclFullName),
+      lineAndColumn,
+      reservedNames = Nil
     )
   }
 
@@ -805,9 +865,16 @@ class PythonAstVisitor(
   }
 
   def convert(delete: ast.Delete): NewNode = {
-    val deleteArgs = delete.targets.map(convert)
+    val code = "del " + delete.targets.map(nodeToCode.getCode).mkString(", ")
 
-    val code     = "del " + deleteArgs.map(codeOf).mkString(", ")
+    def flattenDeleteTargets(exprs: Iterable[ast.iexpr]): Iterable[NewNode] =
+      exprs.flatMap {
+        case listNode: ast.List   => flattenDeleteTargets(listNode.elts)
+        case tupleNode: ast.Tuple => flattenDeleteTargets(tupleNode.elts)
+        case other                => Seq(convert(other))
+      }
+
+    val deleteArgs = flattenDeleteTargets(delete.targets)
     val callNode = nodeBuilder.callNode(code, "<operator>.delete", DispatchTypes.STATIC_DISPATCH, lineAndColOf(delete))
 
     addAstChildrenAsArguments(callNode, 1, deleteArgs)
@@ -868,19 +935,19 @@ class PythonAstVisitor(
 
     val (operatorCode, operatorFullName) =
       augAssign.op match {
-        case ast.Add  => ("+=", Operators.assignmentPlus)
-        case ast.Sub  => ("-=", Operators.assignmentMinus)
-        case ast.Mult => ("*=", Operators.assignmentMultiplication)
+        case ast.Add     => ("+=", Operators.assignmentPlus)
+        case ast.Sub     => ("-=", Operators.assignmentMinus)
+        case ast.Mult    => ("*=", Operators.assignmentMultiplication)
         case ast.MatMult =>
           ("@=", "<operator>.assignmentMatMult") // TODO make this a define and add policy for this
-        case ast.Div    => ("/=", Operators.assignmentDivision)
-        case ast.Mod    => ("%=", Operators.assignmentModulo)
-        case ast.Pow    => ("**=", Operators.assignmentExponentiation)
-        case ast.LShift => ("<<=", Operators.assignmentShiftLeft)
-        case ast.RShift => ("<<=", Operators.assignmentArithmeticShiftRight)
-        case ast.BitOr  => ("|=", Operators.assignmentOr)
-        case ast.BitXor => ("^=", Operators.assignmentXor)
-        case ast.BitAnd => ("&=", Operators.assignmentAnd)
+        case ast.Div      => ("/=", Operators.assignmentDivision)
+        case ast.Mod      => ("%=", Operators.assignmentModulo)
+        case ast.Pow      => ("**=", Operators.assignmentExponentiation)
+        case ast.LShift   => ("<<=", Operators.assignmentShiftLeft)
+        case ast.RShift   => (">>=", Operators.assignmentArithmeticShiftRight)
+        case ast.BitOr    => ("|=", Operators.assignmentOr)
+        case ast.BitXor   => ("^=", Operators.assignmentXor)
+        case ast.BitAnd   => ("&=", Operators.assignmentAnd)
         case ast.FloorDiv =>
           ("//=", "<operator>.assignmentFloorDiv") // TODO make this a define and add policy for this
       }
@@ -945,7 +1012,7 @@ class PythonAstVisitor(
     isAsync: Boolean,
     lineAndColumn: LineAndColumn
   ): nodes.NewNode = {
-    val iterVariableName = getUnusedName()
+    val iterVariableName     = getUnusedName()
     val iterExprIterCallNode =
       createXDotYCall(
         () => convert(iter),
@@ -953,7 +1020,8 @@ class PythonAstVisitor(
         xMayHaveSideEffects = !iter.isInstanceOf[ast.Name],
         lineAndColumn,
         Nil,
-        Nil
+        Nil,
+        None
       )
     val iterAssignNode =
       createAssignmentToIdentifier(iterVariableName, iterExprIterCallNode, lineAndColumn)
@@ -971,7 +1039,8 @@ class PythonAstVisitor(
         xMayHaveSideEffects = false,
         lineAndColumn,
         Nil,
-        Nil
+        Nil,
+        None
       )
 
     val loweredAssignNodes =
@@ -982,11 +1051,7 @@ class PythonAstVisitor(
 
     if (ifs.nonEmpty) {
       val conditionNode =
-        if (ifs.size == 1) {
-          ifs.head
-        } else {
-          ast.BoolOp(ast.And, ifs.to(mutable.Seq), ifs.head.attributeProvider)
-        }
+        if (ifs.size == 1) ifs.head else ast.BoolOp(ast.And, ifs.to(mutable.Seq), ifs.head.attributeProvider)
       val ifNotContinueNode = convert(
         ast.If(
           ast.UnaryOp(ast.Not, conditionNode, ifs.head.attributeProvider),
@@ -1002,10 +1067,12 @@ class PythonAstVisitor(
 
     val bodyBlockNode = createBlock(blockStmtNodes, lineAndColumn)
     addAstChildNodes(controlStructureNode, 1, conditionNode, bodyBlockNode)
+    edgeBuilder.trueBodyEdge(bodyBlockNode, controlStructureNode)
 
     if (orelseNodes.nonEmpty) {
       val elseBlockNode = createBlock(orelseNodes, lineAndColumn)
       addAstChildNodes(controlStructureNode, 3, elseBlockNode)
+      edgeBuilder.falseBodyEdge(elseBlockNode, controlStructureNode)
     }
 
     createBlock(iterAssignNode :: controlStructureNode :: Nil, lineAndColumn)
@@ -1021,12 +1088,14 @@ class PythonAstVisitor(
 
     val bodyBlockNode = createBlock(bodyStmtNodes, lineAndColOf(astWhile))
     addAstChildNodes(controlStructureNode, 1, conditionNode, bodyBlockNode)
+    edgeBuilder.trueBodyEdge(bodyBlockNode, controlStructureNode)
 
     if (astWhile.orelse.nonEmpty) {
       val elseStmtNodes = astWhile.orelse.map(convert)
       val elseBlockNode =
         createBlock(elseStmtNodes, lineAndColOf(astWhile.orelse.head))
       addAstChildNodes(controlStructureNode, 3, elseBlockNode)
+      edgeBuilder.falseBodyEdge(elseBlockNode, controlStructureNode)
     }
 
     controlStructureNode
@@ -1042,11 +1111,13 @@ class PythonAstVisitor(
 
     val bodyBlockNode = createBlock(bodyStmtNodes, lineAndColOf(astIf))
     addAstChildNodes(controlStructureNode, 1, conditionNode, bodyBlockNode)
+    edgeBuilder.trueBodyEdge(bodyBlockNode, controlStructureNode)
 
     if (astIf.orelse.nonEmpty) {
       val elseStmtNodes = astIf.orelse.map(convert)
       val elseBlockNode = createBlock(elseStmtNodes, lineAndColOf(astIf.orelse.head))
       addAstChildNodes(controlStructureNode, 3, elseBlockNode)
+      edgeBuilder.falseBodyEdge(elseBlockNode, controlStructureNode)
     }
 
     controlStructureNode
@@ -1119,21 +1190,21 @@ class PythonAstVisitor(
       createAssignmentToIdentifier(managerIdentifierName, convert(withItem.context_expr), lineAndCol)
 
     val enterIdentifierName = getUnusedName("enter")
-    val assignmentToEnter = createAssignmentToIdentifier(
+    val assignmentToEnter   = createAssignmentToIdentifier(
       enterIdentifierName,
       createFieldAccess(createIdentifierNode(managerIdentifierName, Load, lineAndCol), "__enter__", lineAndCol),
       lineAndCol
     )
 
     val exitIdentifierName = getUnusedName("exit")
-    val assignmentToExit = createAssignmentToIdentifier(
+    val assignmentToExit   = createAssignmentToIdentifier(
       exitIdentifierName,
       createFieldAccess(createIdentifierNode(managerIdentifierName, Load, lineAndCol), "__exit__", lineAndCol),
       lineAndCol
     )
 
     val valueIdentifierName = getUnusedName("value")
-    val assignmentToValue = createAssignmentToIdentifier(
+    val assignmentToValue   = createAssignmentToIdentifier(
       valueIdentifierName,
       createInstanceCall(
         createIdentifierNode(enterIdentifierName, Load, lineAndCol),
@@ -1141,7 +1212,8 @@ class PythonAstVisitor(
         "",
         lineAndCol,
         Nil,
-        Nil
+        Nil,
+        None
       ),
       lineAndCol
     )
@@ -1175,7 +1247,8 @@ class PythonAstVisitor(
         "",
         lineAndCol,
         Nil,
-        Nil
+        Nil,
+        None
       ) :: Nil
 
     val tryBlock = createTry(tryBody, Nil, finalBlockStmts, Nil, lineAndCol)
@@ -1190,21 +1263,35 @@ class PythonAstVisitor(
     createBlock(blockStmts, lineAndCol)
   }
 
-  // TODO add case pattern and guard statements to cpg
+  // TODO add case pattern and guard statements to not just as string in the JUMP_TARGET to the CPG
+  // but rather as proper AST constructs.
   def convert(matchStmt: ast.Match): NewNode = {
     val controlStructureNode =
-      nodeBuilder.controlStructureNode("match ... : ...", ControlStructureTypes.SWITCH, lineAndColOf(matchStmt))
+      nodeBuilder.controlStructureNode("match ... : ...", ControlStructureTypes.MATCH, lineAndColOf(matchStmt))
 
     val matchSubject = convert(matchStmt.subject)
 
-    val caseBlocks = matchStmt.cases.map { caseStmt =>
-      val bodyNodes = caseStmt.body.map(convert)
-      createBlock(bodyNodes, lineAndColOf(caseStmt.pattern))
+    val caseBlocks = matchStmt.cases.flatMap { caseStmt =>
+      val jumpTargetCode =
+        caseStmt.pattern match {
+          case MatchAs(None, _, _) if caseStmt.guard.isEmpty =>
+            // TODO For the moment we have to use "default" because otherwise the CfgCreator does not detect
+            // the jump target as the default case.
+            "default"
+          case pattern =>
+            val printer = new AstPrinter("")
+            "case " + printer.print(pattern) + caseStmt.guard.map(g => " if " + printer.print(g)).getOrElse("")
+        }
+      val jumpTarget = nodeBuilder.jumpNode(jumpTargetCode)
+      val bodyNodes  = caseStmt.body.map(convert)
+      jumpTarget :: createBlock(bodyNodes, lineAndColOf(caseStmt.pattern)) :: Nil
     }
+
+    val switchBodyBlock = createBlock(caseBlocks, lineAndColOf(matchStmt))
 
     edgeBuilder.conditionEdge(matchSubject, controlStructureNode)
     addAstChildNodes(controlStructureNode, 1, matchSubject)
-    addAstChildNodes(controlStructureNode, 2, caseBlocks)
+    addAstChildNodes(controlStructureNode, 2, switchBodyBlock)
 
     controlStructureNode
   }
@@ -1262,7 +1349,7 @@ class PythonAstVisitor(
   //     y = import("", "y")
   //   }
   def convert(importStmt: ast.Import): NewNode = {
-    createTransformedImport("", importStmt.names, lineAndColOf(importStmt))
+    createTransformedImport("", importStmt.names, lineAndColOf(importStmt), importStmt)
   }
 
   // Lowering of from x import y:
@@ -1282,7 +1369,7 @@ class PythonAstVisitor(
     }
     moduleName += importFrom.module.getOrElse("")
 
-    createTransformedImport(moduleName, importFrom.names, lineAndColOf(importFrom))
+    createTransformedImport(moduleName, importFrom.names, lineAndColOf(importFrom), importFrom)
   }
 
   def convert(global: ast.Global): NewNode = {
@@ -1313,7 +1400,7 @@ class PythonAstVisitor(
     nodeBuilder.controlStructureNode("continue", ControlStructureTypes.CONTINUE, lineAndColOf(astContinue))
   }
 
-  def convert(raise: ast.RaiseP2): NewNode = ???
+  def convert(raise: ast.RaiseP2): NewNode = unhandled(raise)
 
   def convert(errorStatement: ast.ErrorStatement): NewNode = {
     val code   = nodeToCode.getCode(errorStatement)
@@ -1341,8 +1428,8 @@ class PythonAstVisitor(
       case node: ast.DictComp       => convert(node)
       case node: ast.GeneratorExp   => convert(node)
       case node: ast.Await          => convert(node)
-      case node: ast.Yield          => unhandled(node)
-      case node: ast.YieldFrom      => unhandled(node)
+      case node: ast.Yield          => convert(node)
+      case node: ast.YieldFrom      => convert(node)
       case node: ast.Compare        => convert(node)
       case node: ast.Call           => convert(node)
       case node: ast.FormattedValue => convert(node)
@@ -1377,7 +1464,6 @@ class PythonAstVisitor(
     createNAryOperatorCall(boolOpToCodeAndFullName(boolOp.op), operandNodes, lineAndColOf(boolOp))
   }
 
-  // TODO test
   def convert(namedExpr: ast.NamedExpr): NewNode = {
     val targetNode = convert(namedExpr.target)
     val valueNode  = convert(namedExpr.value)
@@ -1391,19 +1477,19 @@ class PythonAstVisitor(
 
     val opCodeAndFullName =
       binOp.op match {
-        case ast.Add  => ("+", Operators.addition)
-        case ast.Sub  => ("-", Operators.subtraction)
-        case ast.Mult => ("*", Operators.multiplication)
+        case ast.Add     => ("+", Operators.addition)
+        case ast.Sub     => ("-", Operators.subtraction)
+        case ast.Mult    => ("*", Operators.multiplication)
         case ast.MatMult =>
           ("@", "<operator>.matMult") // TODO make this a define and add policy for this
-        case ast.Div    => ("/", Operators.division)
-        case ast.Mod    => ("%", Operators.modulo)
-        case ast.Pow    => ("**", Operators.exponentiation)
-        case ast.LShift => ("<<", Operators.shiftLeft)
-        case ast.RShift => (">>", Operators.arithmeticShiftRight)
-        case ast.BitOr  => ("|", Operators.or)
-        case ast.BitXor => ("^", Operators.xor)
-        case ast.BitAnd => ("&", Operators.and)
+        case ast.Div      => ("/", Operators.division)
+        case ast.Mod      => ("%", Operators.modulo)
+        case ast.Pow      => ("**", Operators.exponentiation)
+        case ast.LShift   => ("<<", Operators.shiftLeft)
+        case ast.RShift   => (">>", Operators.arithmeticShiftRight)
+        case ast.BitOr    => ("|", Operators.or)
+        case ast.BitXor   => ("^", Operators.xor)
+        case ast.BitAnd   => ("&", Operators.and)
         case ast.FloorDiv =>
           ("//", "<operator>.floorDiv") // TODO make this a define and add policy for this
       }
@@ -1432,15 +1518,11 @@ class PythonAstVisitor(
 
   def convert(lambda: ast.Lambda): NewNode = {
     // TODO test lambda expression.
-    val lambdaCounter = contextStack.getAndIncLambdaCounter()
+    val lambdaCounter      = contextStack.getAndIncLambdaCounter()
     val lambdaNumberSuffix =
-      if (lambdaCounter == 0) {
-        ""
-      } else {
-        lambdaCounter.toString
-      }
+      if (lambdaCounter == 0) "" else lambdaCounter.toString
 
-    val name = nextClosureName()
+    val name               = nextClosureName()
     val (_, methodRefNode) = createMethodAndMethodRef(
       name,
       Some(name),
@@ -1449,7 +1531,8 @@ class PythonAstVisitor(
       returns = None,
       isAsync = false,
       lineAndColOf(lambda),
-      ModifierTypes.LAMBDA :: Nil
+      ModifierTypes.LAMBDA :: Nil,
+      reservedNames = scopeNames.namesInScope(lambda)
     )
     methodRefNode
   }
@@ -1473,8 +1556,8 @@ class PythonAstVisitor(
     */
   // TODO test
   def convert(dict: ast.Dict): NewNode = {
-    val MAX_KV_PAIRS    = 1000
-    val tmpVariableName = getUnusedName()
+    val MAX_KV_PAIRS     = 1000
+    val tmpVariableName  = getUnusedName()
     val dictOperatorCall =
       createLiteralOperatorCall("{", "}", "<operator>.dictLiteral", lineAndColOf(dict))
     val dictVariableAssigNode =
@@ -1503,7 +1586,8 @@ class PythonAstVisitor(
               xMayHaveSideEffects = false,
               lineAndColOf(dict),
               convert(value) :: Nil,
-              Nil
+              Nil,
+              None
             )
         }
       }
@@ -1535,7 +1619,7 @@ class PythonAstVisitor(
     */
   // TODO test
   def convert(listComp: ast.ListComp): NewNode = {
-    contextStack.pushSpecialContext()
+    contextStack.pushSpecialContext(scopeNames.namesInScope(listComp))
     val tmpVariableName = getUnusedName()
 
     // Create tmp = list()
@@ -1551,7 +1635,8 @@ class PythonAstVisitor(
       xMayHaveSideEffects = false,
       lineAndColOf(listComp),
       convert(listComp.elt) :: Nil,
-      Nil
+      Nil,
+      None
     )
 
     val comprehensionBlockNode = createComprehensionLowering(
@@ -1571,7 +1656,7 @@ class PythonAstVisitor(
     */
   // TODO test
   def convert(setComp: ast.SetComp): NewNode = {
-    contextStack.pushSpecialContext()
+    contextStack.pushSpecialContext(scopeNames.namesInScope(setComp))
     val tmpVariableName = getUnusedName()
 
     val setOperatorCall =
@@ -1586,7 +1671,8 @@ class PythonAstVisitor(
       xMayHaveSideEffects = false,
       lineAndColOf(setComp),
       convert(setComp.elt) :: Nil,
-      Nil
+      Nil,
+      None
     )
 
     val comprehensionBlockNode = createComprehensionLowering(
@@ -1606,7 +1692,7 @@ class PythonAstVisitor(
     */
   // TODO test
   def convert(dictComp: ast.DictComp): NewNode = {
-    contextStack.pushSpecialContext()
+    contextStack.pushSpecialContext(scopeNames.namesInScope(dictComp))
     val tmpVariableName = getUnusedName()
 
     val dictOperatorCall =
@@ -1644,7 +1730,7 @@ class PythonAstVisitor(
     */
   // TODO test
   def convert(generatorExp: ast.GeneratorExp): NewNode = {
-    contextStack.pushSpecialContext()
+    contextStack.pushSpecialContext(scopeNames.namesInScope(generatorExp))
     val tmpVariableName = getUnusedName()
 
     // Create tmp = list()
@@ -1666,7 +1752,8 @@ class PythonAstVisitor(
       xMayHaveSideEffects = false,
       lineAndColOf(generatorExp),
       convert(generatorExp.elt) :: Nil,
-      Nil
+      Nil,
+      None
     )
 
     val comprehensionBlockNode = createComprehensionLowering(
@@ -1688,9 +1775,17 @@ class PythonAstVisitor(
     convert(await.value)
   }
 
-  def convert(yieldExpr: ast.Yield): NewNode = ???
+  def convert(yieldExpr: ast.Yield): NewNode = {
+    val valueNode = yieldExpr.value.map(convert)
+    val code      = "yield" + valueNode.map(node => " " + codeOf(node)).getOrElse("")
+    createReturn(valueNode, Some(code), lineAndColOf(yieldExpr))
+  }
 
-  def convert(yieldFrom: ast.YieldFrom): NewNode = ???
+  def convert(yieldFrom: ast.YieldFrom): NewNode = {
+    val valueNode = convert(yieldFrom.value)
+    val code      = "yield from " + codeOf(valueNode)
+    createReturn(Some(valueNode), Some(code), lineAndColOf(yieldFrom))
+  }
 
   // In case of a single compare operation there is no lowering applied.
   // So e.g. x < y stay untouched.
@@ -1709,15 +1804,11 @@ class PythonAstVisitor(
   //    }
   def convert(compare: ast.Compare): NewNode = {
     assert(compare.ops.size == compare.comparators.size)
-    var lhsNode = convert(compare.left)
+    val lhsNode = convert(compare.left)
 
     val topLevelExprNodes =
       lowerComparatorChain(lhsNode, compare.ops, compare.comparators, lineAndColOf(compare))
-    if (topLevelExprNodes.size > 1) {
-      createBlock(topLevelExprNodes, lineAndColOf(compare))
-    } else {
-      topLevelExprNodes.head
-    }
+    if (topLevelExprNodes.size > 1) createBlock(topLevelExprNodes, lineAndColOf(compare)) else topLevelExprNodes.head
   }
 
   private def compopToOpCodeAndFullName(compareOp: ast.icompop): () => (String, String) = { () =>
@@ -1737,7 +1828,7 @@ class PythonAstVisitor(
     }
   }
 
-  def lowerComparatorChain(
+  private def lowerComparatorChain(
     lhsNode: nodes.NewNode,
     compOperators: Iterable[ast.icompop],
     comparators: Iterable[ast.iexpr],
@@ -1754,7 +1845,7 @@ class PythonAstVisitor(
       val assignmentNode  = createAssignmentToIdentifier(tmpVariableName, rhsNode, lineAndColumn)
 
       val tmpIdentifierCompare1 = createIdentifierNode(tmpVariableName, Load, lineAndColumn)
-      val compareNode = createBinaryOperatorCall(
+      val compareNode           = createBinaryOperatorCall(
         lhsNode,
         compopToOpCodeAndFullName(compOperators.head),
         tmpIdentifierCompare1,
@@ -1774,6 +1865,17 @@ class PythonAstVisitor(
     ("and", Operators.logicalAnd)
   }
 
+  @tailrec
+  private def assumeHasNoSideEffects(expr: ast.iexpr): Boolean = {
+    expr match {
+      case attr: ast.Attribute =>
+        // technically field access can have arbitrary side effects, but we pretend that's not the case
+        assumeHasNoSideEffects(attr.value)
+      case _: ast.Name => true
+      case _           => false
+    }
+  }
+
   /** TODO For now this function compromises on the correctness of the lowering in order to get some data flow tracking
     * going.
     *   1. For constructs like x.func() we assume x to be the instance which is passed into func. This is not true since
@@ -1784,14 +1886,15 @@ class PythonAstVisitor(
     *      https://docs.python.org/3/reference/datamodel.html#the-standard-type-hierarchy search for "Instance methods"
     */
   def convert(call: ast.Call): nodes.NewNode = {
-    val argumentNodes = call.args.map(convert).toSeq
-    val keywordArgNodes = call.keywords.flatMap { keyword =>
+    val argumentNodes   = call.args.map(convert).toSeq
+    val keywordArgNodes = call.keywords.map { keyword =>
       if (keyword.arg.isDefined) {
-        Some((keyword.arg.get, convert(keyword.value)))
+        (keyword.arg.get, convert(keyword.value))
       } else {
         // keyword.arg == None. This is the case for func(**dict) style arguments.
-        // TODO implement handling for this case.
-        None
+        // We use a synthetic argument name to preserve the unpacked dict as an argument
+        // in the CPG so that data flow tracking can follow through it.
+        (keywordDictArgName, convert(keyword.value))
       }
     }
 
@@ -1800,25 +1903,26 @@ class PythonAstVisitor(
         createXDotYCall(
           () => convert(attribute.value),
           attribute.attr,
-          xMayHaveSideEffects = !attribute.value.isInstanceOf[ast.Name],
+          xMayHaveSideEffects = !assumeHasNoSideEffects(attribute.value),
           lineAndColOf(call),
           argumentNodes,
-          keywordArgNodes
+          keywordArgNodes,
+          Some(call)
         )
       case _ =>
         val receiverNode = convert(call.func)
-        val name = call.func match {
+        val name         = call.func match {
           case ast.Name(id, _) => id
           case _               => ""
         }
-        createCall(receiverNode, name, lineAndColOf(call), argumentNodes, keywordArgNodes)
+        createCall(receiverNode, name, lineAndColOf(call), argumentNodes, keywordArgNodes, Some(call))
     }
   }
 
   def convert(formattedValue: ast.FormattedValue): nodes.NewNode = {
     val valueNode = convert(formattedValue.value)
 
-    val equalSignStr = if (formattedValue.equalSign) "=" else ""
+    val equalSignStr  = if (formattedValue.equalSign) "=" else ""
     val conversionStr = formattedValue.conversion match {
       case -1  => ""
       case 115 => "!s"
@@ -1931,7 +2035,7 @@ class PythonAstVisitor(
         val upper = slice.upper.map(convert).getOrElse(nodeBuilder.literalNode("None", None, noLineAndColumn))
         val step  = slice.step.map(convert).getOrElse(nodeBuilder.literalNode("None", None, noLineAndColumn))
 
-        val code = nodeToCode.getCode(subscript)
+        val code     = nodeToCode.getCode(subscript)
         val callNode =
           nodeBuilder.callNode(code, "<operator>.slice", DispatchTypes.STATIC_DISPATCH, lineAndColOf(slice))
 
@@ -1952,7 +2056,7 @@ class PythonAstVisitor(
         val unrollOperand = convert(starred.value)
         createStarredUnpackOperatorCall(unrollOperand, lineAndColOf(starred))
       case Store =>
-        unhandled(starred)
+        convert(starred.value)
       case Del =>
         // This case is not possible since star operator is not allowed in delete statement.
         unhandled(starred)
@@ -1968,12 +2072,7 @@ class PythonAstVisitor(
     identifier
   }
 
-  // TODO test
   def convert(list: ast.List): nodes.NewNode = {
-    // Must be a List as part of a Load memory operation because a List literal
-    // is not permitted as argument to a Del and List as part of a Store does not
-    // reach here.
-    assert(memOpMap.get(list).get == Load)
     val listElementNodes = list.elts.map(convert)
     val code             = listElementNodes.map(codeOf).mkString("[", ", ", "]")
 
@@ -1992,11 +2091,9 @@ class PythonAstVisitor(
     // createValueToTargetsDecomposition.
     assert(memOpMap.get(tuple).get == Load || memOpMap.get(tuple).get == Del)
     val tupleElementNodes = tuple.elts.map(convert)
-    val code = if (tupleElementNodes.size != 1) {
-      tupleElementNodes.map(codeOf).mkString("(", ", ", ")")
-    } else {
-      "(" + codeOf(tupleElementNodes.head) + ",)"
-    }
+    val code              =
+      if (tupleElementNodes.size != 1) tupleElementNodes.map(codeOf).mkString("(", ", ", ")")
+      else "(" + codeOf(tupleElementNodes.head) + ",)"
 
     val callNode =
       nodeBuilder.callNode(code, "<operator>.tupleLiteral", DispatchTypes.STATIC_DISPATCH, lineAndColOf(tuple))
@@ -2041,7 +2138,7 @@ class PythonAstVisitor(
   // is right and that we convert the exception handler body.
   // TODO tests
   def convert(exceptHandler: ast.ExceptHandler): NewNode = {
-    contextStack.pushSpecialContext()
+    contextStack.pushSpecialContext(scopeNames.namesInScope(exceptHandler))
     val specialTargetLocals = mutable.ArrayBuffer.empty[nodes.NewLocal]
     if (exceptHandler.name.isDefined) {
       val localNode = nodeBuilder.localNode(exceptHandler.name.get, None)
@@ -2063,46 +2160,34 @@ class PythonAstVisitor(
     parameters.posonlyargs.map(convertPosOnlyArg(_, autoIncIndex)) ++
       parameters.args.map(convertNormalArg(_, autoIncIndex)) ++
       parameters.vararg.map(convertVarArg(_, autoIncIndex)) ++
-      parameters.kwonlyargs.map(convertKeywordOnlyArg) ++
-      parameters.kw_arg.map(convertKwArg)
+      parameters.kwonlyargs.map(convertKeywordOnlyArg(_, autoIncIndex)) ++
+      parameters.kw_arg.map(convertKwArg(_, autoIncIndex))
   }
 
   // TODO for now the different arg convert functions are all the same but
   // will all be slightly different in the future when we can represent the
   // different types in the cpg.
-  def convertPosOnlyArg(arg: ast.Arg, index: AutoIncIndex): nodes.NewMethodParameterIn = {
-    nodeBuilder.methodParameterNode(
-      arg.arg,
-      isVariadic = false,
-      lineAndColOf(arg),
-      Option(index.getAndInc),
-      arg.annotation
-    )
+  private def convertPosOnlyArg(arg: ast.Arg, index: AutoIncIndex): nodes.NewMethodParameterIn = {
+    nodeBuilder.methodParameterNode(arg.arg, isVariadic = false, lineAndColOf(arg), index.getAndInc, arg.annotation)
   }
 
-  def convertNormalArg(arg: ast.Arg, index: AutoIncIndex): nodes.NewMethodParameterIn = {
-    nodeBuilder.methodParameterNode(
-      arg.arg,
-      isVariadic = false,
-      lineAndColOf(arg),
-      Option(index.getAndInc),
-      arg.annotation
-    )
+  private def convertNormalArg(arg: ast.Arg, index: AutoIncIndex): nodes.NewMethodParameterIn = {
+    nodeBuilder.methodParameterNode(arg.arg, isVariadic = false, lineAndColOf(arg), index.getAndInc, arg.annotation)
   }
 
-  def convertVarArg(arg: ast.Arg, index: AutoIncIndex): nodes.NewMethodParameterIn = {
-    nodeBuilder.methodParameterNode(arg.arg, isVariadic = true, lineAndColOf(arg), Option(index.getAndInc))
+  private def convertVarArg(arg: ast.Arg, index: AutoIncIndex): nodes.NewMethodParameterIn = {
+    nodeBuilder.methodParameterNode(arg.arg, isVariadic = true, lineAndColOf(arg), index.getAndInc)
   }
 
-  def convertKeywordOnlyArg(arg: ast.Arg): nodes.NewMethodParameterIn = {
-    nodeBuilder.methodParameterNode(arg.arg, isVariadic = false, lineAndColOf(arg))
+  private def convertKeywordOnlyArg(arg: ast.Arg, index: AutoIncIndex): nodes.NewMethodParameterIn = {
+    nodeBuilder.methodParameterNode(arg.arg, isVariadic = false, lineAndColOf(arg), index.getAndInc)
   }
 
-  def convertKwArg(arg: ast.Arg): nodes.NewMethodParameterIn = {
-    nodeBuilder.methodParameterNode(arg.arg, isVariadic = false, lineAndColOf(arg))
+  private def convertKwArg(arg: ast.Arg, index: AutoIncIndex): nodes.NewMethodParameterIn = {
+    nodeBuilder.methodParameterNode(arg.arg, isVariadic = false, lineAndColOf(arg), index.getAndInc)
   }
 
-  def convert(keyword: ast.Keyword): NewNode = ???
+  def convert(keyword: ast.Keyword): NewNode = unhandled(keyword)
 
   def convert(alias: ast.Alias): NewNode = ???
 
@@ -2110,26 +2195,43 @@ class PythonAstVisitor(
 
   private def calculateFullNameFromContext(name: String): String = {
     val contextQualName = contextStack.qualName
-    if (contextQualName != "") {
-      relFileName + ":" + contextQualName + "." + name
-    } else {
-      relFileName + ":" + name
-    }
+    if (contextQualName != "") relFileName + ":" + contextQualName + "." + name else relFileName + ":" + name
   }
+
+  // See RedefinitionCalculator for why only the last occurrence stays unmangled.
+  private def classFullNameWithRedefinedSuffix(classDef: ast.ClassDef, simpleName: String): String = {
+    calculateFullNameFromContext(simpleName) + redefinedSuffixFor(classDef)
+  }
+
+  private def redefinedSuffixFor(definition: ClassOrFunctionDef): String = {
+    defToRedefinedIndex.get(definition).map(idx => s"$redefinedSuffix$idx").getOrElse("")
+  }
+
+  override protected def line(node: iast): Option[Int]         = None
+  override protected def column(node: iast): Option[Int]       = None
+  override protected def lineEnd(node: iast): Option[Int]      = None
+  override protected def columnEnd(element: iast): Option[Int] = None
+  override protected def code(node: iast): String              = node.toString
+
+  override protected def offsetSource: Option[OffsetUtils.OffsetSourceType] = None
+
+  override protected def unadjustedOffset(node: iast): Option[(Int, Int)] = None
 }
 
 object PythonAstVisitor {
   private val logger = LoggerFactory.getLogger(getClass)
 
-  val typingPrefix    = "typing."
-  val metaClassSuffix = "<meta>"
+  val typingPrefix       = "typing."
+  val metaClassSuffix    = "<meta>"
+  val keywordDictArgName = "<keyword_dict>"
+  val redefinedSuffix    = "<redefined>"
 
   val noLineAndColumn = LineAndColumn(-1, -1, -1, -1, -1, -1)
 
   // This list contains all functions from https://docs.python.org/3/library/functions.html#built-in-funcs
   // for python version 3.9.5.
   // There is a corresponding list in policies which needs to be updated if this one is updated and vice versa.
-  val builtinFunctionsV3: Iterable[String] = Iterable(
+  private val builtinFunctionsV3: Iterable[String] = Iterable(
     "abs",
     "all",
     "any",
@@ -2184,7 +2286,7 @@ object PythonAstVisitor {
   )
   // This list contains all classes from https://docs.python.org/3/library/functions.html#built-in-funcs
   // for python version 3.9.5.
-  val builtinClassesV3: Iterable[String] = Iterable(
+  private val builtinClassesV3: Iterable[String] = Iterable(
     "bool",
     "bytearray",
     "bytes",
@@ -2205,7 +2307,7 @@ object PythonAstVisitor {
     "type"
   )
   // This list contains all functions from https://docs.python.org/2.7/library/functions.html
-  val builtinFunctionsV2: Iterable[String] = Iterable(
+  private val builtinFunctionsV2: Iterable[String] = Iterable(
     "abs",
     "all",
     "any",
@@ -2267,7 +2369,7 @@ object PythonAstVisitor {
     "__import__"
   )
   // This list contains all classes from https://docs.python.org/2.7/library/functions.html
-  val builtinClassesV2: Iterable[String] = Iterable(
+  private val builtinClassesV2: Iterable[String] = Iterable(
     "bool",
     "bytearray",
     "complex",

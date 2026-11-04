@@ -24,7 +24,7 @@ class ConstClosurePass(cpg: Cpg) extends CpgPass(cpg) {
   private def handleConstClosuresDefinedInObjectExpr(diffGraph: DiffGraphBuilder): Unit =
     for {
       assignment      <- cpg.assignment.filter(_.code.startsWith("_tmp_"))
-      name            <- assignment.start.target.fieldAccess.argument(2).isFieldIdentifier.canonicalName
+      name            <- assignment.start.target.isCall.isFieldAccess.fieldIdentifier.canonicalName
       methodRef       <- assignment.start.source.isMethodRef
       method          <- methodRef.referencedMethod
       enclosingMethod <- assignment.start.method.fullName
@@ -76,8 +76,8 @@ class ConstClosurePass(cpg: Cpg) extends CpgPass(cpg) {
     name: String
   ): Unit = {
     val fullName = s"$enclosingMethod:$name"
-    diffGraph.setNodeProperty(methodRef, PropertyNames.METHOD_FULL_NAME, fullName)
-    diffGraph.setNodeProperty(method, PropertyNames.NAME, name)
-    diffGraph.setNodeProperty(method, PropertyNames.FULL_NAME, fullName)
+    diffGraph.setNodeProperty(methodRef, PropertyNames.MethodFullName, fullName)
+    diffGraph.setNodeProperty(method, PropertyNames.Name, name)
+    diffGraph.setNodeProperty(method, PropertyNames.FullName, fullName)
   }
 }

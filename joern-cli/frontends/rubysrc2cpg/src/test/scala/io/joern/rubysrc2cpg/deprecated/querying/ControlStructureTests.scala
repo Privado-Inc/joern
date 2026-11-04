@@ -4,6 +4,10 @@ import io.joern.rubysrc2cpg.testfixtures.RubyCode2CpgFixture
 import io.shiftleft.codepropertygraph.generated.ControlStructureTypes
 import io.shiftleft.codepropertygraph.generated.nodes.{Block, ControlStructure}
 import io.shiftleft.semanticcpg.language.*
+
+import scala.annotation.nowarn
+
+@nowarn("cat=deprecation")
 class ControlStructureTests extends RubyCode2CpgFixture(useDeprecatedFrontend = true) {
 
   "CPG for code with doBlock iterating over a constant array" should {

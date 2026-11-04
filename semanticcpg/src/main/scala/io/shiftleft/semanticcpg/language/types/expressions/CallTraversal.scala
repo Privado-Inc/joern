@@ -2,8 +2,13 @@ package io.shiftleft.semanticcpg.language.types.expressions
 
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.semanticcpg.language.*
-import io.shiftleft.semanticcpg.language.operatorextension.OpNodes.Assignment
-import io.shiftleft.semanticcpg.language.operatorextension.allAssignmentTypes
+import io.shiftleft.semanticcpg.language.operatorextension.OpNodes.{Arithmetic, ArrayAccess, Assignment, FieldAccess}
+import io.shiftleft.semanticcpg.language.operatorextension.{
+  allArithmeticTypes,
+  allArrayAccessTypes,
+  allAssignmentTypes,
+  allFieldAccessTypes
+}
 
 /** A call site. */
 class CallTraversal(val traversal: Iterator[Call]) extends AnyVal {
@@ -23,22 +28,41 @@ class CallTraversal(val traversal: Iterator[Call]) extends AnyVal {
   /** Only assignment calls
     */
   def isAssignment: Iterator[Assignment] =
-    traversal.methodFullNameExact(allAssignmentTypes.toSeq*).collectAll[Assignment]
+    traversal.methodFullNameExact(allAssignmentTypes*).cast[Assignment]
+
+  def isArithmetic: Iterator[Arithmetic] =
+    traversal.methodFullNameExact(allArithmeticTypes*).cast[Arithmetic]
+
+  def isArrayAccess: Iterator[ArrayAccess] =
+    traversal.methodFullNameExact(allArrayAccessTypes*).cast[ArrayAccess]
+
+  def isFieldAccess: Iterator[FieldAccess] =
+    traversal.methodFullNameExact(allFieldAccessTypes*).cast[FieldAccess]
 
   /** The receiver of a call if the call has a receiver associated.
     */
   def receiver: Iterator[Expression] =
     traversal.flatMap(_.receiver)
 
-  /** Arguments of the call
+  /** Arguments of the calls
     */
   def argument: Iterator[Expression] =
     traversal.flatMap(_.argument)
 
-  /** `i'th` arguments of the call
+  /** `i'th` arguments of the calls
     */
   def argument(i: Integer): Iterator[Expression] =
     traversal.flatMap(_.arguments(i))
+
+  /** argument of the calls with matching name
+    */
+  def argument(pattern: String): Iterator[Expression] =
+    traversal.flatMap(_.arguments(pattern))
+
+  /** arguments of the calls with this exact name
+    */
+  def argumentExact(name: String): Iterator[Expression] =
+    traversal.flatMap(_.argumentsExact(name))
 
   /** To formal method return parameter
     */

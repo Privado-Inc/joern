@@ -101,11 +101,12 @@ class ParseInternalStructures(
   private def parseMethodDefinitionContext(
     ctx: MethodDefinitionContext
   )(implicit classStack: mutable.Stack[String]): Unit = {
-    val maybeMethodName = Option(ctx.methodNamePart()) match
+    val maybeMethodName = Option(ctx.methodNamePart()) match {
       case Some(ctxMethodNamePart) =>
         readMethodNamePart(ctxMethodNamePart)
       case None =>
         readMethodIdentifier(ctx.methodIdentifier())
+    }
 
     maybeMethodName.foreach { methodName =>
       val classType = if (classStack.isEmpty) "Standalone" else classStack.top
@@ -115,16 +116,19 @@ class ParseInternalStructures(
   }
 
   private def readMethodNamePart(ctx: MethodNamePartContext): Option[String] = {
-    ctx match
+    ctx match {
       case context: SimpleMethodNamePartContext =>
-        Option(context.definedMethodName().methodName()) match
+        Option(context.definedMethodName().methodName()) match {
           case Some(methodNameCtx) => Try(methodNameCtx.methodIdentifier().getText).toOption
           case None                => None
+        }
       case context: SingletonMethodNamePartContext =>
-        Option(context.definedMethodName().methodName()) match
+        Option(context.definedMethodName().methodName()) match {
           case Some(methodNameCtx) => Try(methodNameCtx.methodIdentifier().getText).toOption
           case None                => None
+        }
       case _ => None
+    }
   }
 
   private def readMethodIdentifier(ctx: MethodIdentifierContext): Option[String] = {

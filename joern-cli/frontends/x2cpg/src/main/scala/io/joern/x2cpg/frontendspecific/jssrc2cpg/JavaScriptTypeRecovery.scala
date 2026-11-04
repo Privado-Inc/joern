@@ -52,12 +52,12 @@ private class RecoverForJavaScriptFile(cpg: Cpg, cu: File, builder: DiffGraphBui
       val typeFullName         = x.propertyOption(Properties.TypeFullName).getOrElse(Defines.Any)
       val typeHints            = symbolTable.get(LocalVar(typeFullName)) - typeFullName
       lazy val cpgTypeFullName = cpg.typeDecl.nameExact(typeFullName).fullName.toSet
-      val resolvedTypeHints =
+      val resolvedTypeHints    =
         if (typeHints.nonEmpty) symbolTable.put(x, typeHints)
         else if (cpgTypeFullName.nonEmpty) symbolTable.put(x, cpgTypeFullName)
         else symbolTable.put(x, x.getKnownTypes)
       if (!resolvedTypeHints.contains(typeFullName) && resolvedTypeHints.sizeIs == 1)
-        builder.setNodeProperty(x, PropertyNames.TYPE_FULL_NAME, resolvedTypeHints.head)
+        builder.setNodeProperty(x, PropertyNames.TypeFullName, resolvedTypeHints.head)
 
     case x @ (_: Identifier | _: Local | _: MethodParameterIn) if x.property(Properties.PossibleTypes).nonEmpty =>
       val possibleTypes = x.property(Properties.PossibleTypes)
@@ -65,12 +65,12 @@ private class RecoverForJavaScriptFile(cpg: Cpg, cu: File, builder: DiffGraphBui
         val typeFullName         = possibleTypes.head
         val typeHints            = symbolTable.get(LocalVar(typeFullName)) - typeFullName
         lazy val cpgTypeFullName = cpg.typeDecl.nameExact(typeFullName).fullName.toSet
-        val resolvedTypeHints =
+        val resolvedTypeHints    =
           if (typeHints.nonEmpty) symbolTable.put(x, typeHints)
           else if (cpgTypeFullName.nonEmpty) symbolTable.put(x, cpgTypeFullName)
           else symbolTable.put(x, x.getKnownTypes)
         if (!resolvedTypeHints.contains(typeFullName) && resolvedTypeHints.sizeIs == 1)
-          builder.setNodeProperty(x, PropertyNames.TYPE_FULL_NAME, resolvedTypeHints.head)
+          builder.setNodeProperty(x, PropertyNames.TypeFullName, resolvedTypeHints.head)
       }
     case x @ (_: Identifier | _: Local | _: MethodParameterIn) =>
       symbolTable.put(x, x.getKnownTypes)
@@ -96,12 +96,12 @@ private class RecoverForJavaScriptFile(cpg: Cpg, cu: File, builder: DiffGraphBui
           case (_, ts)                 => ts.map(_.replaceAll(s"\\.(?!js:${Defines.Program})", pathSep))
         }
       p match {
-        case _: MethodParameterIn => symbolTable.put(p, resolvedHints)
+        case _: MethodParameterIn                         => symbolTable.put(p, resolvedHints)
         case _: MethodReturn if resolvedHints.sizeIs == 1 =>
-          builder.setNodeProperty(p, PropertyNames.TYPE_FULL_NAME, resolvedHints.head)
+          builder.setNodeProperty(p, PropertyNames.TypeFullName, resolvedHints.head)
         case _: MethodReturn =>
-          builder.setNodeProperty(p, PropertyNames.TYPE_FULL_NAME, Defines.Any)
-          builder.setNodeProperty(p, PropertyNames.DYNAMIC_TYPE_HINT_FULL_NAME, resolvedHints)
+          builder.setNodeProperty(p, PropertyNames.TypeFullName, Defines.Any)
+          builder.setNodeProperty(p, PropertyNames.DynamicTypeHintFullName, resolvedHints)
         case _ =>
       }
     }
@@ -122,14 +122,14 @@ private class RecoverForJavaScriptFile(cpg: Cpg, cu: File, builder: DiffGraphBui
 
   override protected def visitIdentifierAssignedToConstructor(i: Identifier, c: Call): Set[String] = {
     val constructorPaths = if (c.methodFullName.endsWith(".alloc")) {
-      val newOp       = c.inAssignment.astSiblings.isCall.nameExact(Defines.OperatorsNew).headOption
+      val newOp       = c.inCall.isAssignment.astSiblings.isCall.nameExact(Defines.OperatorsNew).headOption
       val newChildren = newOp.astChildren.l
 
       val possibleImportIdentifier = newChildren.isIdentifier.headOption match {
         case Some(id) if GlobalBuiltins.builtins.contains(id.name) => Set(s"__ecma.${id.name}")
-        case Some(id) =>
+        case Some(id)                                              =>
           val typs = symbolTable.get(CallAlias(id.name, Option("this")))
-          if typs.nonEmpty then newOp.foreach(symbolTable.put(_, typs))
+          if (typs.nonEmpty) { newOp.foreach(symbolTable.put(_, typs)) }
           symbolTable.get(id)
         case None => Set.empty[String]
       }
@@ -165,21 +165,18 @@ private class RecoverForJavaScriptFile(cpg: Cpg, cu: File, builder: DiffGraphBui
     }
   }
 
-  override protected def associateInterproceduralTypes(
-    i: Identifier,
+  override protected def getInterproceduralTypes(
     fieldFullName: String,
     fieldName: String,
     globalTypes: Set[String],
     baseTypes: Set[String]
   ): Set[String] = {
     if (symbolTable.contains(LocalVar(fieldName))) {
-      val fieldTypes = symbolTable.get(LocalVar(fieldName))
-      symbolTable.append(i, fieldTypes)
+      symbolTable.get(LocalVar(fieldName))
     } else if (symbolTable.contains(CallAlias(fieldName, Option("this")))) {
       symbolTable.get(CallAlias(fieldName, Option("this")))
     } else {
-      super.associateInterproceduralTypes(
-        i: Identifier,
+      super.getInterproceduralTypes(
         fieldFullName: String,
         fieldName: String,
         globalTypes: Set[String],

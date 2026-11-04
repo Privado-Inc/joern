@@ -16,6 +16,7 @@ package object dataflowengineoss {
     * @return
     *   the LHS of the assignment
     */
+  @scala.annotation.nowarn("cat=deprecation")
   def globalFromLiteral(lit: Literal, recursive: Boolean = true): Iterator[Expression] = {
 
     /** Frontends often create three-address code representations of compound literals, e.g. in pysrc2cpg the dictionary
@@ -34,12 +35,17 @@ package object dataflowengineoss {
       .target
   }
 
-  def identifierToFirstUsages(node: Identifier): List[Identifier] = node.refsTo.flatMap(identifiersFromCapturedScopes).l
+  def identifierToFirstUsages(node: Identifier): List[Identifier] =
+    node.refsTo.flatMap(firstIdentifierFromCapturedScopes).l
 
-  def identifiersFromCapturedScopes(i: Declaration): List[Identifier] =
-    i.capturedByMethodRef.referencedMethod.ast.isIdentifier
-      .nameExact(i.name)
-      .sortBy(x => (x.lineNumber, x.columnNumber))
+  def firstIdentifierFromCapturedScopes(i: Declaration): List[Identifier] =
+    i.capturedByMethodRef.referencedMethod
+      .flatMap(m =>
+        m.ast.isIdentifier // this includes closures defined under method
+          .nameExact(i.name)
+          .sortBy(x => (x.lineNumber, x.columnNumber))
+          .headOption
+      )
       .l
 
 }

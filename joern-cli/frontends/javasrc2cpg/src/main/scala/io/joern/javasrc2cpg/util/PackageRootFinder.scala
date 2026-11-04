@@ -1,10 +1,7 @@
 package io.joern.javasrc2cpg.util
 
-import better.files.File
-
 import java.nio.file.Path
 import scala.collection.mutable
-import scala.util.matching.Regex
 
 object PackageRootFinder {
 
@@ -27,7 +24,9 @@ object PackageRootFinder {
         case Some(packageName) =>
           val packageDirs = Path.of(packageName.replaceAll(raw"\.", "/"))
 
-          if (parentDirectory.endsWith(packageDirs))
+          if (parentDirectory == packageDirs)
+            dotPath
+          else if (parentDirectory.endsWith(packageDirs))
             parentDirectory.subpath(0, parentDirectory.getNameCount - packageDirs.getNameCount)
           else
             // In this case, the package name doesn't match the given directory structure, either

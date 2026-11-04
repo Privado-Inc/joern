@@ -29,7 +29,6 @@ import scala.jdk.CollectionConverters.*
 import scala.jdk.OptionConverters.RichOptional
 import scala.util.{Failure, Success, Try}
 import io.joern.javasrc2cpg.scope.JavaScopeElement.PartialInit
-import io.joern.x2cpg.utils.NodeBuilders.newIdentifierNode
 
 trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
   private val logger = LoggerFactory.getLogger(this.getClass())
@@ -50,7 +49,7 @@ trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
       case Operator.UNSIGNED_RIGHT_SHIFT => Operators.assignmentLogicalShiftRight
     }
 
-    val maybeResolvedType = Try(expr.getTarget.calculateResolvedType()).toOption
+    val maybeResolvedType       = Try(expr.getTarget.calculateResolvedType()).toOption
     val expectedInitializerType = maybeResolvedType
       .map { resolvedType =>
         ExpectedType(typeInfoCalc.fullName(resolvedType), Some(resolvedType))
@@ -131,24 +130,32 @@ trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
       case _                                   => typeFullNameWithoutArgs
     }
 
-    val variableName = variableDeclarator.getNameAsString
-    val declarationNode: Option[NewVariableNode] = if (originNode.isInstanceOf[FieldDeclaration]) {
-      scope.lookupVariable(variableName).variableNode
-    } else {
-      // Use type name with generics for code
-      val localCode = s"${declaratorType.map(_.toString).getOrElse("")} ${variableDeclarator.getNameAsString}"
+    val originalName                = variableDeclarator.getNameAsString
+    val declarationNodeFromPatterns =
+      scope.getHoistedPatternLocals.find(local => local.name == originalName && local.typeFullName == typeFullName)
+    val declarationNode: Option[NewVariableNode] =
+      if (originNode.isInstanceOf[FieldDeclaration]) {
+        scope.lookupVariable(originalName).variableNode
+      } else if (declarationNodeFromPatterns.isDefined) {
+        declarationNodeFromPatterns.foreach(local => scope.enclosingBlock.foreach(_.addLocal(local, originalName)))
+        declarationNodeFromPatterns
+      } else {
+        // Use type name with generics for code
+        val mangledName = scope.getMangledName(originalName)
+        val localCode   = s"${declaratorType.map(_.toString).getOrElse("")} ${mangledName}"
 
-      val local =
-        localNode(originNode, variableDeclarator.getNameAsString, localCode, typeFullName)
+        val genericSignature = binarySignatureCalculator.variableBinarySignature(variableDeclarator.getType)
+        val local            =
+          localNode(originNode, mangledName, localCode, typeFullName, genericSignature = Option(genericSignature))
 
-      scope.enclosingBlock.foreach(_.addLocal(local))
+        scope.enclosingBlock.foreach(_.addLocal(local, originalName))
 
-      Some(local)
-    }
+        Some(local)
+      }
 
     declarationNode match {
       case None =>
-        logger.warn(s"No declaration node found for declarator ${variableName}")
+        logger.warn(s"No declaration node found for declarator ${originalName}")
         Nil
 
       case Some(declarationNode) =>
@@ -159,7 +166,7 @@ trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
               scope.enclosingTypeDecl.name.get,
               scope.enclosingTypeDecl.fullName.get,
               originNode,
-              variableName,
+              originalName,
               declarationNode.typeFullName
             )
 
@@ -169,7 +176,6 @@ trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
         }
 
         val assignmentAsts = variableDeclarator.getInitializer.toScala.toList.flatMap { initializer =>
-
           val expectedType =
             tryWithSafeStackOverflow(
               symbolSolver.toResolvedType(variableDeclarator.getType, classOf[ResolvedType])
@@ -188,7 +194,9 @@ trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
           )
         }
 
-        val localAst = Option.when(declarationNode.isInstanceOf[NewLocal])(Ast(declarationNode))
+        val localAst = Option.when(declarationNode.isInstanceOf[NewLocal] && declarationNodeFromPatterns.isEmpty)(
+          Ast(declarationNode)
+        )
 
         localAst.toList ++ assignmentAsts
 
@@ -210,7 +218,7 @@ trait AstForVarDeclAndAssignsCreator { this: AstCreator =>
 
     target.rootType.foreach(assignmentNode.typeFullName(_))
 
-    val isSimpleAssign = (operatorName == Operators.assignment)
+    val isSimpleAssign     = (operatorName == Operators.assignment)
     val isVarOrFieldAssign = target.root.exists {
       case _: NewIdentifier => true
       case call: NewCall    => call.methodFullName == Operators.fieldAccess

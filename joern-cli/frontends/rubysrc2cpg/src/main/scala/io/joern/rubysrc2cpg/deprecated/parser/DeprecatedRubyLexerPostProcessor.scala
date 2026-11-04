@@ -26,9 +26,10 @@ object DeprecatedRubyLexerPostProcessor {
 private implicit class TokenSourceExt(val tokenSource: TokenSource) {
 
   def toSeq: Seq[Token] = Seq.unfold(tokenSource) { tkSrc =>
-    tkSrc.nextToken() match
+    tkSrc.nextToken() match {
       case tk if tk.is(EOF) => None
       case tk               => Some((tk, tkSrc))
+    }
   }
 }
 
@@ -38,9 +39,10 @@ private implicit class SeqExt[A](val elems: Seq[A]) {
     * chain contains 2+ elements, then all its elements satisfy `p`. Flattening returns the original sequence.
     */
   def chains(p: A => Boolean): Seq[Seq[A]] = elems.foldRight(Nil: Seq[Seq[A]]) { (h, t) =>
-    t match
+    t match {
       case chain :: chains if chain.exists(p) && p(h) => (h +: chain) +: chains
       case _                                          => Seq(h) +: t
+    }
   }
 
   /** Collapses, according to a merging operation `m`, all chains that verify `p`.

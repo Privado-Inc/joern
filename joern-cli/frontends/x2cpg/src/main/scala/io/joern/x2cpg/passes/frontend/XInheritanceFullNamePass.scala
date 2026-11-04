@@ -32,7 +32,7 @@ abstract class XInheritanceFullNamePass(cpg: Cpg) extends ForkJoinParallelCpgPas
     val resolvedTypeDecls = resolveInheritedTypeFullName(source, builder)
     if (resolvedTypeDecls.nonEmpty) {
       val fullNames = resolvedTypeDecls.map(_.fullName)
-      builder.setNodeProperty(source, PropertyNames.INHERITS_FROM_TYPE_FULL_NAME, fullNames)
+      builder.setNodeProperty(source, PropertyNames.InheritsFromTypeFullName, fullNames)
       cpg.typ.fullNameExact(fullNames*).foreach(tgt => builder.addEdge(source, tgt, EdgeTypes.INHERITS_FROM))
     }
   }
@@ -57,8 +57,8 @@ abstract class XInheritanceFullNamePass(cpg: Cpg) extends ForkJoinParallelCpgPas
   }
 
   protected def resolveInheritedTypeFullName(td: TypeDecl, builder: DiffGraphBuilder): Seq[TypeDeclBase] = {
-    val callsOfInterest     = td.file.method.flatMap(_._callViaContainsOut)
-    val typeDeclsOfInterest = td.file.typeDecl
+    val callsOfInterest       = td.file.method.flatMap(_._callViaContainsOut)
+    val typeDeclsOfInterest   = td.file.typeDecl
     val qualifiedNamesInScope = (callsOfInterest ++ typeDeclsOfInterest)
       .flatMap(extractTypeDeclFromNode)
       .filterNot(_.endsWith(moduleName))
@@ -90,7 +90,7 @@ abstract class XInheritanceFullNamePass(cpg: Cpg) extends ForkJoinParallelCpgPas
   private def createTypeStub(name: String, fullName: String, builder: DiffGraphBuilder): TypeDeclBase =
     cpg.typeDecl.fullNameExact(fullName).headOption match {
       case Some(typeDecl) => typeDecl
-      case None =>
+      case None           =>
         val typeDecl = TypeDeclStubCreator.createTypeDeclStub(name, fullName)
         builder.addNode(typeDecl)
         typeDecl

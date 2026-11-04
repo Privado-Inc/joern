@@ -18,14 +18,21 @@ import com.github.javaparser.resolution.declarations.{ResolvedMethodDeclaration,
 import com.github.javaparser.resolution.types.parametrization.ResolvedTypeParametersMap
 import io.joern.javasrc2cpg.astcreation.expressions.AstForCallExpressionsCreator.AllocAndInitCallAsts
 import io.joern.javasrc2cpg.astcreation.{AstCreator, ExpectedType}
-import io.joern.javasrc2cpg.scope.Scope.typeFullName
+import io.joern.javasrc2cpg.scope.Scope.{
+  FoundVariable,
+  NewVariableNode,
+  ScopeInnerType,
+  ScopeParameter,
+  SimpleVariable,
+  VariableLookupResult,
+  typeFullName
+}
 import io.joern.javasrc2cpg.typesolvers.TypeInfoCalculator.TypeConstants
 import io.joern.javasrc2cpg.util.{NameConstants, Util}
 import io.joern.javasrc2cpg.util.Util.{composeMethodFullName, composeMethodLikeSignature, composeUnresolvedSignature}
 import io.joern.x2cpg.utils.AstPropertiesUtil.*
-import io.joern.x2cpg.utils.NodeBuilders.{newIdentifierNode, newOperatorCallNode}
 import io.joern.x2cpg.{Ast, Defines}
-import io.shiftleft.codepropertygraph.generated.nodes.Call.PropertyDefaults
+import io.shiftleft.codepropertygraph.generated.PropertyDefaults
 import io.shiftleft.codepropertygraph.generated.nodes.{
   AstNodeNew,
   ExpressionNew,
@@ -38,9 +45,8 @@ import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, Opera
 
 import scala.jdk.CollectionConverters.*
 import scala.jdk.OptionConverters.RichOptional
-import scala.util.{Success, Try}
+import scala.util.{Failure, Success, Try}
 import javassist.compiler.ast.CallExpr
-import io.joern.javasrc2cpg.scope.Scope.{NewVariableNode, ScopeInnerType, ScopeParameter, SimpleVariable}
 import io.joern.javasrc2cpg.scope.JavaScopeElement.PartialInit
 import org.slf4j.LoggerFactory
 
@@ -60,7 +66,7 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
       expressionReturnTypeFullName(call).orElse(getTypeFullName(expectedReturnType)).map(typeInfoCalc.registerType)
 
     val argumentTypes = argumentTypesForMethodLike(maybeResolvedCall.toOption)
-    val returnType = maybeResolvedCall
+    val returnType    = maybeResolvedCall
       .map { resolvedCall =>
         typeInfoCalc.fullName(resolvedCall.getReturnType, ResolvedTypeParametersMap.empty())
       }
@@ -71,7 +77,7 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
     val dispatchType = dispatchTypeForCall(maybeResolvedCall, call.getScope.toScala)
 
     val receiverTypeOption = targetTypeForCall(call)
-    val scopeAsts = call.getScope.toScala match {
+    val scopeAsts          = call.getScope.toScala match {
       case Some(scope) => astsForExpression(scope, ExpectedType(receiverTypeOption))
 
       case None =>
@@ -85,17 +91,30 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
     val receiverType = scopeAsts.rootType.filter(_ != TypeConstants.Any).orElse(receiverTypeOption)
 
     val argumentsCode = getArgumentCodeString(call.getArguments)
-    val codePrefix = scopeAsts.headOption
+    val codePrefix    = scopeAsts.headOption
       .flatMap(_.root)
       .collect { case call: NewCall => s"${call.code}." }
       .getOrElse(codePrefixForMethodCall(call))
     val callCode = s"$codePrefix${call.getNameAsString}($argumentsCode)"
 
-    val callName       = call.getNameAsString
-    val namespace      = receiverType.filter(_ != TypeConstants.Any).getOrElse(Defines.UnresolvedNamespace)
+    val callName  = call.getNameAsString
+    val namespace = maybeResolvedCall.toOption
+      .collect {
+        case resolvedCall if resolvedCall.isStatic =>
+          for {
+            packageName <- Option(resolvedCall.getPackageName)
+            className   <- Option(resolvedCall.getClassName)
+          } yield List(packageName, className.replace(".", "$")).filter(_.nonEmpty).mkString(".")
+      }
+      .flatten
+      .getOrElse {
+        // Fall back to the scope type in case it could be resolved when the full call could not
+        receiverType.filter(_ != TypeConstants.Any).getOrElse(Defines.UnresolvedNamespace)
+      }
+
     val signature      = composeSignature(returnType, argumentTypes, argumentAsts.size)
     val methodFullName = composeMethodFullName(namespace, callName, signature)
-    val callRoot = NewCall()
+    val callRoot       = NewCall()
       .name(callName)
       .methodFullName(methodFullName)
       .signature(signature)
@@ -109,11 +128,12 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
   }
 
   private def astForImplicitCallReceiver(declaringType: Option[String], call: MethodCallExpr): Ast = {
-    val typeFullName = scope.lookupVariable(NameConstants.This).typeFullName.getOrElse(defaultTypeFallback())
+    val typeFullName   = scope.lookupVariable(NameConstants.This).typeFullName.getOrElse(defaultTypeFallback())
     val thisIdentifier =
       identifierNode(call, NameConstants.This, NameConstants.This, typeFullName)
     scope.lookupVariable(NameConstants.This) match {
-      case SimpleVariable(ScopeParameter(thisParam)) => diffGraph.addEdge(thisIdentifier, thisParam, EdgeTypes.REF)
+      case foundVariable: FoundVariable =>
+        diffGraph.addEdge(thisIdentifier, foundVariable.getVariable().get.node, EdgeTypes.REF)
       case _ => // Do nothing. This shouldn't happen for valid code, but could occur in cases where methods could not be resolved
     }
     val thisAst = Ast(thisIdentifier)
@@ -123,15 +143,12 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
         thisAst
 
       case typeDeclChain =>
-        val lineNumber   = line(call)
-        val columnNumber = column(call)
         typeDeclChain.foldLeft(thisAst) { case (accAst, typeDecl) =>
-          val rootNode = newOperatorCallNode(
-            Operators.fieldAccess,
+          val rootNode = operatorCallNode(
+            call,
             s"${accAst.rootCodeOrEmpty}.${NameConstants.OuterClass}",
-            Some(typeDecl.fullName),
-            lineNumber,
-            columnNumber
+            Operators.fieldAccess,
+            Some(typeDecl.fullName)
           )
 
           val outerClassIdentifier = fieldIdentifierNode(call, NameConstants.OuterClass, NameConstants.OuterClass)
@@ -145,12 +162,14 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
 
     // Use an untyped identifier for receiver here, create the alloc and init ASTs,
     // then use the types of those to fix the local type.
-    val assignTarget = identifierNode(expr, tmpName, tmpName, defaultTypeFallback())
+    val assignTarget    = identifierNode(expr, tmpName, tmpName, defaultTypeFallback())
     val allocAndInitAst =
       inlinedAstsForObjectCreationExpr(expr, Ast(assignTarget.copy), expectedType, resetAssignmentTargetType = true)
 
     assignTarget.typeFullName(allocAndInitAst.allocAst.rootType.getOrElse(defaultTypeFallback()))
-    val tmpLocal = localNode(expr, tmpName, tmpName, assignTarget.typeFullName)
+    val genericSignature = binarySignatureCalculator.variableBinarySignature(expr.getType)
+    val tmpLocal         =
+      localNode(expr, tmpName, tmpName, assignTarget.typeFullName, genericSignature = Option(genericSignature))
 
     val allocAssignCode = s"$tmpName = ${allocAndInitAst.allocAst.rootCodeOrEmpty}"
     val allocAssignCall =
@@ -171,8 +190,8 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
     val returnedIdentifier    = assignTarget.copy
     val returnedIdentifierAst = Ast(returnedIdentifier).withRefEdge(returnedIdentifier, tmpLocal)
 
-    Ast(blockNode(expr).typeFullName(returnedIdentifier.typeFullName))
-      .withChild(Ast(tmpLocal).withRefEdge(assignTarget, tmpLocal))
+    Ast(blockNode(expr, code(expr), returnedIdentifier.typeFullName))
+      .withChild(Ast(tmpLocal))
       .withChild(allocAssignAst)
       .withChild(allocAndInitAst.initAst)
       .withChild(returnedIdentifierAst)
@@ -189,7 +208,7 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
 
     val anonymousClassBody = expr.getAnonymousClassBody.toScala.map(_.asScala.toList)
     val nameSuffix         = if (anonymousClassBody.isEmpty) "" else s"$$${scope.getNextAnonymousClassIndex()}"
-    val rawType =
+    val rawType            =
       tryWithSafeStackOverflow(expr.getTypeAsString)
         .map(Util.stripGenericTypes)
         .toOption
@@ -234,13 +253,8 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
 
     val argumentTypes = argumentTypesForMethodLike(maybeResolvedExpr.toOption)
 
-    val allocNode = newOperatorCallNode(
-      Operators.alloc,
-      expr.toString,
-      typeFullName.orElse(Some(defaultTypeFallback())),
-      line(expr),
-      column(expr)
-    )
+    val allocNode =
+      operatorCallNode(expr, expr.toString, Operators.alloc, typeFullName.orElse(Some(defaultTypeFallback())))
 
     val initCall = initNode(
       typeFullName.orElse(Some(defaultTypeFallback())),
@@ -296,13 +310,8 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
       case Success(_) if hasVariadicParameter =>
         val expectedVariadicTypeFullName = getTypeFullName(getExpectedParamType(tryResolvedDecl, paramCount - 1))
         val (regularArgs, varargs)       = argsAsts.splitAt(paramCount - 1)
-        val arrayInitializer = newOperatorCallNode(
-          Operators.arrayInitializer,
-          Operators.arrayInitializer,
-          expectedVariadicTypeFullName,
-          line(call),
-          column(call)
-        )
+        val arrayInitializer             =
+          operatorCallNode(call, Operators.arrayInitializer, Operators.arrayInitializer, expectedVariadicTypeFullName)
 
         val arrayInitializerAst = callAst(arrayInitializer, varargs)
 
@@ -453,7 +462,7 @@ trait AstForCallExpressionsCreator { this: AstCreator =>
 
       case scopeMethodCall: MethodCallExpr =>
         codePrefixForMethodCall(scopeMethodCall) match {
-          case "" => Some("")
+          case ""     => Some("")
           case prefix =>
             val argumentsCode = getArgumentCodeString(scopeMethodCall.getArguments)
             someWithDotSuffix(s"$prefix${scopeMethodCall.getNameAsString}($argumentsCode)")

@@ -1,12 +1,15 @@
 package io.joern.joerncli
 
-import better.files.File
 import io.joern.dataflowengineoss.layers.dataflows.{OssDataFlow, OssDataFlowOptions}
 import io.joern.dataflowengineoss.semanticsloader.Semantics
+import io.joern.x2cpg.X2Cpg
+import io.joern.x2cpg.layers.Base
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.semanticcpg.layers.LayerCreatorContext
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.codepropertygraph.cpgloading.CpgLoader
+
+import java.nio.file.{Files, Paths}
 
 object CpgBasedTool {
 
@@ -22,9 +25,20 @@ object CpgBasedTool {
   def loadFromOdb(filename: String): Cpg =
     loadFromFile(filename)
 
-  /** Add the data flow layer to the CPG if it does not exist yet.
+  /** Add the default overlays and the data flow layer to the CPG if they do not exist yet.
+    *
+    * The data flow layer depends on the default overlays: `MethodRefLinker`, which is part of the call graph overlay,
+    * creates the mandatory `METHOD_REF -REF-> METHOD` edges that `ReachingDefPass` dereferences. A CPG written by a
+    * language frontend CLI has no overlays applied at all, so they are applied here first - otherwise every
+    * `METHOD_REF` is left without its `REF` edge and the data flow pass fails.
+    *
+    * This mirrors `JoernSlice.checkAndApplyOverlays`.
     */
   def addDataFlowOverlayIfNonExistent(cpg: Cpg)(implicit s: Semantics): Unit = {
+    if (!cpg.metaData.overlays.contains(Base.overlayName)) {
+      System.err.println("CPG does not have default overlays. Applying.")
+      X2Cpg.applyDefaultOverlays(cpg)
+    }
     if (!cpg.metaData.overlays.exists(_ == OssDataFlow.overlayName)) {
       System.err.println("CPG does not have dataflow overlay. Calculating.")
       val opts    = new OssDataFlowOptions()
@@ -36,7 +50,7 @@ object CpgBasedTool {
   /** Create an informational string for the user that informs of a successfully generated CPG.
     */
   def newCpgCreatedString(path: String): String = {
-    val absolutePath = File(path).path.toAbsolutePath
+    val absolutePath = Paths.get(path).toAbsolutePath
     s"Successfully wrote graph to: $absolutePath\n" +
       s"To load the graph, type `joern $absolutePath`"
   }
@@ -47,7 +61,7 @@ object CpgBasedTool {
     */
   def splitArgs(args: Array[String]): (List[String], List[String]) = {
     args.indexOf(ARGS_DELIMITER) match {
-      case -1 => (args.toList, Nil)
+      case -1       => (args.toList, Nil)
       case splitIdx =>
         val (parseOpts, frontendOpts) = args.toList.splitAt(splitIdx)
         (parseOpts, frontendOpts.tail) // Take the tail to ignore the delimiter
@@ -55,9 +69,9 @@ object CpgBasedTool {
   }
 
   def exitIfInvalid(outDir: String, cpgFileName: String): Unit = {
-    if (File(outDir).exists)
+    if (Files.exists(Paths.get(outDir)))
       exitWithError(s"Output directory `$outDir` already exists.")
-    if (File(cpgFileName).notExists)
+    if (Files.notExists(Paths.get(cpgFileName)))
       exitWithError(s"CPG at $cpgFileName does not exist.")
   }
 

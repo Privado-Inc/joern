@@ -1,61 +1,115 @@
 package io.joern.kotlin2cpg.ast
 
-import io.joern.kotlin2cpg.Constants
-import io.joern.kotlin2cpg.KtFileWithMeta
+import io.joern.kotlin2cpg.{Constants, KtFileWithMeta}
 import io.joern.kotlin2cpg.datastructures.Scope
-import io.joern.kotlin2cpg.types.NameRenderer
-import io.joern.kotlin2cpg.types.TypeConstants
-import io.joern.kotlin2cpg.types.TypeInfoProvider
-import io.joern.x2cpg.Ast
-import io.joern.x2cpg.AstCreatorBase
-import io.joern.x2cpg.AstNodeBuilder
-import io.joern.x2cpg.Defines
-import io.joern.x2cpg.ValidationMode
-import io.joern.x2cpg.datastructures.Global
+import io.joern.kotlin2cpg.types.{NameRenderer, TypeConstants, TypeInfoProvider}
+import io.joern.x2cpg.{Ast, AstCreatorBase, Defines, ValidationMode}
 import io.joern.x2cpg.datastructures.Stack.*
-import io.joern.x2cpg.utils.IntervalKeyPool
-import io.joern.x2cpg.utils.NodeBuilders
-import io.joern.x2cpg.utils.NodeBuilders.newMethodReturnNode
+import io.joern.x2cpg.utils.{IntervalKeyPool, OffsetUtils}
 import io.shiftleft.codepropertygraph.generated.*
 import io.shiftleft.codepropertygraph.generated.nodes.*
-import io.shiftleft.codepropertygraph.generated.DiffGraphBuilder
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.types.structure.NamespaceTraversal
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
-import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
-import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
-import org.jetbrains.kotlin.descriptors.DescriptorVisibility
-import org.jetbrains.kotlin.descriptors.FunctionDescriptor
-import org.jetbrains.kotlin.lexer.KtToken
-import org.jetbrains.kotlin.lexer.KtTokens
+import org.jetbrains.kotlin.descriptors.{
+  DeclarationDescriptor,
+  DescriptorVisibilities,
+  DescriptorVisibility,
+  FunctionDescriptor
+}
+import org.jetbrains.kotlin.lexer.{KtToken, KtTokens}
 import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.resolve.BindingContext
-import org.slf4j.Logger
-import org.slf4j.LoggerFactory
+import org.slf4j.{Logger, LoggerFactory}
 
 import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
+import scala.util.control.NonFatal
+import org.jetbrains.kotlin.types.KotlinType
 
 object AstCreator {
   case class AnonymousObjectContext(declaration: KtElement)
   case class BindingInfo(node: NewBinding, edgeMeta: Seq[(NewNode, NewNode, String)])
-  case class ClosureBindingDef(node: NewClosureBinding, captureEdgeTo: NewMethodRef, refEdgeTo: NewNode)
+  case class ClosureBindingDef(node: NewClosureBinding, captureEdgeTo: Option[NewMethodRef], refEdgeTo: NewNode)
+
+  case class ReceiverInfo(
+    ctorParamAst: Ast,
+    receiverName: String,
+    hasReceiver: Boolean,
+    isStaticReference: Boolean,
+    receiverTypeFullName: String
+  )
+
+  sealed trait SamImplInfo {
+    def relativizedPath: String
+    def samImplClass: String
+    def methodRefName: String
+    def signature: String
+    def inheritsFrom: List[String]
+    def samMethodName: String
+    def samMethodSig: String
+    def samGenericMethodSig: Option[String]
+    def samMethodParams: List[(String, String)]
+    def expr: KtCallableReferenceExpression
+  }
+
+  case class BoundSamInfo(
+    relativizedPath: String,
+    samImplClass: String,
+    methodRefName: String,
+    signature: String,
+    inheritsFrom: List[String],
+    samMethodName: String,
+    samMethodSig: String,
+    samMethodReturn: String,
+    samGenericMethodSig: Option[String],
+    receiverParam: Ast,
+    receiverTypeFullName: String,
+    samMethodParams: List[(String, String)],
+    isStaticReference: Boolean,
+    expr: KtCallableReferenceExpression
+  ) extends SamImplInfo
+
+  case class UnboundSamInfo(
+    relativizedPath: String,
+    samImplClass: String,
+    methodRefName: String,
+    signature: String,
+    inheritsFrom: List[String],
+    samMethodName: String,
+    samMethodSig: String,
+    samGenericMethodSig: Option[String],
+    samMethodParams: List[(String, String)],
+    expr: KtCallableReferenceExpression
+  ) extends SamImplInfo
+
+  def offsetSource(disableFileContent: Boolean): Option[OffsetUtils.OffsetSourceType] =
+    Option.unless(disableFileContent)(OffsetUtils.OffsetSourceType.Utf_16)
+
+  def psiOffsets(element: PsiElement): Option[(Int, Int)] =
+    Option(element).map { someElement =>
+      val textRange = someElement.getTextRange
+      (textRange.getStartOffset, textRange.getEndOffset)
+    }
 }
 
-class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, global: Global)(implicit
-  withSchemaValidation: ValidationMode
-) extends AstCreatorBase(fileWithMeta.filename)
+class AstCreator(
+  fileWithMeta: KtFileWithMeta,
+  bindingContext: BindingContext,
+  usedTypes: mutable.Set[String],
+  samInfoEntriesByImplClass: mutable.Map[String, AstCreator.SamImplInfo],
+  disableFileContent: Boolean
+)(implicit withSchemaValidation: ValidationMode)
+    extends AstCreatorBase[PsiElement, AstCreator](fileWithMeta.filename)
     with AstForDeclarationsCreator
     with AstForPrimitivesCreator
     with AstForFunctionsCreator
     with AstForStatementsCreator
-    with AstForExpressionsCreator
-    with AstNodeBuilder[PsiElement, AstCreator] {
+    with AstForExpressionsCreator {
 
-  import AstCreator.BindingInfo
-  import AstCreator.ClosureBindingDef
+  import AstCreator.{BindingInfo, ClosureBindingDef, SamImplInfo}
 
   protected val closureBindingDefQueue: mutable.ArrayBuffer[ClosureBindingDef] = mutable.ArrayBuffer.empty
   protected val bindingInfoQueue: mutable.ArrayBuffer[BindingInfo]             = mutable.ArrayBuffer.empty
@@ -77,7 +131,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
   protected val typeInfoProvider = new TypeInfoProvider(bindingContext)
 
   def createAst(): DiffGraphBuilder = {
-    logger.debug(s"Started parsing file `${fileWithMeta.filename}`.")
+    logger.debug(s"Started parsing file '${fileWithMeta.filename}'.")
     val defaultTypes = Set(TypeConstants.JavaLangObject, TypeConstants.Kotlin)
     defaultTypes.foreach(registerType)
     storeInDiffGraph(astForFile(fileWithMeta))
@@ -90,8 +144,12 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
     * key in the map.
     */
   protected def registerType(typeName: String): String = {
-    global.usedTypes.putIfAbsent(typeName, true)
+    usedTypes.add(typeName)
     typeName
+  }
+
+  protected def registerSamInfo(samInfo: SamImplInfo): Unit = {
+    samInfoEntriesByImplClass.getOrElseUpdate(samInfo.samImplClass, samInfo)
   }
 
   protected def getFallback[T](
@@ -126,7 +184,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
     fullNameFallback: => String,
     signatureFallback: => String
   ): (String, String) = {
-    val funcDesc = bindingUtils.getCalledFunctionDesc(calleeExpr)
+    val funcDesc     = bindingUtils.getCalledFunctionDesc(calleeExpr)
     val descFullName = funcDesc
       .orElse(getAmbiguousFuncDescIfFullNamesEqual(calleeExpr))
       .flatMap(nameRenderer.descFullName)
@@ -187,6 +245,10 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
     column(lastElement)
   }
 
+  override def offsetSource: Option[OffsetUtils.OffsetSourceType] = AstCreator.offsetSource(disableFileContent)
+
+  override def unadjustedOffset(element: PsiElement): Option[(Int, Int)] = AstCreator.psiOffsets(element)
+
   protected def getName(node: NewImport): String = {
     val isWildcard = node.isWildcard.getOrElse(false)
     if (isWildcard) Constants.WildcardImportName
@@ -204,13 +266,9 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
 
     closureBindingDefQueue.foreach { case ClosureBindingDef(node, captureEdgeTo, refEdgeTo) =>
       diffGraph.addNode(node)
-      diffGraph.addEdge(captureEdgeTo, node, EdgeTypes.CAPTURE)
+      captureEdgeTo.foreach(diffGraph.addEdge(_, node, EdgeTypes.CAPTURE))
       diffGraph.addEdge(node, refEdgeTo, EdgeTypes.REF)
     }
-  }
-
-  protected def stringForUUID(node: KtExpression, name: String, typeFullName: String): String = {
-    node.getText + node.getContainingKtFile.getName + node.getContainingKtFile.getPackageFqName.toString + name + typeFullName
   }
 
   protected def ktTokenToOperator(forPostfixExpr: Boolean): PartialFunction[KtToken, String] = {
@@ -237,9 +295,14 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
     }
   }
 
-  private def logDebugWithTestAndStackTrace(message: String): Unit = {
+  protected def logDebugWithTestAndStackTrace(message: String): Unit = {
     val declString = debugScope.headOption.map(_.getText).getOrElse("Declaration scope empty")
     logger.debug(message + "\nIn declaration:\n" + declString + "\nStack trace to declaration:" + getStackTrace)
+  }
+
+  protected def logWarnWithTestAndStackTrace(message: String): Unit = {
+    val declString = debugScope.headOption.map(_.getText).getOrElse("Declaration scope empty")
+    logger.warn(message + "\nIn declaration:\n" + declString + "\nStack trace to declaration:" + getStackTrace)
   }
 
   private def getStackTrace: String = {
@@ -257,7 +320,8 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
     expr: KtExpression,
     argIdxMaybe: Option[Int],
     argNameMaybe: Option[String] = None,
-    annotations: Seq[KtAnnotationEntry] = Seq()
+    annotations: Seq[KtAnnotationEntry] = Seq(),
+    argTypeFallback: Option[KotlinType] = None
   ): Seq[Ast] = {
     expr match {
       case typedExpr: KtAnnotatedExpression =>
@@ -271,13 +335,13 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
         Seq(astForArrayAccess(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtAnonymousInitializer => astsForExpression(typedExpr.getBody, argIdxMaybe)
       case typedExpr: KtBinaryExpression     => astsForBinaryExpr(typedExpr, argIdxMaybe, argNameMaybe, annotations)
-      case typedExpr: KtBlockExpression      => astsForBlock(typedExpr, argIdxMaybe, argNameMaybe)
+      case typedExpr: KtBlockExpression      => Seq(astForBlock(typedExpr, argIdxMaybe, argNameMaybe))
       case typedExpr: KtBinaryExpressionWithTypeRHS =>
         Seq(astForBinaryExprWithTypeRHS(typedExpr, argIdxMaybe, argNameMaybe, annotations))
-      case typedExpr: KtBreakExpression    => Seq(astForBreak(typedExpr))
-      case typedExpr: KtCallExpression     => astsForCall(typedExpr, argIdxMaybe, argNameMaybe, annotations)
-      case typedExpr: KtConstantExpression => Seq(astForLiteral(typedExpr, argIdxMaybe, argNameMaybe, annotations))
-      case typedExpr: KtClass              => astsForClassOrObject(typedExpr, None, annotations)
+      case typedExpr: KtBreakExpression        => Seq(astForBreak(typedExpr))
+      case typedExpr: KtCallExpression         => astsForCall(typedExpr, argIdxMaybe, argNameMaybe, annotations)
+      case typedExpr: KtConstantExpression     => Seq(astForLiteral(typedExpr, argIdxMaybe, argNameMaybe, annotations))
+      case typedExpr: KtClass                  => Seq(astForClassOrObject(typedExpr, None, annotations))
       case typedExpr: KtClassLiteralExpression =>
         Seq(astForClassLiteral(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtSafeQualifiedExpression =>
@@ -285,7 +349,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
       case typedExpr: KtContinueExpression => Seq(astForContinue(typedExpr))
       // note: annotations are not currently (Kotlin 1.9.0) supported on destructuring declarations
       case typedExpr: KtDestructuringDeclaration => astsForDestructuringDeclaration(typedExpr)
-      case typedExpr: KtDotQualifiedExpression =>
+      case typedExpr: KtDotQualifiedExpression   =>
         Seq(astForQualifiedExpression(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtDoWhileExpression => Seq(astForDoWhile(typedExpr, annotations))
       case typedExpr: KtForExpression     => Seq(astForFor(typedExpr, annotations))
@@ -296,8 +360,9 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
       case typedExpr: KtLambdaExpression => Seq(astForLambda(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtNameReferenceExpression if typedExpr.getReferencedNameElementType == KtTokens.IDENTIFIER =>
         Seq(astForNameReference(typedExpr, argIdxMaybe, argNameMaybe, annotations))
-      // TODO: callable reference
-      case _: KtNameReferenceExpression => Seq()
+      case _: KtNameReferenceExpression             => Seq()
+      case typedExpr: KtCallableReferenceExpression =>
+        Seq(astForCallableReferenceExpression(typedExpr, argIdxMaybe, argNameMaybe, annotations, argTypeFallback))
       case typedExpr: KtObjectLiteralExpression =>
         Seq(astForObjectLiteralExpr(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtParenthesizedExpression =>
@@ -308,12 +373,13 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
         Seq(astForPrefixExpression(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtProperty if typedExpr.isLocal =>
         astsForProperty(typedExpr, annotations ++ typedExpr.getAnnotationEntries.asScala.toSeq)
-      case typedExpr: KtReturnExpression => Seq(astForReturnExpression(typedExpr))
+      case typedExpr: KtReturnExpression         => Seq(astForReturnExpression(typedExpr))
       case typedExpr: KtStringTemplateExpression =>
         Seq(astForStringTemplate(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtSuperExpression => Seq(astForSuperExpression(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtThisExpression  => Seq(astForThisExpression(typedExpr, argIdxMaybe, argNameMaybe, annotations))
-      case typedExpr: KtThrowExpression => Seq(astForUnknown(typedExpr, argIdxMaybe, argNameMaybe, annotations))
+      case typedExpr: KtThrowExpression =>
+        Seq(astForThrowExpression(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtTryExpression   => Seq(astForTry(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtWhenExpression  => Seq(astForWhen(typedExpr, argIdxMaybe, argNameMaybe, annotations))
       case typedExpr: KtWhileExpression => Seq(astForWhile(typedExpr, annotations))
@@ -327,7 +393,6 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
       case null =>
         logDebugWithTestAndStackTrace("Received null expression! Skipping...")
         Seq()
-      // TODO: handle `KtCallableReferenceExpression` like `this::baseTerrain`
       case unknownExpr =>
         logger.debug(
           s"Creating empty AST node for unknown expression `${unknownExpr.getClass}` with text `${unknownExpr.getText}`."
@@ -341,55 +406,66 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
 
     val importDirectives = ktFile.getImportList.getImports.asScala
     val importAsts       = importDirectives.toList.map(astForImportDirective)
-    val namespaceBlocksForImports =
-      for {
-        node <- importAsts.flatMap(_.root.collectAll[NewImport])
-        name = getName(node)
-      } yield Ast(NodeBuilders.newNamespaceBlockNode(name, name, relativizedPath))
 
     val packageName = ktFile.getPackageFqName.toString
-    val node =
+    val node        =
       if (packageName == Constants.Root) {
-        NodeBuilders.newNamespaceBlockNode(
+        namespaceBlockNode(
+          fileWithMeta.f,
           NamespaceTraversal.globalNamespaceName,
           NamespaceTraversal.globalNamespaceName,
           relativizedPath
         )
       } else {
-        val name = packageName.split("\\.").lastOption.getOrElse("")
-        NodeBuilders.newNamespaceBlockNode(name, packageName, relativizedPath)
+        val fullName = s"$relativizedPath:$packageName"
+        namespaceBlockNode(fileWithMeta.f, packageName, fullName, relativizedPath)
       }
     methodAstParentStack.push(node)
 
-    val name     = NamespaceTraversal.globalNamespaceName
-    val fullName = node.fullName
-    val fakeGlobalTypeDecl =
-      typeDeclNode(ktFile, name, fullName, relativizedPath, name, NodeTypes.NAMESPACE_BLOCK, fullName)
+    val name                       = NamespaceTraversal.globalNamespaceName
+    val fullName                   = node.fullName
+    val fakeGlobalTypeDeclFullName = s"$relativizedPath:$fullName"
+    val fakeGlobalMethodFullName   = s"$fakeGlobalTypeDeclFullName.global"
+    val fakeGlobalTypeDecl         =
+      typeDeclNode(ktFile, name, fakeGlobalTypeDeclFullName, relativizedPath, name, NodeTypes.NAMESPACE_BLOCK, fullName)
     methodAstParentStack.push(fakeGlobalTypeDecl)
 
     val fakeGlobalMethod =
-      methodNode(ktFile, name, name, fullName, None, relativizedPath, Option(NodeTypes.TYPE_DECL), Option(fullName))
+      methodNode(
+        ktFile,
+        name,
+        name,
+        fakeGlobalMethodFullName,
+        None,
+        relativizedPath,
+        Option(NodeTypes.TYPE_DECL),
+        Option(fakeGlobalTypeDeclFullName)
+      )
     methodAstParentStack.push(fakeGlobalMethod)
     scope.pushNewScope(fakeGlobalMethod)
 
     val blockNode_   = blockNode(ktFile, "<empty>", registerType(TypeConstants.Any))
-    val methodReturn = newMethodReturnNode(TypeConstants.Any, None, None, None)
+    val methodReturn = methodReturnNode(ktFile, TypeConstants.Any)
 
     val declarationsAsts = ktFile.getDeclarations.asScala.flatMap(astsForDeclaration)
     val fileNode         = NewFile().name(fileWithMeta.relativizedPath)
+    if (!disableFileContent) {
+      fileNode.content(fileWithMeta.f.getText)
+    }
     val lambdaTypeDecls =
       lambdaBindingInfoQueue.flatMap(_.edgeMeta.collect { case (node: NewTypeDecl, _, _) => Ast(node) })
+
     methodAstParentStack.pop()
 
-    val allDeclarationAsts = declarationsAsts ++ lambdaAstQueue ++ lambdaTypeDecls
-    val fakeTypeDeclAst =
+    val allDeclarationAsts = declarationsAsts ++ lambdaAstQueue ++ lambdaTypeDecls.distinct
+    val fakeTypeDeclAst    =
       Ast(fakeGlobalTypeDecl)
         .withChild(
           methodAst(fakeGlobalMethod, Seq.empty, blockAst(blockNode_, allDeclarationAsts.toList), methodReturn)
         )
     val namespaceBlockAst =
       Ast(node).withChildren(importAsts).withChild(fakeTypeDeclAst)
-    Ast(fileNode).withChildren(namespaceBlockAst :: namespaceBlocksForImports)
+    Ast(fileNode).withChildren(Seq(namespaceBlockAst))
   }
 
   def astsForDeclaration(decl: KtDeclaration): Seq[Ast] = {
@@ -397,20 +473,20 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
     val result =
       try {
         decl match {
-          case c: KtClass                => astsForClassOrObject(c)
-          case o: KtObjectDeclaration    => astsForClassOrObject(o)
-          case n: KtNamedFunction        => astsForMethod(n)
+          case c: KtClass                => Seq(astForClassOrObject(c))
+          case o: KtObjectDeclaration    => Seq(astForClassOrObject(o))
+          case n: KtNamedFunction        => Seq(astForMethod(n))
           case t: KtTypeAlias            => Seq(astForTypeAlias(t))
           case s: KtSecondaryConstructor => Seq(astForUnknown(s, None, None))
           case p: KtProperty             => astsForProperty(p)
-          case unhandled =>
+          case unhandled                 =>
             logger.error(
               s"Unknown declaration type encountered in this file `$relativizedPath` with text `${unhandled.getText}` and class `${unhandled.getClass}`!"
             )
             Seq()
         }
       } catch {
-        case exception: Exception =>
+        case NonFatal(exception) =>
           logger.warn(
             s"Caught exception while processing decl in this file `$relativizedPath`:\n${decl.getText}",
             exception
@@ -427,7 +503,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
     argNameMaybe: Option[String],
     annotations: Seq[KtAnnotationEntry] = Seq()
   ): Ast = {
-    val node = unknownNode(expr, Option(expr).map(_.getText).getOrElse(Constants.CodePropUndefinedValue))
+    val node = unknownNode(expr, Option(expr).map(code).getOrElse(Constants.CodePropUndefinedValue))
     Ast(withArgumentIndex(node, argIdx).argumentName(argNameMaybe))
       .withChildren(annotations.map(astForAnnotationEntry))
   }
@@ -446,7 +522,7 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
     val assignmentLHSNode = identifierNode(entry, entry.getText, entry.getText, entryTypeFullName)
     val assignmentLHSAst  = astWithRefEdgeMaybe(assignmentLHSNode.name, assignmentLHSNode)
 
-    val desc = bindingUtils.getCalledFunctionDesc(entry)
+    val desc         = bindingUtils.getCalledFunctionDesc(entry)
     val descFullName = desc
       .flatMap(nameRenderer.descFullName)
       .getOrElse(s"${Defines.UnresolvedNamespace}${Constants.ComponentNPrefix}$componentIdx")
@@ -470,13 +546,8 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
     val componentNAst =
       callAst(componentNCallNode, Seq(), Option(rhsBaseAst))
 
-    val assignmentCallNode = NodeBuilders.newOperatorCallNode(
-      Operators.assignment,
-      s"${entry.getText} = $componentNCallCode",
-      None,
-      line(entry),
-      column(entry)
-    )
+    val assignmentCallNode =
+      operatorCallNode(entry, shortenCode(s"${entry.getText} = $componentNCallCode"), Operators.assignment, None)
     callAst(assignmentCallNode, List(assignmentLHSAst, componentNAst))
   }
 
@@ -498,9 +569,26 @@ class AstCreator(fileWithMeta: KtFileWithMeta, bindingContext: BindingContext, g
   }
 
   protected def astsForKtCallExpressionArguments(callExpr: KtCallExpression, startIndex: Int = 1): List[Ast] = {
+    val calledFuncDesc = bindingUtils.getCalledFunctionDesc(callExpr.getCalleeExpression)
+
     withIndex(callExpr.getValueArguments.asScala.toSeq) { case (arg, idx) =>
       val argumentNameMaybe = Option(arg.getArgumentName).map(_.getText)
-      astsForExpression(arg.getArgumentExpression, Some(startIndex + idx - 1), argumentNameMaybe)
+      val argumentTypeMaybe = calledFuncDesc
+        .flatMap { funcDesc =>
+          val params = funcDesc.getValueParameters.asScala.toList
+          if (idx - 1 < params.size) {
+            Some(params(idx - 1).getType)
+          } else {
+            None
+          }
+        }
+
+      astsForExpression(
+        arg.getArgumentExpression,
+        Some(startIndex + idx - 1),
+        argumentNameMaybe,
+        argTypeFallback = argumentTypeMaybe
+      )
     }.flatten.toList
   }
 

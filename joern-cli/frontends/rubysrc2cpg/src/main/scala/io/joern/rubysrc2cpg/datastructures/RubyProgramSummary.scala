@@ -1,19 +1,22 @@
 package io.joern.rubysrc2cpg.datastructures
 
-import better.files.File
+import io.joern.rubysrc2cpg.Config
 import io.joern.x2cpg.Defines as XDefines
 import io.joern.x2cpg.datastructures.{FieldLike, MethodLike, ProgramSummary, StubbedType, TypeLike}
-import io.joern.x2cpg.typestub.{TypeStubMetaData, TypeStubUtil}
+import io.joern.x2cpg.typestub.{TypeStubUtil}
+import io.shiftleft.semanticcpg.utils.FileUtil.*
 import org.slf4j.LoggerFactory
 import io.joern.rubysrc2cpg.passes.Defines
+import io.joern.x2cpg.utils.JoernRunfilesLocator
 import upickle.default.*
 
-import java.io.{ByteArrayInputStream, InputStream}
+import java.io.{ByteArrayInputStream, FileInputStream, InputStream}
 import java.util.zip.ZipInputStream
 import scala.annotation.targetName
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Success, Try, Using}
+import java.nio.file.{Files, Path, Paths}
 
 type NamespaceToTypeMap = mutable.Map[String, mutable.Set[RubyType]]
 
@@ -24,6 +27,23 @@ class RubyProgramSummary(
 
   override val namespaceToType: NamespaceToTypeMap = initialNamespaceMap
   val pathToType: NamespaceToTypeMap               = initialPathMap
+
+  /** All known types, ordered by namespace and then type name. The summary is no longer modified once it is used for
+    * AST creation, so this is computed once and shared. The hash-based collections backing this summary have no stable
+    * iteration order, so all lookups that yield multiple types are sorted to keep the results (and anything depending
+    * on their order) reproducible.
+    */
+  lazy val allTypesSorted: List[RubyType] =
+    namespaceToType.toList.sortBy(_._1).flatMap { case (_, types) => types.toList.sortBy(_.name) }
+
+  override def matchingTypes(typeName: String): List[RubyType] = {
+    val suffix = typeName.split('.')
+    allTypesSorted.filter(ty => ty.name.split('.').endsWith(suffix))
+  }
+
+  /** Same as `typesUnderNamespace`, but with a reproducible order. */
+  def typesUnderNamespaceSorted(namespace: String): List[RubyType] =
+    namespaceToType.get(namespace).map(_.toList.sortBy(_.name)).getOrElse(Nil)
 
   @targetName("appendAll")
   def ++=(other: RubyProgramSummary): RubyProgramSummary = {
@@ -37,15 +57,38 @@ class RubyProgramSummary(
 object RubyProgramSummary {
   private val logger = LoggerFactory.getLogger(getClass)
 
-  def BuiltinTypes(implicit typeStubMetaData: TypeStubMetaData): NamespaceToTypeMap = {
-    val typeStubDir = File(typeStubMetaData.packagePath)
-    if (!typeStubDir.exists || !typeStubDir.isDirectory) {
-      logger.warn("No builtin type stubs provided, continuing with types provided by the project")
-      mutable.Map.empty
-    } else if (typeStubMetaData.useTypeStubs) {
-      mpkZipToInitialMapping(mergeBuiltinMpkZip) match {
-        case Failure(exception) => logger.warn("Unable to parse builtin types", exception); mutable.Map.empty
-        case Success(mapping)   => mapping
+  def BuiltinTypes(config: Config): NamespaceToTypeMap = {
+    if (config.useTypeStubs) {
+      val typeStubFiles =
+        JoernRunfilesLocator
+          .resolve("rubysrc2cpg_type_stubs/file/downloaded")
+          .map(path => Path.of(path) :: Nil)
+          .getOrElse {
+            val codeSourceLocation = getClass.getProtectionDomain.getCodeSource.getLocation.toString
+            val typeStubDir        = TypeStubUtil.typeStubDir(codeSourceLocation)
+            if (!Files.exists(typeStubDir)) {
+              Nil
+            } else {
+              typeStubDir
+                .walk()
+                .filter(file =>
+                  Files.isRegularFile(file) && file.fileName.startsWith("rubysrc") && file.extension().contains(".zip")
+                )
+                .toList
+                .sortBy(_.toString) // directory walking order is file system dependent
+            }
+          }
+      if (typeStubFiles.isEmpty) {
+        logger.info("No builtin type stubs provided.")
+        mutable.Map.empty
+      } else {
+        mpkZipToInitialMapping(mergeBuiltinMpkZip(typeStubFiles)) match {
+          case Failure(exception) =>
+            logger.warn("Unable to parse builtin types", exception)
+            mutable.Map.empty
+          case Success(mapping) =>
+            mapping
+        }
       }
     } else {
       mutable.Map.empty
@@ -56,49 +99,37 @@ object RubyProgramSummary {
     Try(readBinary[NamespaceToTypeMap](inputStream.readAllBytes()))
   }
 
-  private def mergeBuiltinMpkZip(implicit typeStubMetaData: TypeStubMetaData): InputStream = {
-    val classLoader = getClass.getClassLoader
-    val typeStubDir = TypeStubUtil.typeStubDir
+  private def mergeBuiltinMpkZip(typeStubFiles: Seq[Path]): InputStream = {
+    assert(typeStubFiles.nonEmpty)
+    val mergedMpksObj = ListBuffer[collection.mutable.Map[String, Set[RubyStubbedType]]]()
+    typeStubFiles.foreach { file =>
+      Using.Manager { use =>
+        val fis = use(new FileInputStream(new java.io.File(file.absolutePathAsString)))
+        val zis = use(new ZipInputStream(fis))
 
-    val typeStubFiles: Seq[File] =
-      typeStubDir
-        .walk()
-        .filter(f => f.isRegularFile && f.name.startsWith("rubysrc") && f.`extension`.contains(".zip"))
-        .toSeq
-
-    if (typeStubFiles.isEmpty) {
-      logger.warn("No ZIP files found.")
-      InputStream.nullInputStream()
-    } else {
-      val mergedMpksObj = ListBuffer[collection.mutable.Map[String, Set[RubyStubbedType]]]()
-      typeStubFiles.foreach { f =>
-        f.fileInputStream { fis =>
-          val zis = new ZipInputStream(fis)
-
-          LazyList.continually(zis.getNextEntry).takeWhile(_ != null).foreach { file =>
-            val mpkObj =
-              upickle.default.readBinary[collection.mutable.Map[String, Set[RubyStubbedType]]](zis.readAllBytes())
-            mergedMpksObj.addOne(mpkObj)
-          }
+        LazyList.continually(zis.getNextEntry).takeWhile(_ != null).foreach { file =>
+          val mpkObj =
+            upickle.default.readBinary[collection.mutable.Map[String, Set[RubyStubbedType]]](zis.readAllBytes())
+          mergedMpksObj.addOne(mpkObj)
         }
       }
-
-      val mergedMpks = mergedMpksObj
-        .reduceOption((prev, curr) => {
-          curr.keys.foreach(key => {
-            prev.updateWith(key) {
-              case Some(x) =>
-                Option(x ++ curr(key))
-              case None =>
-                Option(curr(key))
-            }
-          })
-          prev
-        })
-        .getOrElse(collection.mutable.Map[String, Set[RubyStubbedType]]())
-
-      new ByteArrayInputStream(upickle.default.writeBinary(mergedMpks))
     }
+
+    val mergedMpks = mergedMpksObj
+      .reduceOption((prev, curr) => {
+        curr.keys.foreach { key =>
+          prev.updateWith(key) {
+            case Some(value) =>
+              Option(value ++ curr(key))
+            case None =>
+              Option(curr(key))
+          }
+        }
+        prev
+      })
+      .getOrElse(collection.mutable.Map[String, Set[RubyStubbedType]]())
+
+    new ByteArrayInputStream(upickle.default.writeBinary(mergedMpks))
   }
 }
 
@@ -132,7 +163,7 @@ object RubyStubbedType {
   implicit val rubyTypeRw: ReadWriter[RubyStubbedType] = readwriter[ujson.Value].bimap[RubyStubbedType](
     x =>
       ujson.Obj(
-        "name" -> x.name,
+        "name"    -> x.name,
         "methods" -> x.methods.map { method =>
           ujson.Obj("name" -> method.name)
         },
@@ -174,7 +205,7 @@ object RubyType {
   implicit val rubyTypeRw: ReadWriter[RubyType] = readwriter[ujson.Value].bimap[RubyType](
     x =>
       ujson.Obj(
-        "name" -> x.name,
+        "name"    -> x.name,
         "methods" -> x.methods.map { method =>
           ujson.Obj("name" -> method.name)
         },

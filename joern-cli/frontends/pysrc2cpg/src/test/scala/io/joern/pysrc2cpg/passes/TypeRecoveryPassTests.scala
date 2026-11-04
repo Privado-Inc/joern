@@ -3,13 +3,14 @@ package io.joern.pysrc2cpg.passes
 import io.joern.pysrc2cpg.testfixtures.PySrc2CpgFixture
 import io.joern.x2cpg.passes.frontend.XTypeHintCallLinker
 import io.shiftleft.codepropertygraph.generated.Operators
-import io.shiftleft.codepropertygraph.generated.nodes.{Call, Identifier, Member}
+import io.shiftleft.codepropertygraph.generated.nodes.{Call, Identifier}
 import io.shiftleft.semanticcpg.language.*
 import io.shiftleft.semanticcpg.language.importresolver.*
 
 import java.io.File
 import scala.collection.immutable.Seq
 
+@scala.annotation.nowarn("cat=deprecation")
 class TypeRecoveryPassTests extends PySrc2CpgFixture(withOssDataflow = false) {
 
   "literals declared from built-in types" should {
@@ -350,13 +351,10 @@ class TypeRecoveryPassTests extends PySrc2CpgFixture(withOssDataflow = false) {
         .where(_.parentBlock.ast.isIdentifier.typeFullName("flask_sqlalchemy.py:<module>.SQLAlchemy"))
         .where(_.parentBlock.ast.isFieldIdentifier.canonicalName("session"))
         .headOption
-        .map(_.code) shouldBe Some("tmp0.add(user)")
+        .map(_.code) shouldBe Some("db.session.add(user)")
     }
 
     "provide a dummy type to a member if the member type is not known" in {
-      val Some(sessionTmpVar) = cpg.identifier("tmp0").headOption: @unchecked
-      sessionTmpVar.typeFullName shouldBe "flask_sqlalchemy.py:<module>.SQLAlchemy.<member>(session)"
-
       val Some(addCall) = cpg
         .call("add")
         .headOption: @unchecked
@@ -405,8 +403,6 @@ class TypeRecoveryPassTests extends PySrc2CpgFixture(withOssDataflow = false) {
     }
 
     "reasonably determine the constructor type" in {
-      val Some(tmp0) = cpg.identifier("tmp0").headOption: @unchecked
-      tmp0.typeFullName shouldBe "urllib.py:<module>.<member>(request)"
       val Some(requestCall) = cpg.call("Request").headOption: @unchecked
       requestCall.methodFullName shouldBe "urllib.py:<module>.<member>(request).Request.__init__"
     }
@@ -624,7 +620,7 @@ class TypeRecoveryPassTests extends PySrc2CpgFixture(withOssDataflow = false) {
     "recover the method full name related" in {
       val Some(methodRef) = cpg.methodRef.code("views.add_student").headOption: @unchecked
       methodRef.methodFullName shouldBe Seq("student", "views.py:<module>.add_student").mkString(File.separator)
-      methodRef.typeFullName shouldBe "<empty>"
+      methodRef.typeFullName shouldBe "ANY"
     }
   }
 
@@ -1326,7 +1322,8 @@ class TypeRecoveryPassTests extends PySrc2CpgFixture(withOssDataflow = false) {
         .l
       val appIncludeRouterCalls = variables.invokingCalls.nameExact("include_router")
       val includedRouters       = appIncludeRouterCalls.argument.argumentIndexGte(1).moduleVariables
-      val definitionsOfRouters  = includedRouters.definitions.whereNot(_.source.isCall.nameExact("import"))
+      val definitionsOfRouters  =
+        includedRouters.definitions.whereNot(_.source.isCall.nameExact(Operators.importCall))
       val List(adminRouter, normalRouter, itemsRouter) =
         definitionsOfRouters.map(x => (x.code, x.method.fullName)).sortBy(_._1).l: @unchecked
 

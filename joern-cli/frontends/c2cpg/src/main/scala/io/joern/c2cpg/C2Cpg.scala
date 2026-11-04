@@ -1,21 +1,22 @@
 package io.joern.c2cpg
 
-import io.joern.c2cpg.passes.{AstCreationPass, PreprocessorPass, TypeDeclNodePass}
-import io.joern.c2cpg.passes.FunctionDeclNodePass
-import io.shiftleft.codepropertygraph.generated.Cpg
-import io.shiftleft.codepropertygraph.generated.Languages
-import io.joern.x2cpg.passes.frontend.{MetaDataPass, TypeNodePass}
+import io.joern.c2cpg.parser.FileDefaults
+import io.joern.c2cpg.passes.*
 import io.joern.x2cpg.X2Cpg.withNewEmptyCpg
-import io.joern.x2cpg.X2CpgFrontend
+import io.joern.x2cpg.{SourceFiles, X2CpgFrontend}
+import io.joern.x2cpg.passes.frontend.{MetaDataPass, TypeNodePass}
 import io.joern.x2cpg.utils.Report
+import io.shiftleft.codepropertygraph.generated.{Cpg, Languages}
 import org.slf4j.LoggerFactory
 
 import java.util.regex.Pattern
-import scala.util.control.NonFatal
 import scala.util.Try
+import scala.util.control.NonFatal
 import scala.util.matching.Regex
 
-class C2Cpg extends X2CpgFrontend[Config] {
+class C2Cpg extends X2CpgFrontend {
+  final override type ConfigType = Config
+  override val defaultConfig = Config()
 
   private val logger = LoggerFactory.getLogger(classOf[C2Cpg])
 
@@ -23,20 +24,54 @@ class C2Cpg extends X2CpgFrontend[Config] {
     withNewEmptyCpg(config.outputPath, config) { (cpg, config) =>
       val report = new Report()
       new MetaDataPass(cpg, Languages.NEWC, config.inputPath).createAndApply()
-      val astCreationPass = new AstCreationPass(cpg, config, report)
-      astCreationPass.createAndApply()
-      new FunctionDeclNodePass(cpg, astCreationPass.unhandledMethodDeclarations())(config.schemaValidation)
-        .createAndApply()
-      TypeNodePass.withRegisteredTypes(astCreationPass.typesSeen(), cpg).createAndApply()
-      new TypeDeclNodePass(cpg)(config.schemaValidation).createAndApply()
+
+      val preprocessedFiles    = allPreprocessedFiles(config)
+      val srcFileExtensions    = gatherFileExtensions(config)
+      val headerFileExtensions = Set(FileDefaults.CHeaderFileExtension)
+
+      val sourcePass = new AstCreationPass(cpg, preprocessedFiles, srcFileExtensions, config, report = report)
+      sourcePass.createAndApply()
+
+      val headerPass = new AstCreationPass(
+        cpg,
+        preprocessedFiles,
+        headerFileExtensions,
+        config,
+        previousAccumulator = Some(sourcePass.accumulatedState()),
+        report = report
+      )
+      headerPass.createAndApply()
+
+      TypeNodePass.withRegisteredTypes(headerPass.typesSeen(), cpg).createAndApply()
+      new TypeDeclNodePass(cpg, config).createAndApply()
+      new FunctionDeclNodePass(cpg, headerPass.unhandledMethodDeclarations(), config).createAndApply()
+      new FullNameUniquenessPass(cpg).createAndApply()
       report.print()
     }
   }
 
+  private def gatherFileExtensions(config: Config): Set[String] = {
+    FileDefaults.SourceFileExtensions ++
+      FileDefaults.CppHeaderFileExtensions ++
+      Option.when(config.withPreprocessedFiles)(FileDefaults.PreprocessedExt).toList
+  }
+
+  private def allPreprocessedFiles(config: Config): List[String] = {
+    if (config.withPreprocessedFiles) {
+      SourceFiles
+        .determine(
+          config.inputPath,
+          Set(FileDefaults.PreprocessedExt),
+          ignoredDefaultRegex = Option(C2Cpg.DefaultIgnoredFolders),
+          ignoredFilesRegex = Option(config.ignoredFilesRegex),
+          ignoredFilesPath = Option(config.ignoredFiles)
+        )
+    } else { List.empty }
+  }
+
   def printIfDefsOnly(config: Config): Unit = {
     try {
-      val stmts = new PreprocessorPass(config).run().mkString(",")
-      println(stmts)
+      new PreprocessorPass(config).run().foreach(stmt => print(s"$stmt,"))
     } catch {
       case NonFatal(ex) =>
         logger.error("Failed to print preprocessor statements.", ex)

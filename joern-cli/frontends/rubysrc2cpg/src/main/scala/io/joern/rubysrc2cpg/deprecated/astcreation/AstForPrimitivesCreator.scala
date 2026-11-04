@@ -56,10 +56,11 @@ trait AstForPrimitivesCreator(implicit withSchemaValidation: ValidationMode) { t
     Option(ctx.FLOAT_LITERAL_WITH_EXPONENT).isDefined || Option(ctx.FLOAT_LITERAL_WITHOUT_EXPONENT).isDefined
 
   // TODO: Return Ast instead of Seq[Ast]
-  protected def astForArrayLiteral(ctx: ArrayConstructorContext): Seq[Ast] = ctx match
+  protected def astForArrayLiteral(ctx: ArrayConstructorContext): Seq[Ast] = ctx match {
     case ctx: BracketedArrayConstructorContext         => astForBracketedArrayConstructor(ctx)
     case ctx: NonExpandedWordArrayConstructorContext   => astForNonExpandedWordArrayConstructor(ctx)
     case ctx: NonExpandedSymbolArrayConstructorContext => astForNonExpandedSymbolArrayConstructor(ctx)
+  }
 
   private def astForBracketedArrayConstructor(ctx: BracketedArrayConstructorContext): Seq[Ast] = {
     Option(ctx.indexingArguments)

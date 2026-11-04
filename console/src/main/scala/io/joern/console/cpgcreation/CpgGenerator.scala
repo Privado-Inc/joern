@@ -1,9 +1,11 @@
 package io.joern.console.cpgcreation
 
-import better.files.File
+import io.shiftleft.semanticcpg.utils.ExternalCommand
 import io.shiftleft.codepropertygraph.generated.Cpg
+import io.shiftleft.semanticcpg.Overlays
+import io.shiftleft.semanticcpg.layers.{LayerCreator, LayerCreatorContext}
 
-import scala.sys.process.*
+import java.nio.file.{Files, Paths}
 import scala.util.Try
 
 /** A CpgGenerator generates Code Property Graphs from code. Each supported language implements a Generator, e.g.,
@@ -27,7 +29,7 @@ abstract class CpgGenerator() {
 
   protected def runShellCommand(program: String, arguments: Seq[String]): Try[Unit] =
     Try {
-      assert(File(program).exists, s"CPG generator does not exist at: $program")
+      assert(Files.exists(Paths.get(program)), s"CPG generator does not exist at: $program")
 
       val cmd       = Seq(program) ++ maxMemoryParameter ++ arguments
       val cmdString = cmd.mkString(" ")
@@ -43,8 +45,7 @@ abstract class CpgGenerator() {
            |""".stripMargin
       )
 
-      val exitValue = cmd.run().exitValue()
-      assert(exitValue == 0, s"Error running shell command: exitValue=$exitValue; $cmd")
+      ExternalCommand.run(cmd, additionalContext = cmd.toString).logIfFailed().verifySuccess()
     }
 
   protected lazy val maxMemoryParameter = {
@@ -55,7 +56,16 @@ abstract class CpgGenerator() {
   }
 
   /** override in specific cpg generators to make them apply post processing passes */
-  def applyPostProcessingPasses(cpg: Cpg): Cpg =
+  protected def postProcessingLayer: Option[LayerCreator] = None
+
+  /** Applies the frontend-specific post processing layer, unless the CPG already has it. A CPG made by `joern-parse`
+    * has it, so this is checked up front instead of letting the layer log a warning for the usual case.
+    */
+  def applyPostProcessingPasses(cpg: Cpg): Cpg = {
+    postProcessingLayer
+      .filterNot(layer => Overlays.appliedOverlays(cpg).contains(layer.overlayName))
+      .foreach(_.run(new LayerCreatorContext(cpg)))
     cpg
+  }
 
 }

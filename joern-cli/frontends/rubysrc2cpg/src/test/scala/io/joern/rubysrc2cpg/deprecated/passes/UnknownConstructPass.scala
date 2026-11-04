@@ -6,6 +6,9 @@ import io.joern.x2cpg.utils.Environment.OperatingSystemType
 import io.shiftleft.codepropertygraph.generated.nodes.Method
 import io.shiftleft.semanticcpg.language.*
 
+import scala.annotation.nowarn
+
+@nowarn("cat=deprecation")
 class UnknownConstructPass extends RubyCode2CpgFixture(useDeprecatedFrontend = true) {
 
   "invalid assignment" ignore {

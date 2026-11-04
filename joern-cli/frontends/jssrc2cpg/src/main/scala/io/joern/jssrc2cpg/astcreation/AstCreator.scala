@@ -1,20 +1,16 @@
 package io.joern.jssrc2cpg.astcreation
 
 import io.joern.jssrc2cpg.Config
-import io.joern.jssrc2cpg.datastructures.MethodScope
-import io.joern.jssrc2cpg.datastructures.Scope
 import io.joern.jssrc2cpg.parser.BabelAst.*
 import io.joern.jssrc2cpg.parser.BabelJsonParser.ParseResult
 import io.joern.jssrc2cpg.parser.BabelNodeInfo
 import io.joern.x2cpg.Ast
 import io.joern.x2cpg.AstCreatorBase
 import io.joern.x2cpg.ValidationMode
-import io.joern.x2cpg.AstNodeBuilder as X2CpgAstNodeBuilder
-import io.joern.x2cpg.datastructures.Global
 import io.joern.x2cpg.datastructures.Stack.*
+import io.joern.x2cpg.utils.OffsetUtils
+import io.joern.x2cpg.datastructures.VariableScopeManager
 import io.joern.x2cpg.frontendspecific.jssrc2cpg.Defines
-import io.joern.x2cpg.utils.NodeBuilders.newMethodReturnNode
-import io.joern.x2cpg.utils.NodeBuilders.newModifierNode
 import io.shiftleft.codepropertygraph.generated.EvaluationStrategies
 import io.shiftleft.codepropertygraph.generated.ModifierTypes
 import io.shiftleft.codepropertygraph.generated.NodeTypes
@@ -30,9 +26,9 @@ import ujson.Value
 
 import scala.collection.mutable
 
-class AstCreator(val config: Config, val global: Global, val parserResult: ParseResult)(implicit
+class AstCreator(val config: Config, val usedTypes: mutable.HashSet[String], val parserResult: ParseResult)(implicit
   withSchemaValidation: ValidationMode
-) extends AstCreatorBase(parserResult.filename)
+) extends AstCreatorBase[BabelNodeInfo, AstCreator](parserResult.filename)
     with AstForExpressionsCreator
     with AstForPrimitivesCreator
     with AstForTypesCreator
@@ -42,30 +38,31 @@ class AstCreator(val config: Config, val global: Global, val parserResult: Parse
     with AstForTemplateDomCreator
     with AstNodeBuilder
     with TypeHelper
-    with AstCreatorHelper
-    with X2CpgAstNodeBuilder[BabelNodeInfo, AstCreator] {
+    with AstCreatorHelper {
 
   protected val logger: Logger = LoggerFactory.getLogger(classOf[AstCreator])
 
-  protected val scope = new Scope()
+  protected val scope = new VariableScopeManager()
 
   // TypeDecls with their bindings (with their refs) for lambdas and methods are not put in the AST
-  // where the respective nodes are defined. Instead we put them under the parent TYPE_DECL in which they are defined.
+  // where the respective nodes are defined. Instead, we put them under the parent TYPE_DECL in which they are defined.
   // To achieve this we need this extra stack.
-  protected val methodAstParentStack          = new Stack[NewNode]()
-  protected val typeRefIdStack                = new Stack[NewTypeRef]
-  protected val dynamicInstanceTypeStack      = new Stack[String]
-  protected val localAstParentStack           = new Stack[NewBlock]()
-  protected val rootTypeDecl                  = new Stack[NewTypeDecl]()
-  protected val functionNodeToNameAndFullName = mutable.HashMap.empty[BabelNodeInfo, (String, String)]
+  protected val methodAstParentStack     = new Stack[NewNode]()
+  protected val typeRefIdStack           = new Stack[NewTypeRef]
+  protected val dynamicInstanceTypeStack = new Stack[String]
+  protected val localAstParentStack      = new Stack[NewBlock]()
+  protected val rootTypeDecl             = new Stack[NewTypeDecl]()
+  // Keyed by the function node's source range (start:end): a BabelNodeInfo key would hash its ujson.Value structurally,
+  // recursing over the entire function subtree on every lookup.
+  protected val functionNodeToNameAndFullName = mutable.HashMap.empty[String, (String, String)]
   protected val usedVariableNames             = mutable.HashMap.empty[String, Int]
-  protected val seenAliasTypes                = mutable.HashSet.empty[NewTypeDecl]
+  protected val seenAliasTypes                = mutable.HashMap.empty[String, NewTypeDecl]
   protected val functionFullNames             = mutable.HashSet.empty[String]
 
   // we track line and column numbers manually because astgen / @babel-parser sometimes
   // fails to deliver them at all -  strange, but this even happens with its latest version
-  protected val (positionToLineNumberMapping, positionToFirstPositionInLineMapping) =
-    positionLookupTables(parserResult.fileContent)
+  protected val (lineEndPositions, lineStartPositions) =
+    buildPositionArrays(parserResult.fileContent)
 
   override def createAst(): DiffGraphBuilder = {
     val fileContent = if (!config.disableFileContent) Option(parserResult.fileContent) else None
@@ -75,7 +72,7 @@ class AstCreator(val config: Config, val global: Global, val parserResult: Parse
     methodAstParentStack.push(namespaceBlock)
     val ast = Ast(fileNode).withChild(Ast(namespaceBlock).withChild(createProgramMethod()))
     Ast.storeInDiffGraph(ast, diffGraph)
-    createVariableReferenceLinks()
+    scope.createVariableReferenceLinks(diffGraph, parserResult.filename)
     diffGraph
   }
 
@@ -99,15 +96,11 @@ class AstCreator(val config: Config, val global: Global, val parserResult: Parse
     scope.pushNewMethodScope(fullName, name, blockNode, None)
     localAstParentStack.push(blockNode)
 
-    val thisParam =
-      parameterInNode(astNodeInfo, "this", "this", 0, false, EvaluationStrategies.BY_VALUE)
-        .dynamicTypeHintFullName(typeHintForThisExpression())
-    scope.addVariable("this", thisParam, MethodScope)
+    val thisParam = parameterInNode(astNodeInfo, "this", "this", 0, false, EvaluationStrategies.BY_VALUE)
+      .dynamicTypeHintFullName(typeHintForThisExpression())
+    scope.addVariable("this", thisParam, Defines.Any, VariableScopeManager.ScopeType.MethodScope)
 
     val methodChildren = astsForFile(astNodeInfo)
-    setArgumentIndices(methodChildren)
-
-    val methodReturn = newMethodReturnNode(Defines.Any, line = None, column = None)
 
     localAstParentStack.pop()
     scope.popScope()
@@ -118,10 +111,23 @@ class AstCreator(val config: Config, val global: Global, val parserResult: Parse
         programMethod,
         Ast(thisParam) :: Nil,
         blockAst(blockNode, methodChildren),
-        methodReturn,
-        newModifierNode(ModifierTypes.MODULE) :: Nil
+        methodReturnNode(astNodeInfo, Defines.Any),
+        modifierNode(astNodeInfo, ModifierTypes.MODULE) :: Nil
       )
     )
+  }
+
+  private def astsForFile(file: BabelNodeInfo): List[Ast] = astsForProgram(createBabelNodeInfo(file.json("program")))
+
+  private def astsForProgram(program: BabelNodeInfo): List[Ast] = createBlockStatementAsts(program.json("body"))
+
+  protected def astForNodeWithFunctionReferenceAndCall(json: Value): Ast = {
+    val nodeInfo = createBabelNodeInfo(json)
+    nodeInfo.node match {
+      case _: FunctionLike =>
+        astForFunctionDeclaration(nodeInfo, shouldCreateFunctionReference = true, shouldCreateAssignmentCall = true)
+      case _ => astForNode(json)
+    }
   }
 
   protected def astForNode(json: Value): Ast = {
@@ -132,6 +138,7 @@ class AstCreator(val config: Config, val global: Global, val parserResult: Parse
       case ClassExpression           => astForClass(nodeInfo)
       case TSInterfaceDeclaration    => astForInterface(nodeInfo)
       case TSModuleDeclaration       => astForModule(nodeInfo)
+      case Decorator                 => astForDecorator(nodeInfo)
       case TSExportAssignment        => astForExportAssignment(nodeInfo)
       case ExportNamedDeclaration    => astForExportNamedDeclaration(nodeInfo)
       case ExportDefaultDeclaration  => astForExportDefaultDeclaration(nodeInfo)
@@ -222,6 +229,9 @@ class AstCreator(val config: Config, val global: Global, val parserResult: Parse
     }
   }
 
+  protected def astForNodes(jsons: collection.Seq[Value]): List[Ast] =
+    jsons.iterator.map(astForNodeWithFunctionReference).toList
+
   protected def astForNodeWithFunctionReference(json: Value): Ast = {
     val nodeInfo = createBabelNodeInfo(json)
     nodeInfo.node match {
@@ -230,39 +240,19 @@ class AstCreator(val config: Config, val global: Global, val parserResult: Parse
     }
   }
 
-  protected def astForNodeWithFunctionReferenceAndCall(json: Value): Ast = {
-    val nodeInfo = createBabelNodeInfo(json)
-    nodeInfo.node match {
-      case _: FunctionLike =>
-        astForFunctionDeclaration(nodeInfo, shouldCreateFunctionReference = true, shouldCreateAssignmentCall = true)
-      case _ => astForNode(json)
-    }
-  }
-
-  protected def astForNodes(jsons: List[Value]): List[Ast] = jsons.map(astForNodeWithFunctionReference)
-
-  private def astsForFile(file: BabelNodeInfo): List[Ast] = astsForProgram(createBabelNodeInfo(file.json("program")))
-
-  private def astsForProgram(program: BabelNodeInfo): List[Ast] = createBlockStatementAsts(program.json("body"))
-
   protected def line(node: BabelNodeInfo): Option[Int]      = node.lineNumber
   protected def column(node: BabelNodeInfo): Option[Int]    = node.columnNumber
   protected def lineEnd(node: BabelNodeInfo): Option[Int]   = node.lineNumberEnd
   protected def columnEnd(node: BabelNodeInfo): Option[Int] = node.columnNumberEnd
   protected def code(node: BabelNodeInfo): String           = node.code
 
-  protected def nodeOffsets(node: Value): Option[(Int, Int)] = {
-    for {
-      startOffset <- start(node)
-      endOffset   <- end(node)
-    } yield (math.max(startOffset, 0), math.min(endOffset, parserResult.fileContent.length))
-  }
+  override protected def offsetSource: Option[OffsetUtils.OffsetSourceType] =
+    Option.unless(config.disableFileContent)(OffsetUtils.OffsetSourceType.Utf_16)
 
-  override protected def offset(node: BabelNodeInfo): Option[(Int, Int)] = {
-    Option
-      .when(!config.disableFileContent) {
-        nodeOffsets(node.json)
-      }
-      .flatten
+  override protected def unadjustedOffset(node: BabelNodeInfo): Option[(Int, Int)] = {
+    for {
+      startOffset <- start(node.json)
+      endOffset   <- end(node.json)
+    } yield clampOffsets(startOffset, endOffset)
   }
 }

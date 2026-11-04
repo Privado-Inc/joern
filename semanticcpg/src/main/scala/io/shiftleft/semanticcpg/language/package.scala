@@ -4,6 +4,7 @@ import flatgraph.help.DocSearchPackages
 import io.shiftleft.codepropertygraph.generated
 import io.shiftleft.codepropertygraph.generated.Cpg
 import io.shiftleft.codepropertygraph.generated.nodes.*
+import io.shiftleft.semanticcpg.language.SarifExtension
 import io.shiftleft.semanticcpg.language.bindingextension.{
   MethodTraversal as BindingMethodTraversal,
   TypeDeclTraversal as BindingTypeDeclTraversal
@@ -36,9 +37,9 @@ package object language
   implicit def toAstNodeMethods(node: AstNode): AstNodeMethods           = new AstNodeMethods(node)
   implicit def toExpressionMethods(node: Expression): ExpressionMethods  = new ExpressionMethods(node)
 
-  implicit def toMethodMethods(node: Method): MethodMethods                   = new MethodMethods(node)
-  implicit def toMethodReturnMethods(node: MethodReturn): MethodReturnMethods = new MethodReturnMethods(node)
-  implicit def toCallMethods(node: Call): CallMethods                         = new CallMethods(node)
+  implicit def toMethodMethods(node: Method): MethodMethods                              = new MethodMethods(node)
+  implicit def toMethodReturnMethods(node: MethodReturn): MethodReturnMethods            = new MethodReturnMethods(node)
+  implicit def toCallMethods(node: Call): CallMethods                                    = new CallMethods(node)
   implicit def toMethodParamInMethods(node: MethodParameterIn): MethodParameterInMethods =
     new MethodParameterInMethods(node)
   implicit def toMethodParamOutMethods(node: MethodParameterOut): MethodParameterOutMethods =
@@ -95,9 +96,10 @@ package object language
   ): AnnotationParameterAssignTraversal =
     new AnnotationParameterAssignTraversal(a.iterator)
 
-  implicit def toMember(traversal: IterableOnce[Member]): MemberTraversal = new MemberTraversal(traversal.iterator)
-  implicit def toLocal(traversal: IterableOnce[Local]): LocalTraversal    = new LocalTraversal(traversal.iterator)
-  implicit def toMethod(traversal: IterableOnce[Method]): OriginalMethod  = new OriginalMethod(traversal.iterator)
+  implicit def toMember(traversal: IterableOnce[Member]): MemberTraversal    = new MemberTraversal(traversal.iterator)
+  implicit def toLocal(traversal: IterableOnce[Local]): LocalTraversal       = new LocalTraversal(traversal.iterator)
+  implicit def toMethod(traversal: IterableOnce[Method]): OriginalMethod     = new OriginalMethod(traversal.iterator)
+  implicit def toLiteral(traversal: IterableOnce[Literal]): LiteralTraversal = new LiteralTraversal(traversal.iterator)
 
   implicit def singleToMethodParameterInTrav[A <: MethodParameterIn](a: A): MethodParameterTraversal =
     new MethodParameterTraversal(Iterator.single(a))
@@ -132,6 +134,12 @@ package object language
 
   implicit def iterToImportTrav[A <: Import](a: IterableOnce[A]): ImportTraversal =
     new ImportTraversal(a.iterator)
+
+  implicit def singleToConfigFileTrav[A <: ConfigFile](node: A): ConfigFileTraversal =
+    new ConfigFileTraversal(Iterator.single(node))
+
+  implicit def iterToConfigFileTrav[A <: ConfigFile](node: IterableOnce[A]): ConfigFileTraversal =
+    new ConfigFileTraversal(node.iterator)
 
   // Call graph extension
   implicit def singleToMethodTravCallGraphExt[A <: Method](a: A): MethodTraversal =
@@ -228,6 +236,13 @@ package object language
 
   // EvalType accessors ~
 
+  // ~ SourceCode accessors
+  implicit def singleToSourceCodeAccessorsLocal[A <: AstNode](a: A): SourceCodeAccessors[A] =
+    new SourceCodeAccessors[A](Iterator.single(a))
+  implicit def iterOnceToSourceCodeAccessorsLocal[A <: AstNode](a: IterableOnce[A]): SourceCodeAccessors[A] =
+    new SourceCodeAccessors[A](a.iterator)
+  // SourceCode accessors ~
+
   // ~ Modifier accessors
   implicit def singleToModifierAccessorsMember[A <: Member](a: A): ModifierAccessors[A] =
     new ModifierAccessors[A](Iterator.single(a))
@@ -242,6 +257,11 @@ package object language
   implicit def singleToModifierAccessorsTypeDecl[A <: TypeDecl](a: A): ModifierAccessors[A] =
     new ModifierAccessors[A](Iterator.single(a))
   implicit def iterOnceToModifierAccessorsTypeDecl[A <: TypeDecl](a: IterableOnce[A]): ModifierAccessors[A] =
+    new ModifierAccessors[A](a.iterator)
+
+  implicit def singleToModifierAccessorLocal[A <: Local](a: A): ModifierAccessors[A] =
+    new ModifierAccessors[A](Iterator.single(a))
+  implicit def iterOnceToModifierAccessorsLocal[A <: Local](a: IterableOnce[A]): ModifierAccessors[A] =
     new ModifierAccessors[A](a.iterator)
   // Modifier accessors ~
 
@@ -263,6 +283,9 @@ package object language
       new MethodParameterOutTraversal(Iterator.single(a))
 
   }
+
+  implicit def singleToSarifTraversal[A <: Finding](a: A): SarifExtension = new SarifExtension(Iterator.single(a))
+  implicit def iterOnceToSarifTraversal[A <: Finding](a: IterableOnce[A]): SarifExtension = new SarifExtension(a)
 }
 
 trait LowPrioImplicits {
@@ -275,6 +298,10 @@ trait LowPrioImplicits {
     new AstNodeDot(Iterator.single(a))
   implicit def iterOnceToAstNodeDot[A <: AstNode](a: IterableOnce[A]): AstNodeDot[A] =
     new AstNodeDot(a.iterator)
+
+  implicit def toAnnotationNodeMethods(node: Annotation): AnnotationNodeMethods = new AnnotationNodeMethods(node)
+  implicit def toAnnotationLiteralNodeMethods(node: AnnotationLiteral): AnnotationLiteralNodeMethods =
+    new AnnotationLiteralNodeMethods(node)
 
   implicit def toCfgNodeMethods(node: CfgNode): CfgNodeMethods = new CfgNodeMethods(node)
 
@@ -290,4 +317,5 @@ trait LowPrioImplicits {
     new DeclarationTraversal[A](Iterator.single(a))
   implicit def iterOnceToDeclarationNodeTraversal[A <: Declaration](a: IterableOnce[A]): DeclarationTraversal[A] =
     new DeclarationTraversal[A](a.iterator)
+
 }

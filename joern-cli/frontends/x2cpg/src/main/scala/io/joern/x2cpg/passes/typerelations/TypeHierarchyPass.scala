@@ -11,7 +11,7 @@ import org.slf4j.{Logger, LoggerFactory}
 /** Create INHERITS_FROM edges from `TYPE_DECL` nodes to `TYPE` nodes.
   */
 class TypeHierarchyPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
-  private val logger: Logger = LoggerFactory.getLogger(this.getClass)
+  private val logger: Logger                         = LoggerFactory.getLogger(this.getClass)
   override def run(dstGraph: DiffGraphBuilder): Unit = {
     try {
       linkToMultiple(
@@ -27,7 +27,7 @@ class TypeHierarchyPass(cpg: Cpg) extends CpgPass(cpg) with LinkingUtil {
             Seq()
           }
         },
-        dstFullNameKey = PropertyNames.INHERITS_FROM_TYPE_FULL_NAME,
+        dstFullNameKey = PropertyNames.InheritsFromTypeFullName,
         dstGraph
       )
     } catch {

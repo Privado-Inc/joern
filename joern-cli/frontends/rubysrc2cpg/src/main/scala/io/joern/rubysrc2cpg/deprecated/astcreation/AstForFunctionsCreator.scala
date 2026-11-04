@@ -3,7 +3,6 @@ package io.joern.rubysrc2cpg.deprecated.astcreation
 import io.joern.rubysrc2cpg.deprecated.parser.DeprecatedRubyParser.*
 import io.joern.rubysrc2cpg.deprecated.passes.Defines
 import io.joern.rubysrc2cpg.deprecated.utils.PackageContext
-import io.joern.x2cpg.utils.NodeBuilders.newModifierNode
 import io.joern.x2cpg.{Ast, ValidationMode, Defines as XDefines}
 import io.shiftleft.codepropertygraph.generated.nodes.*
 import io.shiftleft.codepropertygraph.generated.{DispatchTypes, EdgeTypes, ModifierTypes}
@@ -50,11 +49,12 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   protected def astForMethodDefinitionContext(ctx: MethodDefinitionContext): Seq[Ast] = {
-    val astMethodName = Option(ctx.methodNamePart()) match
+    val astMethodName = Option(ctx.methodNamePart()) match {
       case Some(ctxMethodNamePart) =>
         astForMethodNamePartContext(ctxMethodNamePart)
       case None =>
         astForMethodIdentifierContext(ctx.methodIdentifier(), code(ctx))
+    }
     val callNode = astMethodName.head.nodes.filter(node => node.isInstanceOf[NewCall]).head.asInstanceOf[NewCall]
 
     // Create thisParameter if this is an instance method
@@ -95,7 +95,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
 
     val astBody = Option(ctx.bodyStatement()) match {
       case Some(ctxBodyStmt) => astForBodyStatementContext(ctxBodyStmt, true)
-      case None =>
+      case None              =>
         val expAst = astForExpressionContext(ctx.expression())
         Seq(lastStmtAsReturnAst(ctx, expAst.head, Option(text(ctx.expression()))))
     }
@@ -228,7 +228,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     }
 
     parameterTupleList.zipWithIndex.map { case (paraTuple, paraIndex) =>
-      paraTuple match
+      paraTuple match {
         case (Some(paraValue), isVariadic) =>
           val varSymbol = paraValue.getSymbol
           createIdentifierWithScope(ctx, varSymbol.getText, varSymbol.getText, Defines.Any, Seq[String](Defines.Any))
@@ -249,6 +249,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
               index = paraIndex + 1
             )
           )
+      }
     }.toList
   }
 
@@ -259,9 +260,10 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
   }
 
   private def astForDefinedMethodNameContext(ctx: DefinedMethodNameContext): Seq[Ast] = {
-    Option(ctx.methodName()) match
+    Option(ctx.methodName()) match {
       case Some(methodNameCtx) => astForMethodNameContext(methodNameCtx)
       case None                => astForAssignmentLikeMethodIdentifierContext(ctx.assignmentLikeMethodIdentifier())
+    }
   }
 
   private def astForAssignmentLikeMethodIdentifierContext(ctx: AssignmentLikeMethodIdentifierContext): Seq[Ast] = {
@@ -275,7 +277,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
   private def astForMethodNamePartContext(ctx: MethodNamePartContext): Seq[Ast] = ctx match {
     case ctx: SimpleMethodNamePartContext    => astForSimpleMethodNamePartContext(ctx)
     case ctx: SingletonMethodNamePartContext => astForSingletonMethodNamePartContext(ctx)
-    case _ =>
+    case _                                   =>
       logger.error(s"astForMethodNamePartContext() $relativeFilename, ${text(ctx)} All contexts mismatched.")
       Seq(Ast())
   }
@@ -306,7 +308,8 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     val methodRetNode = NewMethodReturn()
       .typeFullName(Defines.Any)
 
-    val modifiers = newModifierNode(ModifierTypes.PUBLIC) :: newModifierNode(ModifierTypes.LAMBDA) :: Nil
+    val modifiers =
+      NewModifier().modifierType(ModifierTypes.PUBLIC) :: NewModifier().modifierType(ModifierTypes.LAMBDA) :: Nil
 
     val methAst = methodAst(
       newMethodNode,
@@ -362,7 +365,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
      * Model a block as a method
      */
     val methodFullName = classStack.reverse :+ blockMethodName mkString pathSep
-    val newMethodNode = methodNode(ctxStmt, blockMethodName, code(ctxStmt), methodFullName, None, relativeFilename)
+    val newMethodNode  = methodNode(ctxStmt, blockMethodName, code(ctxStmt), methodFullName, None, relativeFilename)
       .lineNumber(lineStart)
       .lineNumberEnd(lineEnd)
       .columnNumber(colStart)
@@ -372,7 +375,7 @@ trait AstForFunctionsCreator(implicit withSchemaValidation: ValidationMode) {
     val astMethodParam = ctxParam.map(astForBlockParameterContext).getOrElse(Seq())
 
     val publicModifier = NewModifier().modifierType(ModifierTypes.PUBLIC)
-    val paramSeq = astMethodParam.flatMap(_.root).map {
+    val paramSeq       = astMethodParam.flatMap(_.root).map {
       /* In majority of cases, node will be an identifier */
       case identifierNode: NewIdentifier =>
         val param = NewMethodParameterIn()
