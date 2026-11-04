@@ -65,6 +65,28 @@ class DependencyTests extends CSharpCode2CpgFixture {
 
   }
 
+  "a `csproj` file that starts with a UTF-8 byte order mark" should {
+
+    val cpg = code(
+      "\uFEFF" +
+        """<Project Sdk="Microsoft.NET.Sdk">
+          |    <ItemGroup>
+          |      <PackageReference Include="AWSSDK.S3" Version="3.3.110.20" />
+          |    </ItemGroup>
+          |</Project>
+          |""".stripMargin,
+      "Foo.csproj"
+    )
+
+    "have the package references persisted with versions" in {
+      inside(cpg.dependency.l) { case s3 :: Nil =>
+        s3.name shouldBe "AWSSDK.S3"
+        s3.version shouldBe "3.3.110.20"
+      }
+    }
+
+  }
+
   "a `csproj` file specifying a builtin dependency" should {
 
     val cpg = code("""

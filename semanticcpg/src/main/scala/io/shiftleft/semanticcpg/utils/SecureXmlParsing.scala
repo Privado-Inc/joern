@@ -23,7 +23,7 @@ object SecureXmlParsing {
       spf.setFeature("http://xml.org/sax/features/external-general-entities", false)
       spf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
 
-      XML.withSAXParser(spf.newSAXParser()).loadString(content)
+      XML.withSAXParser(spf.newSAXParser()).loadString(content.stripPrefix("\uFEFF"))
     } match {
       case Success(elem)      => Some(elem)
       case Failure(exception) =>
